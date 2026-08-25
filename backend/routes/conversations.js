@@ -13,37 +13,35 @@ const router = express.Router();
 // paginas publicas como /login.html.
 router.use(requireLogin);
 
-router.get("/pending-count", (req, res) => {
-  const row = db
-    .prepare("SELECT COUNT(*) AS total FROM conversations WHERE status = 'pending'")
-    .get();
-  res.json({ pending: row.total });
+router.get("/pending-count", async (req, res) => {
+  const { rows } = await db.query(
+    "SELECT COUNT(*)::int AS total FROM conversations WHERE status = 'pending'"
+  );
+  res.json({ pending: rows[0].total });
 });
 
-router.get("/conversations", (req, res) => {
+router.get("/conversations", async (req, res) => {
   const status = ["pending", "answered"].includes(req.query.status)
     ? req.query.status
     : "pending";
 
-  const rows = db
-    .prepare(
-      `SELECT c.*, a.nickname AS seller_nickname
+  const { rows } = await db.query(
+    `SELECT c.*, a.nickname AS seller_nickname
        FROM conversations c
        JOIN accounts a ON a.id = c.seller_id
-       WHERE c.status = ?
-       ORDER BY c.last_message_date DESC`
-    )
-    .all(status);
+       WHERE c.status = $1
+       ORDER BY c.last_message_date DESC`,
+    [status]
+  );
 
   res.json(rows);
 });
 
-router.get("/conversations/:packId/messages", (req, res) => {
-  const rows = db
-    .prepare(
-      `SELECT * FROM messages WHERE pack_id = ? ORDER BY id ASC`
-    )
-    .all(req.params.packId);
+router.get("/conversations/:packId/messages", async (req, res) => {
+  const { rows } = await db.query(
+    "SELECT * FROM messages WHERE pack_id = $1 ORDER BY id ASC",
+    [req.params.packId]
+  );
   res.json(rows);
 });
 
@@ -53,9 +51,11 @@ router.post("/conversations/:packId/reply", express.json(), async (req, res) => 
     return res.status(400).json({ error: "Mensagem vazia" });
   }
 
-  const conv = db
-    .prepare("SELECT * FROM conversations WHERE pack_id = ?")
-    .get(req.params.packId);
+  const { rows } = await db.query(
+    "SELECT * FROM conversations WHERE pack_id = $1",
+    [req.params.packId]
+  );
+  const conv = rows[0];
 
   if (!conv) return res.status(404).json({ error: "Conversa nao encontrada" });
   if (!conv.buyer_id) {
@@ -78,16 +78,20 @@ router.post("/conversations/:packId/reply", express.json(), async (req, res) => 
       text: text.trim(),
     });
 
-    db.prepare(
-      `INSERT INTO messages (pack_id, direction, author_user_id, text, sent_date)
-       VALUES (?, 'out', ?, ?, datetime('now'))`
-    ).run(conv.pack_id, conv.seller_id, text.trim());
+    const nowIso = new Date().toISOString();
 
-    db.prepare(
+    await db.query(
+      `INSERT INTO messages (pack_id, direction, author_user_id, text, sent_date)
+       VALUES ($1, 'out', $2, $3, $4)`,
+      [conv.pack_id, conv.seller_id, text.trim(), nowIso]
+    );
+
+    await db.query(
       `UPDATE conversations
-       SET status = 'answered', last_message_text = ?, last_message_date = datetime('now'), updated_at = datetime('now')
-       WHERE pack_id = ?`
-    ).run(text.trim(), conv.pack_id);
+       SET status = 'answered', last_message_text = $1, last_message_date = $2, updated_at = now()
+       WHERE pack_id = $3`,
+      [text.trim(), nowIso, conv.pack_id]
+    );
 
     res.json({ ok: true });
   } catch (err) {
@@ -100,7 +104,8 @@ router.post("/conversations/:packId/reply", express.json(), async (req, res) => 
 });
 
 // Botao "Atualizar agora" no painel: forca uma reconciliacao manual, sem
-// esperar o webhook.
+// esperar o webhook (util principalmente logo apos o servico "acordar" no
+// plano gratuito do Render).
 router.post("/sync", async (req, res) => {
   try {
     await reconcileAllAccounts();
