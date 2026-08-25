@@ -2,7 +2,7 @@
 // as tabelas locais (conversations + messages), decidindo se ela fica
 // "pending" (aguardando resposta do vendedor) ou "answered".
 const db = require("./db");
-const { fetchPackMessages, fetchPendingRead } = require("./ml/api");
+const { fetchPackMessages, fetchPendingRead, parsePackResource } = require("./ml/api");
 const { getValidAccessToken } = require("./ml/tokens");
 
 function messageDate(msg) {
@@ -112,8 +112,15 @@ async function reconcileAccount(sellerId) {
 
   const items = Array.isArray(pending) ? pending : pending?.results || [];
   for (const item of items) {
-    const packId = item?.pack_id ?? item?.id;
-    if (!packId) continue;
+    // A resposta de /messages/pending_read traz o pack_id dentro do campo
+    // "resource" (ex: "/packs/123/sellers/456"), nao em "pack_id"/"id"
+    // direto no item — por isso extraimos com o mesmo parser do webhook.
+    const parsed = parsePackResource(item?.resource);
+    const packId = parsed?.packId ?? item?.pack_id ?? item?.id;
+    if (!packId) {
+      console.warn("[reconcile] nao consegui identificar pack_id em:", item);
+      continue;
+    }
     try {
       const packData = await fetchPackMessages(accessToken, packId, sellerId);
       await upsertConversationFromPack(sellerId, packId, packData, item?.order_id);
