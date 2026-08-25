@@ -2,9 +2,11 @@
 // Doc oficial: https://developers.mercadolivre.com.br/pt_br/produto-receba-notificacoes
 //
 // Ao criar/editar seu aplicativo em https://developers.mercadolivre.com.br/,
-// cadastre esta URL como "Notifications callback URL":
+// cadastre esta URL como "URL de retorno de chamada de notificacao":
 //   <PUBLIC_BASE_URL>/webhooks/mercadolivre
-// e marque o topico de mensagens na lista de topicos do app.
+// (repare que e uma URL DIFERENTE da "URI de redirecionamento", que e
+// usada so no login/OAuth) e marque o topico de mensagens na lista de
+// topicos do app.
 //
 // IMPORTANTE: o nome exato do topico de mensagens pode aparecer como
 // "messages" na tela de configuracao do seu app — confirme por la. Se vier
@@ -12,21 +14,12 @@
 const express = require("express");
 const db = require("../db");
 const { syncPack } = require("../sync");
+const { parsePackResource } = require("../ml/api");
 
 const router = express.Router();
 
 function isMessageTopic(topic) {
   return typeof topic === "string" && topic.toLowerCase().includes("message");
-}
-
-// Extrai pack_id e seller_id de um resource do tipo
-// "/messages/packs/{pack_id}/sellers/{seller_id}"
-function parsePackResource(resource) {
-  const match = /\/messages\/packs\/([^/]+)\/sellers\/([^/?]+)/i.exec(
-    resource || ""
-  );
-  if (!match) return null;
-  return { packId: match[1], sellerId: match[2] };
 }
 
 router.post("/webhooks/mercadolivre", express.json(), (req, res) => {
@@ -40,7 +33,7 @@ router.post("/webhooks/mercadolivre", express.json(), (req, res) => {
   if (!isMessageTopic(topic)) return;
 
   const parsed = parsePackResource(resource);
-  const sellerId = parsed?.sellerId || user_id;
+  const sellerId = String(parsed?.sellerId || user_id || "");
   const packId = parsed?.packId;
 
   if (!packId || !sellerId) {
@@ -48,17 +41,20 @@ router.post("/webhooks/mercadolivre", express.json(), (req, res) => {
     return;
   }
 
-  const accountExists = db
-    .prepare("SELECT 1 FROM accounts WHERE id = ?")
-    .get(sellerId);
-  if (!accountExists) {
-    console.warn(`[webhook] notificacao para conta nao conectada: ${sellerId}`);
-    return;
-  }
-
-  syncPack(sellerId, packId).catch((err) => {
-    console.error(`[webhook] falha ao sincronizar pack ${packId}:`, err.message);
-  });
+  (async () => {
+    try {
+      const { rows } = await db.query("SELECT 1 FROM accounts WHERE id = $1", [
+        sellerId,
+      ]);
+      if (!rows.length) {
+        console.warn(`[webhook] notificacao para conta nao conectada: ${sellerId}`);
+        return;
+      }
+      await syncPack(sellerId, packId);
+    } catch (err) {
+      console.error(`[webhook] falha ao sincronizar pack ${packId}:`, err.message);
+    }
+  })();
 });
 
 module.exports = router;
