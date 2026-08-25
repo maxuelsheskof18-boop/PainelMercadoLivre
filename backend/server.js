@@ -1,0 +1,68 @@
+const path = require("path");
+// Carrega o .env sempre a partir da raiz do projeto (uma pasta acima de
+// backend/), nao da pasta de onde o comando foi executado. Sem isso, rodar
+// "node backend/server.js" de dentro de uma IDE (que as vezes muda a pasta
+// atual para a do arquivo) faz o dotenv procurar o .env no lugar errado e
+// as variaveis somem, mesmo com o arquivo preenchido certinho.
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+const express = require("express");
+const cookieSession = require("cookie-session");
+
+const { requireLogin } = require("./authMiddleware");
+const sessionRoutes = require("./routes/session");
+const accountsRoutes = require("./routes/accounts");
+const webhooksRoutes = require("./routes/webhooks");
+const conversationsRoutes = require("./routes/conversations");
+const { reconcileAllAccounts } = require("./sync");
+
+for (const key of ["ML_CLIENT_ID", "ML_CLIENT_SECRET", "ML_REDIRECT_URI", "DASHBOARD_PASSWORD", "SESSION_SECRET"]) {
+  if (!process.env[key]) {
+    console.warn(`[aviso] variavel de ambiente ${key} nao esta definida (veja o .env).`);
+  }
+}
+
+const app = express();
+app.set("trust proxy", 1);
+
+app.use(
+  cookieSession({
+    name: "ml_painel_session",
+    keys: [process.env.SESSION_SECRET || "troque-este-segredo"],
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 dias
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+  })
+);
+
+// Webhook do Mercado Livre: sem login, e o proprio Mercado Livre quem chama.
+app.use(webhooksRoutes);
+
+// Login/logout do painel
+app.use(sessionRoutes);
+
+// Conexao de contas ML (OAuth) + listagem
+app.use(accountsRoutes);
+
+// Dados de conversas/pendencias (tudo aqui vive sob /api/...)
+app.use("/api", conversationsRoutes);
+
+// Arquivos publicos (tela de login e assets) sem exigir login
+app.use(express.static(path.join(__dirname, "..", "public"), { index: false }));
+
+// Pagina principal exige login
+app.get(["/", "/index.html"], requireLogin, (req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "index.html"));
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Painel rodando em http://localhost:${PORT}`);
+});
+
+// Reconciliacao periodica: cobre qualquer webhook que eventualmente se perca.
+const RECONCILE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutos
+setInterval(() => {
+  reconcileAllAccounts().catch((err) =>
+    console.error("[reconcile-loop] erro:", err.message)
+  );
+}, RECONCILE_INTERVAL_MS);
