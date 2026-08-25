@@ -55,6 +55,17 @@ async function fetchResource(accessToken, resourcePath) {
   return mlFetch(resourcePath, accessToken);
 }
 
+// Extrai pack_id e seller_id de um "resource" devolvido pela API do
+// Mercado Livre. O formato muda dependendo de onde ele vem:
+//   - webhook de notificacao: "/messages/packs/{pack_id}/sellers/{seller_id}"
+//   - GET /messages/pending_read: "/packs/{pack_id}/sellers/{seller_id}"
+// (sem o prefixo "/messages"). Por isso o regex nao exige esse prefixo.
+function parsePackResource(resource) {
+  const match = /packs\/([^/]+)\/sellers\/([^/?]+)/i.exec(resource || "");
+  if (!match) return null;
+  return { packId: match[1], sellerId: match[2] };
+}
+
 // Envia uma resposta numa conversa.
 async function sendMessage({
   accessToken,
@@ -85,6 +96,7 @@ module.exports = {
   fetchPendingRead,
   fetchPackMessages,
   fetchResource,
+  parsePackResource,
   sendMessage,
   fetchMe,
 };
