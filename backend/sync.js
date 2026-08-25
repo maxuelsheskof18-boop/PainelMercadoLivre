@@ -15,7 +15,7 @@ function messageDate(msg) {
   );
 }
 
-function upsertConversationFromPack(sellerId, packId, packData, orderId) {
+async function upsertConversationFromPack(sellerId, packId, packData, orderId) {
   const messages = Array.isArray(packData?.messages) ? [...packData.messages] : [];
 
   // Ordena por data (mais antiga -> mais recente). Se a data vier vazia,
@@ -30,8 +30,9 @@ function upsertConversationFromPack(sellerId, packId, packData, orderId) {
   const last = messages[messages.length - 1];
   if (!last) return; // conversa sem mensagens ainda, nada a fazer
 
+  const sellerIdStr = String(sellerId);
   const lastFromId = String(last?.from?.user_id ?? "");
-  const isLastFromSeller = lastFromId === String(sellerId);
+  const isLastFromSeller = lastFromId === sellerIdStr;
   const status = isLastFromSeller ? "answered" : "pending";
 
   // Descobre quem e o comprador: o participante que nao e o vendedor.
@@ -39,57 +40,57 @@ function upsertConversationFromPack(sellerId, packId, packData, orderId) {
   for (const m of messages) {
     const fromId = String(m?.from?.user_id ?? "");
     const toId = String(m?.to?.user_id ?? "");
-    if (fromId && fromId !== String(sellerId)) buyerId = fromId;
-    if (toId && toId !== String(sellerId)) buyerId = buyerId || toId;
+    if (fromId && fromId !== sellerIdStr) buyerId = fromId;
+    if (toId && toId !== sellerIdStr) buyerId = buyerId || toId;
   }
 
   const buyerNickname = packData?.buyer?.nickname || null;
 
-  db.prepare(
+  await db.query(
     `INSERT INTO conversations
        (pack_id, seller_id, order_id, buyer_id, buyer_nickname, last_message_text, last_message_date, status, updated_at)
-     VALUES (@pack_id, @seller_id, @order_id, @buyer_id, @buyer_nickname, @last_message_text, @last_message_date, @status, datetime('now'))
-     ON CONFLICT(pack_id) DO UPDATE SET
-       order_id = excluded.order_id,
-       buyer_id = COALESCE(excluded.buyer_id, conversations.buyer_id),
-       buyer_nickname = COALESCE(excluded.buyer_nickname, conversations.buyer_nickname),
-       last_message_text = excluded.last_message_text,
-       last_message_date = excluded.last_message_date,
-       status = excluded.status,
-       updated_at = datetime('now')`
-  ).run({
-    pack_id: String(packId),
-    seller_id: sellerId,
-    order_id: orderId || null,
-    buyer_id: buyerId,
-    buyer_nickname: buyerNickname,
-    last_message_text: last?.text || null,
-    last_message_date: messageDate(last),
-    status,
-  });
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+     ON CONFLICT (pack_id) DO UPDATE SET
+       order_id = EXCLUDED.order_id,
+       buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
+       buyer_nickname = COALESCE(EXCLUDED.buyer_nickname, conversations.buyer_nickname),
+       last_message_text = EXCLUDED.last_message_text,
+       last_message_date = EXCLUDED.last_message_date,
+       status = EXCLUDED.status,
+       updated_at = now()`,
+    [
+      String(packId),
+      sellerIdStr,
+      orderId || null,
+      buyerId,
+      buyerNickname,
+      last?.text || null,
+      messageDate(last),
+      status,
+    ]
+  );
 
-  const insertMsg = db.prepare(
-    `INSERT INTO messages (pack_id, message_id, direction, author_user_id, text, sent_date)
-     VALUES (?, ?, ?, ?, ?, ?)`
+  const { rows: existingRows } = await db.query(
+    "SELECT message_id FROM messages WHERE pack_id = $1",
+    [String(packId)]
   );
-  const existing = new Set(
-    db
-      .prepare("SELECT message_id FROM messages WHERE pack_id = ?")
-      .all(String(packId))
-      .map((r) => r.message_id)
-  );
+  const existing = new Set(existingRows.map((r) => r.message_id));
 
   for (const m of messages) {
     const id = m?.id ? String(m.id) : null;
     if (id && existing.has(id)) continue; // ja gravada
     const fromId = String(m?.from?.user_id ?? "");
-    insertMsg.run(
-      String(packId),
-      id,
-      fromId === String(sellerId) ? "out" : "in",
-      fromId || null,
-      m?.text || null,
-      messageDate(m)
+    await db.query(
+      `INSERT INTO messages (pack_id, message_id, direction, author_user_id, text, sent_date)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        String(packId),
+        id,
+        fromId === sellerIdStr ? "out" : "in",
+        fromId || null,
+        m?.text || null,
+        messageDate(m),
+      ]
     );
   }
 }
@@ -98,12 +99,13 @@ function upsertConversationFromPack(sellerId, packId, packData, orderId) {
 async function syncPack(sellerId, packId, orderId) {
   const accessToken = await getValidAccessToken(sellerId);
   const packData = await fetchPackMessages(accessToken, packId, sellerId);
-  upsertConversationFromPack(sellerId, packId, packData, orderId);
+  await upsertConversationFromPack(sellerId, packId, packData, orderId);
 }
 
 // Varredura de reconciliacao: pergunta ao Mercado Livre quais packs tem
 // mensagem nao lida e sincroniza cada um. Serve de rede de seguranca caso
-// algum webhook se perca.
+// algum webhook se perca (ou, com o Render gratuito, enquanto o servico
+// esteve "dormindo" e nao recebeu nenhum webhook).
 async function reconcileAccount(sellerId) {
   const accessToken = await getValidAccessToken(sellerId);
   const pending = await fetchPendingRead(accessToken);
@@ -114,7 +116,7 @@ async function reconcileAccount(sellerId) {
     if (!packId) continue;
     try {
       const packData = await fetchPackMessages(accessToken, packId, sellerId);
-      upsertConversationFromPack(sellerId, packId, packData, item?.order_id);
+      await upsertConversationFromPack(sellerId, packId, packData, item?.order_id);
     } catch (err) {
       console.error(`[reconcile] falha ao sincronizar pack ${packId}:`, err.message);
     }
@@ -122,7 +124,7 @@ async function reconcileAccount(sellerId) {
 }
 
 async function reconcileAllAccounts() {
-  const accounts = db.prepare("SELECT id FROM accounts").all();
+  const { rows: accounts } = await db.query("SELECT id FROM accounts");
   for (const acc of accounts) {
     try {
       await reconcileAccount(acc.id);

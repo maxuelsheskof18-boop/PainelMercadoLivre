@@ -8,6 +8,7 @@ require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
 const express = require("express");
 const cookieSession = require("cookie-session");
 
+const db = require("./db");
 const { requireLogin } = require("./authMiddleware");
 const sessionRoutes = require("./routes/session");
 const accountsRoutes = require("./routes/accounts");
@@ -15,7 +16,7 @@ const webhooksRoutes = require("./routes/webhooks");
 const conversationsRoutes = require("./routes/conversations");
 const { reconcileAllAccounts } = require("./sync");
 
-for (const key of ["ML_CLIENT_ID", "ML_CLIENT_SECRET", "ML_REDIRECT_URI", "DASHBOARD_PASSWORD", "SESSION_SECRET"]) {
+for (const key of ["DATABASE_URL", "ML_CLIENT_ID", "ML_CLIENT_SECRET", "ML_REDIRECT_URI", "DASHBOARD_PASSWORD", "SESSION_SECRET"]) {
   if (!process.env[key]) {
     console.warn(`[aviso] variavel de ambiente ${key} nao esta definida (veja o .env).`);
   }
@@ -55,14 +56,27 @@ app.get(["/", "/index.html"], requireLogin, (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Painel rodando em http://localhost:${PORT}`);
-});
 
-// Reconciliacao periodica: cobre qualquer webhook que eventualmente se perca.
-const RECONCILE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutos
-setInterval(() => {
-  reconcileAllAccounts().catch((err) =>
-    console.error("[reconcile-loop] erro:", err.message)
-  );
-}, RECONCILE_INTERVAL_MS);
+db.init()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Painel rodando em http://localhost:${PORT}`);
+    });
+
+    // Reconciliacao periodica: cobre qualquer webhook que eventualmente se
+    // perca. Enquanto o servico estiver "dormindo" (plano gratuito do
+    // Render), este temporizador tambem fica parado — por isso o botao
+    // "Atualizar" existe, para forcar uma sincronizacao assim que o painel
+    // acordar.
+    const RECONCILE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutos
+    setInterval(() => {
+      reconcileAllAccounts().catch((err) =>
+        console.error("[reconcile-loop] erro:", err.message)
+      );
+    }, RECONCILE_INTERVAL_MS);
+  })
+  .catch((err) => {
+    console.error("[startup] falha ao conectar/preparar o banco de dados:", err.message);
+    console.error("Confira se DATABASE_URL esta correta no .env.");
+    process.exit(1);
+  });
