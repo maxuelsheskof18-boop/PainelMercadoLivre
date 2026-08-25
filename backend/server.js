@@ -47,13 +47,18 @@ app.use(accountsRoutes);
 // Dados de conversas/pendencias (tudo aqui vive sob /api/...)
 app.use("/api", conversationsRoutes);
 
-// Arquivos publicos (tela de login e assets) sem exigir login
-app.use(express.static(path.join(__dirname, "..", "public"), { index: false }));
-
-// Pagina principal exige login
+// Pagina principal exige login. IMPORTANTE: isso precisa vir ANTES do
+// express.static abaixo — senao, como "index.html" e um arquivo real
+// dentro de public/, o proprio express.static serviria ele direto pra
+// qualquer um em GET /index.html, sem nunca passar pelo requireLogin
+// (a opcao "index:false" so evita isso para GET "/", nao para o nome do
+// arquivo pedido explicitamente).
 app.get(["/", "/index.html"], requireLogin, (req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "index.html"));
 });
+
+// Arquivos publicos (tela de login e assets) sem exigir login
+app.use(express.static(path.join(__dirname, "..", "public"), { index: false }));
 
 const PORT = process.env.PORT || 3000;
 
