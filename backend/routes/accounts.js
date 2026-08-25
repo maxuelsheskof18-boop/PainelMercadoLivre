@@ -49,23 +49,25 @@ router.get("/oauth/callback", requireLogin, async (req, res) => {
 
     const me = await fetchMe(tokenData.access_token);
     const expiresAt = Date.now() + tokenData.expires_in * 1000;
+    const accountId = String(tokenData.user_id || me.id);
 
-    db.prepare(
+    await db.query(
       `INSERT INTO accounts (id, nickname, access_token, refresh_token, expires_at, updated_at)
-       VALUES (@id, @nickname, @access_token, @refresh_token, @expires_at, datetime('now'))
-       ON CONFLICT(id) DO UPDATE SET
-         nickname = excluded.nickname,
-         access_token = excluded.access_token,
-         refresh_token = excluded.refresh_token,
-         expires_at = excluded.expires_at,
-         updated_at = datetime('now')`
-    ).run({
-      id: tokenData.user_id || me.id,
-      nickname: me?.nickname || String(tokenData.user_id || me.id),
-      access_token: tokenData.access_token,
-      refresh_token: tokenData.refresh_token,
-      expires_at: expiresAt,
-    });
+       VALUES ($1, $2, $3, $4, $5, now())
+       ON CONFLICT (id) DO UPDATE SET
+         nickname = EXCLUDED.nickname,
+         access_token = EXCLUDED.access_token,
+         refresh_token = EXCLUDED.refresh_token,
+         expires_at = EXCLUDED.expires_at,
+         updated_at = now()`,
+      [
+        accountId,
+        me?.nickname || accountId,
+        tokenData.access_token,
+        tokenData.refresh_token,
+        expiresAt,
+      ]
+    );
 
     delete req.session.oauth;
 
@@ -78,15 +80,15 @@ router.get("/oauth/callback", requireLogin, async (req, res) => {
   }
 });
 
-router.get("/api/accounts", requireLogin, (req, res) => {
-  const accounts = db
-    .prepare("SELECT id, nickname, created_at FROM accounts ORDER BY nickname")
-    .all();
-  res.json(accounts);
+router.get("/api/accounts", requireLogin, async (req, res) => {
+  const { rows } = await db.query(
+    "SELECT id, nickname, created_at FROM accounts ORDER BY nickname"
+  );
+  res.json(rows);
 });
 
-router.delete("/api/accounts/:id", requireLogin, (req, res) => {
-  db.prepare("DELETE FROM accounts WHERE id = ?").run(req.params.id);
+router.delete("/api/accounts/:id", requireLogin, async (req, res) => {
+  await db.query("DELETE FROM accounts WHERE id = $1", [req.params.id]);
   res.json({ ok: true });
 });
 
