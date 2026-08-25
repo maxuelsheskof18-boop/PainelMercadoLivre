@@ -23,8 +23,21 @@ function fmtDate(d) {
   }
 }
 
+// Se a sessao do painel expirou (ou ficou invalida por algum motivo), o
+// servidor responde 401. Em vez de deixar a tela travada ou dar erro de
+// "JSON invalido" tentando ler uma pagina de login como se fosse dado,
+// manda direto pra tela de login de novo.
+function handleSessionExpired(res) {
+  if (res.status === 401) {
+    window.location.href = "/login.html";
+    return true;
+  }
+  return false;
+}
+
 async function loadPendingCount() {
   const res = await fetch("/api/pending-count");
+  if (handleSessionExpired(res)) return;
   if (!res.ok) return;
   const data = await res.json();
   if (data.pending > 0) {
@@ -38,6 +51,7 @@ async function loadPendingCount() {
 async function loadConversations() {
   listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
   const res = await fetch(`/api/conversations?status=${state.status}`);
+  if (handleSessionExpired(res)) return;
   if (!res.ok) {
     listEl.innerHTML = '<p class="muted empty-msg">Erro ao carregar.</p>';
     return;
@@ -80,6 +94,11 @@ async function openThread(conv) {
   replyForm.dataset.packId = conv.pack_id;
 
   const res = await fetch(`/api/conversations/${encodeURIComponent(conv.pack_id)}/messages`);
+  if (handleSessionExpired(res)) return;
+  if (!res.ok) {
+    threadMessages.innerHTML = '<p class="muted">Erro ao carregar as mensagens.</p>';
+    return;
+  }
   const messages = await res.json();
 
   threadMessages.innerHTML = "";
@@ -109,6 +128,7 @@ replyForm.addEventListener("submit", async (e) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     });
+    if (handleSessionExpired(res)) return;
     const data = await res.json();
     if (!res.ok) {
       alert(data.error || "Falha ao enviar a mensagem.");
