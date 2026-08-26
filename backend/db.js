@@ -46,8 +46,9 @@ async function init() {
       product_title TEXT,                       -- nome do(s) produto(s) do pedido
       last_message_text TEXT,
       last_message_date TEXT,
-      status TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'answered'
+      status TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'answered' | 'blocked'
       is_combinar_entrega BOOLEAN,              -- null = ainda nao classificado
+      blocked_reason TEXT,                      -- ex: 'blocked_by_refund', 'blocked_by_mediation'
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
@@ -75,6 +76,7 @@ async function init() {
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_combinar_entrega BOOLEAN;
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS buyer_full_name TEXT;
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS product_title TEXT;
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS blocked_reason TEXT;
   `);
 }
 
