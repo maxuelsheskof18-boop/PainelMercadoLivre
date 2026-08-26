@@ -10,8 +10,19 @@
 const API_BASE = "https://api.mercadolibre.com";
 
 async function mlFetch(path, accessToken, options = {}) {
-  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
-  const res = await fetch(url, {
+  const base = path.startsWith("http") ? path : `${API_BASE}${path}`;
+
+  // A API de mensagens pos-venda e uma das mais antigas do Mercado Livre e,
+  // segundo a documentacao oficial, espera o token como query string
+  // (?access_token=...) em vez do cabecalho Authorization moderno usado
+  // pelo resto da API. Mandamos dos dois jeitos ao mesmo tempo — nao tem
+  // custo mandar os dois, e isso cobre qualquer uma das duas exigencias.
+  const url = new URL(base);
+  if (!url.searchParams.has("access_token")) {
+    url.searchParams.set("access_token", accessToken);
+  }
+
+  const res = await fetch(url.toString(), {
     ...options,
     headers: {
       Authorization: `Bearer ${accessToken}`,
