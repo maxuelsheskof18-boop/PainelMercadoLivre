@@ -431,8 +431,12 @@ body {
   /* Com muitas transportadoras cotadas, a caixa nao pode crescer sem limite
      e "empurrar" o resto da tela pra fora — o painel corta o que passa do
      tamanho da tela (thread-pane tem overflow:hidden), entao sem isso as
-     ultimas opcoes ficavam invisiveis e sem jeito de rolar ate elas. */
-  max-height: min(360px, 50vh);
+     ultimas opcoes ficavam invisiveis e sem jeito de rolar ate elas. Um
+     pouco mais baixo que antes (era 360px/50vh) pra sobrar mais espaco pra
+     ver as mensagens da conversa ao mesmo tempo — depois que o usuario
+     clica numa cotacao pra usar, a caixa fecha sozinha e devolve a tela
+     inteira pro chat.  */
+  max-height: min(260px, 36vh);
   overflow-y: auto;
 }
 .freight-row { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -466,13 +470,30 @@ body {
   background: var(--bg);
   border-radius: var(--radius-sm);
   font-size: 12.5px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: border-color 0.15s, background 0.15s;
 }
+.freight-option:hover { border-color: var(--accent); background: var(--card); }
+.freight-option-hint {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--accent);
+  font-weight: 600;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.freight-option:hover .freight-option-hint { opacity: 1; }
 .freight-option-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .freight-option-time { flex-shrink: 0; }
 .freight-option-price { flex-shrink: 0; font-weight: 700; color: var(--accent-dark); }
 
 .thread-messages {
   flex: 1;
+  /* Garante que a conversa nunca fique espremida a ponto de sumir quando a
+     caixa de calcular frete esta aberta acima dela — sem isso, com muitas
+     cotacoes na tela, o flexbox conseguia encolher essa area quase a zero. */
+  min-height: 140px;
   overflow-y: auto;
   padding: 20px;
   display: flex;

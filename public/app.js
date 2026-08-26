@@ -376,10 +376,11 @@ freightCalcBtn.addEventListener("click", async () => {
     freightResults.innerHTML = data.options
       .map(
         (o) => `
-      <div class="freight-option">
+      <div class="freight-option" data-price="${o.price}" data-delivery="${o.deliveryTime ?? ""}" title="Clique para preencher a mensagem com esse valor">
         <span class="freight-option-name">${o.company ? o.company + " — " : ""}${o.name}</span>
         <span class="freight-option-time muted">${o.deliveryTime ? o.deliveryTime + " dia(s) util" : ""}</span>
         <span class="freight-option-price">R$ ${o.price.toFixed(2).replace(".", ",")}</span>
+        <span class="freight-option-hint">usar ➜</span>
       </div>`
       )
       .join("");
@@ -388,6 +389,53 @@ freightCalcBtn.addEventListener("click", async () => {
   } finally {
     freightCalcBtn.disabled = false;
   }
+});
+
+// Margem que o vendedor cobra em cima do valor cotado no Melhor Envio (ele
+// pediu especificamente 20% — se um dia quiser mudar, e so trocar esse
+// numero). O valor final e o que entra na mensagem pro comprador.
+const FREIGHT_MARKUP = 0.2;
+
+function pluralDias(n) {
+  const num = Number(n);
+  if (!num || Number.isNaN(num)) return "";
+  return num === 1 ? "1 dia útil" : `${num} dias úteis`;
+}
+
+// Mensagem padrao que o vendedor usa pra avisar o comprador do frete
+// combinado. Os campos "Prazo de entrega" e "Valor" vem da cotacao clicada
+// (com a margem de 20% ja aplicada no valor).
+function buildFreightMessage({ deliveryTime, finalPrice }) {
+  const prazo = pluralDias(deliveryTime);
+  return `Calculamos o frete para o seu endereço:
+- Prazo de entrega: ${prazo}
+- Valor: ${fmtMoney(finalPrice)}
+Para fazer o pagamento verifique as opções disponíveis nos detalhes da compra ou confira o atalho nas mensagens do chat (Se disponível)
+ATENÇÃO: Esperamos sua confirmação de pagamento`;
+}
+
+// Clicar numa cotacao ja calculada preenche a caixa de resposta com a
+// mensagem padrao (com o valor ja com a margem de 20% aplicada) e fecha a
+// calculadora — assim o vendedor so confere e clica "Enviar", e a tela
+// volta a mostrar a conversa inteira (sem a calculadora ocupando espaco).
+freightResults.addEventListener("click", (e) => {
+  const optionEl = e.target.closest(".freight-option");
+  if (!optionEl) return;
+
+  const basePrice = Number(optionEl.dataset.price);
+  if (!basePrice || Number.isNaN(basePrice)) return;
+  const finalPrice = basePrice * (1 + FREIGHT_MARKUP);
+
+  replyText.value = buildFreightMessage({
+    deliveryTime: optionEl.dataset.delivery,
+    finalPrice,
+  });
+  replyText.focus();
+
+  // Fecha a calculadora: o espaco todo volta pra conversa, que e o que o
+  // vendedor precisa ver agora pra conferir e enviar a mensagem.
+  freightForm.classList.add("hidden");
+  freightToggleArrow.textContent = "▾";
 });
 
 function renderMessages(messages) {
