@@ -104,6 +104,33 @@ router.get("/conversations/:packId/messages", async (req, res) => {
   res.json({ conversation, messages });
 });
 
+// Quando o Mercado Livre recusa o envio porque a conversa foi bloqueada
+// permanentemente (reembolso, mediacao/reclamacao encerrada, envio Full,
+// prazo de resposta esgotado), nao adianta o vendedor tentar de novo — a
+// API sempre vai recusar. Detecta esses casos ("blocked_by_...") em
+// qualquer lugar que a mensagem de erro do Mercado Livre venha.
+function extractBlockReason(body) {
+  if (!body || typeof body !== "object") return null;
+  const candidates = [];
+  if (typeof body.message === "string") candidates.push(body.message);
+  if (typeof body.error === "string") candidates.push(body.error);
+  if (Array.isArray(body.cause)) {
+    for (const c of body.cause) {
+      if (typeof c === "string") candidates.push(c);
+      else if (c && typeof c.message === "string") candidates.push(c.message);
+      else if (c && typeof c.code === "string") candidates.push(c.code);
+    }
+  }
+  return candidates.find((c) => /^blocked_by_/i.test(c)) || null;
+}
+
+const BLOCK_REASON_LABELS = {
+  blocked_by_refund: "reembolso feito ao comprador",
+  blocked_by_mediation: "mediação/reclamação encerrada",
+  blocked_by_fulfillment: "pedido enviado por Full",
+  blocked_by_time: "prazo para responder encerrado",
+};
+
 router.post("/conversations/:packId/reply", express.json(), async (req, res) => {
   const { text } = req.body || {};
   if (!text || !text.trim()) {
@@ -162,9 +189,26 @@ router.post("/conversations/:packId/reply", express.json(), async (req, res) => 
       err.body?.message ||
       err.body?.cause?.[0]?.message ||
       (typeof err.body === "string" ? err.body : null);
+
+    const blockReason = err.status === 403 ? extractBlockReason(err.body) : null;
+    if (blockReason) {
+      // Bloqueio permanente: essa conversa nunca mais vai aceitar uma
+      // resposta enviada por aqui. Marcamos como "blocked" pra ela sair
+      // sozinha das abas "Pendentes" e "Respondidas" (as duas so mostram
+      // status='pending' ou 'answered') — assim ela nao fica poluindo a
+      // lista, como o usuario pediu, sem apagar o historico da conversa.
+      await db.query(
+        `UPDATE conversations SET status = 'blocked', blocked_reason = $1, updated_at = now() WHERE pack_id = $2`,
+        [blockReason, conv.pack_id]
+      );
+    }
+
     res.status(502).json({
       error: "Falha ao enviar a mensagem para o Mercado Livre.",
       detail: mlMessage || err.message || "Sem detalhes do Mercado Livre.",
+      blocked: !!blockReason,
+      blockReason: blockReason || null,
+      blockReasonLabel: blockReason ? BLOCK_REASON_LABELS[blockReason.toLowerCase()] || null : null,
     });
   }
 });
