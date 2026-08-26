@@ -14,6 +14,7 @@ const sessionRoutes = require("./routes/session");
 const accountsRoutes = require("./routes/accounts");
 const webhooksRoutes = require("./routes/webhooks");
 const conversationsRoutes = require("./routes/conversations");
+const melhorenvioRoutes = require("./routes/melhorenvio");
 const { reconcileAllAccounts } = require("./sync");
 
 for (const key of ["DATABASE_URL", "ML_CLIENT_ID", "ML_CLIENT_SECRET", "ML_REDIRECT_URI", "DASHBOARD_PASSWORD", "SESSION_SECRET"]) {
@@ -43,6 +44,9 @@ app.use(sessionRoutes);
 
 // Conexao de contas ML (OAuth) + listagem
 app.use(accountsRoutes);
+
+// Conexao com o Melhor Envio (OAuth) + calculadora de frete
+app.use(melhorenvioRoutes);
 
 // Dados de conversas/pendencias (tudo aqui vive sob /api/...)
 app.use("/api", conversationsRoutes);

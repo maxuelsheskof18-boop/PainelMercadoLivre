@@ -65,6 +65,21 @@ async function init() {
 
     CREATE INDEX IF NOT EXISTS idx_messages_pack ON messages(pack_id);
     CREATE INDEX IF NOT EXISTS idx_conversations_status ON conversations(status);
+
+    -- So existe UMA conta do Melhor Envio pro painel inteiro (diferente das
+    -- contas do Mercado Livre, que podem ser varias) — por isso id fixo
+    -- 'main' em vez de guardar o id de uma conta de verdade. access_token e
+    -- refresh_token ficam nulos ate o usuario conectar; origin_postal_code
+    -- (o CEP de onde as encomendas saem) pode ser preenchido mesmo antes de
+    -- conectar, e fica guardado independente da conexao OAuth.
+    CREATE TABLE IF NOT EXISTS melhorenvio_account (
+      id TEXT PRIMARY KEY DEFAULT 'main',
+      access_token TEXT,
+      refresh_token TEXT,
+      expires_at BIGINT,
+      origin_postal_code TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `);
 
   // A tabela "conversations" ja existia (de uma versao anterior) na maioria
