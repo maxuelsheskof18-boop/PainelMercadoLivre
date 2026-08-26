@@ -103,6 +103,17 @@ async function fetchRecentOrders(accessToken, sellerId, { limit = 50 } = {}) {
   );
 }
 
+// Busca o detalhe completo de um pedido (inclui o campo "shipping.id").
+async function fetchOrderById(accessToken, orderId) {
+  return mlFetch(`/orders/${orderId}`, accessToken);
+}
+
+// Busca o detalhe completo de um envio — e aqui que vem o campo que
+// identifica o TIPO de entrega (ex: se e "a combinar com o comprador").
+async function fetchShipment(accessToken, shipmentId) {
+  return mlFetch(`/shipments/${shipmentId}`, accessToken);
+}
+
 // Segue um link de recurso vindo de um webhook (ex: "/messages/packs/123/sellers/456").
 async function fetchResource(accessToken, resourcePath) {
   return mlFetch(resourcePath, accessToken);
@@ -151,6 +162,8 @@ module.exports = {
   fetchPendingRead,
   fetchPackMessages,
   fetchRecentOrders,
+  fetchOrderById,
+  fetchShipment,
   fetchResource,
   parsePackResource,
   sendMessage,
