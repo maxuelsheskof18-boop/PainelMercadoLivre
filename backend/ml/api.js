@@ -91,12 +91,14 @@ async function fetchPackMessages(accessToken, packId, sellerId) {
 }
 
 // Busca pedidos recentes do vendedor (API de Orders, bem mais estavel/
-// documentada que a de mensagens). Usado so pra diagnostico: cada pedido
-// devolve "pack_id" (as vezes null, quando o pedido nao faz parte de um
-// envio combinado) e "id" (o order_id).
-async function fetchRecentOrders(accessToken, sellerId) {
+// documentada que a de mensagens — confirmamos por teste real que ela
+// funciona quando o "listar mensagens pendentes" nao funciona). Cada
+// pedido devolve "pack_id" (as vezes null, quando o pedido nao faz parte
+// de um envio combinado — nesse caso usa-se o proprio order_id) e "id"
+// (o order_id).
+async function fetchRecentOrders(accessToken, sellerId, { limit = 50 } = {}) {
   return mlFetch(
-    `/orders/search?seller=${sellerId}&sort=date_desc&limit=5`,
+    `/orders/search?seller=${sellerId}&sort=date_desc&limit=${limit}`,
     accessToken
   );
 }
