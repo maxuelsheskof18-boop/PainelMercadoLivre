@@ -2,8 +2,18 @@
 // as tabelas locais (conversations + messages), decidindo se ela fica
 // "pending" (aguardando resposta do vendedor) ou "answered".
 const db = require("./db");
-const { fetchPackMessages, fetchPendingRead, parsePackResource } = require("./ml/api");
+const { fetchPackMessages, fetchRecentOrders } = require("./ml/api");
 const { getValidAccessToken } = require("./ml/tokens");
+
+// Quantos pedidos recentes verificar por conta a cada reconciliacao. O
+// Mercado Livre nao tem mais (ou nunca teve de forma confiavel, pra essa
+// aplicacao) um endpoint que liste so os pedidos com mensagem pendente —
+// confirmamos isso testando ao vivo. Em vez disso, olhamos os N pedidos
+// mais recentes e checamos as mensagens de cada um. Isso cobre bem o caso
+// de uso (webhooks cuidam do tempo real; isso aqui e so uma rede de
+// seguranca), mas nao alcanca um pedido de "combinar entrega" muito antigo
+// que ja saiu dessa janela — se isso acontecer, aumente esse numero.
+const RECENT_ORDERS_LIMIT = 50;
 
 function messageDate(msg) {
   return (
@@ -102,41 +112,47 @@ async function syncPack(sellerId, packId, orderId) {
   await upsertConversationFromPack(sellerId, packId, packData, orderId);
 }
 
-// Varredura de reconciliacao: pergunta ao Mercado Livre quais packs tem
-// mensagem nao lida e sincroniza cada um. Serve de rede de seguranca caso
-// algum webhook se perca (ou, com o Render gratuito, enquanto o servico
-// esteve "dormindo" e nao recebeu nenhum webhook).
+// Varredura de reconciliacao: olha os pedidos recentes do vendedor e checa
+// as mensagens de cada um. Serve de rede de seguranca caso algum webhook se
+// perca (ou, com o Render gratuito, enquanto o servico esteve "dormindo" e
+// nao recebeu nenhum webhook).
 async function reconcileAccount(sellerId) {
   const accessToken = await getValidAccessToken(sellerId);
-  const pending = await fetchPendingRead(accessToken);
 
-  const items = Array.isArray(pending) ? pending : pending?.results || [];
+  const orders = await fetchRecentOrders(accessToken, sellerId, {
+    limit: RECENT_ORDERS_LIMIT,
+  });
+  const list = Array.isArray(orders?.results) ? orders.results : [];
 
-  // Log temporario de depuracao: mostra exatamente o que o Mercado Livre
-  // devolveu pra essa conta. Depois que confirmarmos que esta tudo certo,
-  // podemos remover (ou deixar so quando items.length === 0).
   console.log(
-    `[reconcile] conta ${sellerId}: pending_read devolveu ${items.length} item(ns). Payload cru:`,
-    JSON.stringify(pending)
+    `[reconcile] conta ${sellerId}: verificando ${list.length} pedido(s) recente(s) (de um total de ${
+      orders?.paging?.total ?? "?"
+    } pedidos).`
   );
 
-  for (const item of items) {
-    // A resposta de /messages/pending_read traz o pack_id dentro do campo
-    // "resource" (ex: "/packs/123/sellers/456"), nao em "pack_id"/"id"
-    // direto no item — por isso extraimos com o mesmo parser do webhook.
-    const parsed = parsePackResource(item?.resource);
-    const packId = parsed?.packId ?? item?.pack_id ?? item?.id;
-    if (!packId) {
-      console.warn("[reconcile] nao consegui identificar pack_id em:", item);
-      continue;
-    }
+  let comMensagens = 0;
+  for (const order of list) {
+    // Pedidos que nao fazem parte de um envio combinado nao tem pack_id
+    // (vem null) — nesse caso o proprio order_id funciona no lugar.
+    const packId = order?.pack_id || order?.id;
+    if (!packId) continue;
+
     try {
       const packData = await fetchPackMessages(accessToken, packId, sellerId);
-      await upsertConversationFromPack(sellerId, packId, packData, item?.order_id);
+      if (Array.isArray(packData?.messages) && packData.messages.length > 0) {
+        comMensagens++;
+        await upsertConversationFromPack(sellerId, packId, packData, order?.id);
+      }
     } catch (err) {
-      console.error(`[reconcile] falha ao sincronizar pack ${packId}:`, err.message);
+      console.warn(
+        `[reconcile] falha ao checar mensagens do pedido ${order?.id} (pack ${packId}):`,
+        err.status,
+        err.body || err.message
+      );
     }
   }
+
+  console.log(`[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens encontrados.`);
 }
 
 async function reconcileAllAccounts() {
