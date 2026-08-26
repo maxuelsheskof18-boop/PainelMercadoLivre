@@ -217,6 +217,19 @@ router.get("/debug/probe-shipping", async (req, res) => {
       const order = await fetchOrderById(accessToken, conv.order_id);
       entry.orderTags = order?.tags || null;
       entry.shippingId = order?.shipping?.id || null;
+      // Pra descobrir como mostrar produto/comprador de verdade no painel:
+      entry.orderItems = (order?.order_items || []).map((oi) => ({
+        title: oi?.item?.title,
+        quantity: oi?.quantity,
+      }));
+      entry.buyer = order?.buyer
+        ? {
+            nickname: order.buyer.nickname,
+            first_name: order.buyer.first_name,
+            last_name: order.buyer.last_name,
+          }
+        : null;
+      entry.dateCreated = order?.date_created || null;
 
       if (entry.shippingId) {
         try {
