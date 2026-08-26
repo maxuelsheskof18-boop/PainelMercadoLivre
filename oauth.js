@@ -1,96 +1,81 @@
-// Fluxo OAuth2 do Mercado Livre.
-// Doc oficial: https://developers.mercadolivre.com.br/pt_br/autenticacao-e-autorizacao
-const crypto = require("crypto");
+// Fluxo OAuth2 do Melhor Envio (usado so pra CALCULAR frete — nao inclui
+// compra/geracao de etiqueta, que o usuario prefere fazer direto no site
+// deles). Doc oficial: https://docs.melhorenvio.com.br/reference/fluxo-de-autorização
+//
+// Por padrao aponta pro ambiente de SANDBOX (teste, sem gastar nada de
+// verdade) — troque MELHORENVIO_BASE_URL pra "https://melhorenvio.com.br"
+// so quando tudo estiver testado e voce tiver criado o aplicativo tambem no
+// ambiente de producao (sao contas/aplicativos SEPARADOS, um em cada
+// ambiente).
+const BASE_URL = process.env.MELHORENVIO_BASE_URL || "https://sandbox.melhorenvio.com.br";
 
-const TOKEN_URL = "https://api.mercadolibre.com/oauth/token";
+// A API do Melhor Envio exige um User-Agent identificando a aplicacao e um
+// e-mail de contato tecnico em toda chamada (nao so no OAuth).
+const USER_AGENT =
+  process.env.MELHORENVIO_USER_AGENT || "Painel de Mensagens (contatofiglimp@gmail.com)";
 
-function base64url(buffer) {
-  return buffer
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
+// So pedimos a permissao de calcular frete — nenhuma permissao de carrinho,
+// compra ou geracao de etiqueta, ja que essa parte fica por conta do
+// proprio site do Melhor Envio.
+const SCOPES = "shipping-calculate";
 
-// Gera o par (verifier, challenge) usado pelo PKCE.
-// Se o app nao tiver PKCE habilitado no Mercado Livre, esses campos extras
-// sao simplesmente ignorados pelo servidor deles — entao e seguro sempre enviar.
-function generatePkcePair() {
-  const verifier = base64url(crypto.randomBytes(32));
-  const challenge = base64url(
-    crypto.createHash("sha256").update(verifier).digest()
-  );
-  return { verifier, challenge };
-}
-
-function buildAuthorizeUrl({ state, codeChallenge }) {
-  const authDomain = process.env.ML_AUTH_DOMAIN || "https://auth.mercadolivre.com.br";
-  const url = new URL(`${authDomain}/authorization`);
+function buildAuthorizeUrl({ state }) {
+  const url = new URL(`${BASE_URL}/oauth/authorize`);
+  url.searchParams.set("client_id", process.env.MELHORENVIO_CLIENT_ID);
+  url.searchParams.set("redirect_uri", process.env.MELHORENVIO_REDIRECT_URI);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", process.env.ML_CLIENT_ID);
-  url.searchParams.set("redirect_uri", process.env.ML_REDIRECT_URI);
   url.searchParams.set("state", state);
-  url.searchParams.set("code_challenge", codeChallenge);
-  url.searchParams.set("code_challenge_method", "S256");
+  url.searchParams.set("scope", SCOPES);
   return url.toString();
 }
 
-async function exchangeCodeForToken({ code, codeVerifier }) {
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    client_id: process.env.ML_CLIENT_ID,
-    client_secret: process.env.ML_CLIENT_SECRET,
-    code,
-    redirect_uri: process.env.ML_REDIRECT_URI,
-    code_verifier: codeVerifier,
-  });
-
-  const res = await fetch(TOKEN_URL, {
+async function tokenRequest(body) {
+  const res = await fetch(`${BASE_URL}/oauth/token`, {
     method: "POST",
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
+      "Content-Type": "application/json",
       Accept: "application/json",
+      "User-Agent": USER_AGENT,
     },
-    body,
+    body: JSON.stringify(body),
   });
 
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(
-      `Falha ao trocar code por token: ${res.status} ${JSON.stringify(data)}`
-    );
+  const text = await res.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { raw: text };
   }
-  return data; // { access_token, token_type, expires_in, scope, user_id, refresh_token }
+
+  if (!res.ok) {
+    throw new Error(`Melhor Envio ${res.status} em /oauth/token: ${JSON.stringify(data)}`);
+  }
+  return data; // { access_token, refresh_token, expires_in, token_type }
+}
+
+async function exchangeCodeForToken(code) {
+  return tokenRequest({
+    grant_type: "authorization_code",
+    client_id: process.env.MELHORENVIO_CLIENT_ID,
+    client_secret: process.env.MELHORENVIO_CLIENT_SECRET,
+    redirect_uri: process.env.MELHORENVIO_REDIRECT_URI,
+    code,
+  });
 }
 
 async function refreshAccessToken(refreshToken) {
-  const body = new URLSearchParams({
+  return tokenRequest({
     grant_type: "refresh_token",
-    client_id: process.env.ML_CLIENT_ID,
-    client_secret: process.env.ML_CLIENT_SECRET,
+    client_id: process.env.MELHORENVIO_CLIENT_ID,
+    client_secret: process.env.MELHORENVIO_CLIENT_SECRET,
     refresh_token: refreshToken,
   });
-
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json",
-    },
-    body,
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(
-      `Falha ao renovar token: ${res.status} ${JSON.stringify(data)}`
-    );
-  }
-  return data; // novo access_token + novo refresh_token (uso unico)
 }
 
 module.exports = {
-  generatePkcePair,
+  BASE_URL,
+  USER_AGENT,
   buildAuthorizeUrl,
   exchangeCodeForToken,
   refreshAccessToken,

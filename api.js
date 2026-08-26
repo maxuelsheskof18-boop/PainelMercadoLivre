@@ -1,90 +1,63 @@
-// Chamadas a API de mensagens pos-venda do Mercado Livre.
-// Doc oficial: https://developers.mercadolivre.com.br/pt_br/mensagens-post-venda
+// Chamadas a API do Melhor Envio. So a calculadora de frete (cotacao) foi
+// implementada — a compra/geracao de etiqueta fica por conta do proprio
+// site do Melhor Envio, por escolha do usuario.
+const { BASE_URL, USER_AGENT } = require("./oauth");
+
+// Calcula o frete entre dois CEPs para um pacote. "product" recebe peso e
+// dimensoes (a API tambem aceita uma lista de produtos individuais, mas
+// pra essa tela um unico "pacote" resumido e suficiente).
 //
-// IMPORTANTE: os nomes de campo abaixo seguem a documentacao oficial no
-// momento em que este projeto foi gerado. Na primeira sincronizacao real
-// (com uma conta e mensagens de verdade), confira os logs de debug
-// (console.log do payload cru) e, se algum campo vier com nome diferente,
-// e so ajustar aqui — a estrutura do resto do app nao muda.
+// Doc: https://docs.melhorenvio.com.br/reference/calculo-de-fretes-por-produtos
+async function calculateShipping(accessToken, { fromPostalCode, toPostalCode, weight, height, width, length, insuranceValue }) {
+  const body = {
+    from: { postal_code: onlyDigits(fromPostalCode) },
+    to: { postal_code: onlyDigits(toPostalCode) },
+    products: [
+      {
+        name: "Produto",
+        quantity: 1,
+        // "value" e usado so pro seguro do frete (nao afeta a compra em si);
+        // um valor pequeno padrao evita erro caso o vendedor nao informe.
+        value: insuranceValue || 20,
+        weight: Number(weight) || 0.3,
+        width: Number(width) || 11,
+        height: Number(height) || 4,
+        length: Number(length) || 16,
+      },
+    ],
+  };
 
-const API_BASE = "https://api.mercadolibre.com";
-
-async function mlFetch(path, accessToken, options = {}) {
-  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
-  const res = await fetch(url, {
-    ...options,
+  const res = await fetch(`${BASE_URL}/api/v2/me/shipment/calculate`, {
+    method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
       Accept: "application/json",
-      ...(options.headers || {}),
+      "User-Agent": USER_AGENT,
     },
+    body: JSON.stringify(body),
   });
 
   const text = await res.text();
   let data;
   try {
-    data = text ? JSON.parse(text) : {};
+    data = text ? JSON.parse(text) : [];
   } catch {
     data = { raw: text };
   }
 
   if (!res.ok) {
-    const err = new Error(`Mercado Livre API ${res.status} em ${path}`);
+    const err = new Error(`Melhor Envio ${res.status} em /shipment/calculate`);
     err.status = res.status;
     err.body = data;
     throw err;
   }
+
   return data;
 }
 
-// Lista os packs/pedidos com mensagens nao lidas para essa conta.
-async function fetchPendingRead(accessToken) {
-  return mlFetch(`/messages/pending_read?role=seller`, accessToken);
+function onlyDigits(s) {
+  return String(s || "").replace(/\D/g, "");
 }
 
-// Busca a conversa completa de um pedido (pack).
-async function fetchPackMessages(accessToken, packId, sellerId) {
-  return mlFetch(
-    `/messages/packs/${packId}/sellers/${sellerId}?tag=post_sale`,
-    accessToken
-  );
-}
-
-// Segue um link de recurso vindo de um webhook (ex: "/messages/packs/123/sellers/456").
-async function fetchResource(accessToken, resourcePath) {
-  return mlFetch(resourcePath, accessToken);
-}
-
-// Envia uma resposta numa conversa.
-async function sendMessage({
-  accessToken,
-  packId,
-  sellerId,
-  buyerId,
-  sellerEmail,
-  text,
-}) {
-  return mlFetch(`/messages/packs/${packId}/sellers/${sellerId}`, accessToken, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      from: { user_id: String(sellerId), ...(sellerEmail ? { email: sellerEmail } : {}) },
-      to: { user_id: String(buyerId) },
-      text,
-    }),
-  });
-}
-
-// Dados basicos do usuario autenticado (usado logo apos o OAuth para
-// confirmar qual conta/vendedor foi conectado).
-async function fetchMe(accessToken) {
-  return mlFetch(`/users/me`, accessToken);
-}
-
-module.exports = {
-  fetchPendingRead,
-  fetchPackMessages,
-  fetchResource,
-  sendMessage,
-  fetchMe,
-};
+module.exports = { calculateShipping };
