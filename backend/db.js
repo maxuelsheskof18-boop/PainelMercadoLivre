@@ -45,6 +45,7 @@ async function init() {
       last_message_text TEXT,
       last_message_date TEXT,
       status TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'answered'
+      is_combinar_entrega BOOLEAN,              -- null = ainda nao classificado
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
@@ -61,6 +62,15 @@ async function init() {
 
     CREATE INDEX IF NOT EXISTS idx_messages_pack ON messages(pack_id);
     CREATE INDEX IF NOT EXISTS idx_conversations_status ON conversations(status);
+  `);
+
+  // A tabela "conversations" ja existia (de uma versao anterior) na maioria
+  // dos bancos ja em uso, entao o CREATE TABLE IF NOT EXISTS acima nao
+  // adiciona a coluna nova sozinho — precisa de um ALTER explicito. E
+  // seguro rodar isso toda vez que o servidor sobe (nao faz nada se a
+  // coluna ja existir).
+  await pool.query(`
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_combinar_entrega BOOLEAN;
   `);
 }
 
