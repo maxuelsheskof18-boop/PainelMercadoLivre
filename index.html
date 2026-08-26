@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Painel de Mensagens - Mercado Livre</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-brand">
+      <span class="brand-mark">ML</span>
+      <h1>Painel de Mensagens</h1>
+    </div>
+    <div class="topbar-actions">
+      <button id="sync-btn" class="btn btn-ghost" title="Buscar novidades agora">
+        <span class="btn-icon">⟳</span><span class="btn-label">Atualizar</span>
+      </button>
+      <a href="/connect" class="btn btn-ghost">
+        <span class="btn-icon">+</span><span class="btn-label">Conectar conta</span>
+      </a>
+      <button id="freight-account-btn" class="btn btn-ghost" title="Conectar Melhor Envio pra calcular frete">
+        <span class="btn-icon">📦</span><span class="btn-label" id="freight-account-label">Melhor Envio</span>
+      </button>
+      <button id="bell" class="bell" title="Mensagens pendentes">
+        🔔<span id="bell-count" class="badge hidden">0</span>
+      </button>
+      <button id="logout-btn" class="btn btn-ghost btn-icon-only" title="Sair">
+        <span class="btn-icon">⏻</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="list-pane">
+      <div class="tabs">
+        <button class="tab active" data-status="pending">
+          Pendentes<span id="tab-count-pending" class="tab-count hidden">0</span>
+        </button>
+        <button class="tab" data-status="answered">Respondidas</button>
+        <button class="tab" data-status="no_contact" title="Vendas de combinar entrega sem nenhuma mensagem trocada ainda">
+          Sem contato<span id="tab-count-nocontact" class="tab-count hidden">0</span>
+        </button>
+      </div>
+      <div class="filter-bar">
+        <label class="filter-toggle">
+          <input type="checkbox" id="filter-combinar" />
+          <span>Só "combinar entrega"</span>
+        </label>
+      </div>
+      <div id="conversation-list" class="conversation-list">
+        <p class="muted empty-msg">Carregando...</p>
+      </div>
+    </section>
+
+    <section class="thread-pane">
+      <div id="thread-empty" class="muted centered empty-state">
+        <span class="empty-state-icon">💬</span>
+        <p>Selecione uma conversa na lista ao lado.</p>
+      </div>
+      <div id="thread" class="thread hidden">
+        <div class="thread-header">
+          <button id="thread-back" class="btn-back" title="Voltar para a lista">←</button>
+          <div id="thread-avatar" class="avatar avatar-lg"></div>
+          <div class="thread-header-info">
+            <strong id="thread-buyer">-</strong>
+            <span id="thread-account" class="muted small"></span>
+          </div>
+          <span id="thread-delivery-tag" class="tag tag-delivery hidden">Combinar entrega</span>
+        </div>
+        <div id="thread-order-card" class="order-card hidden">
+          <span class="order-card-icon">📦</span>
+          <div class="order-card-info">
+            <strong id="order-card-product">-</strong>
+            <span id="order-card-meta" class="muted small"></span>
+          </div>
+          <a id="order-card-link" href="#" target="_blank" rel="noopener" class="order-card-link">Ver no Mercado Livre ↗</a>
+        </div>
+        <div id="freight-box" class="freight-box hidden">
+          <button type="button" id="freight-toggle" class="freight-toggle">📦 Calcular frete (Melhor Envio) <span id="freight-toggle-arrow">▾</span></button>
+          <div id="freight-form" class="freight-form hidden">
+            <div class="freight-row">
+              <label>CEP destino<input id="freight-cep" placeholder="00000-000" /></label>
+              <label>Peso (kg)<input id="freight-weight" type="number" step="0.01" min="0" value="0.3" /></label>
+            </div>
+            <div class="freight-row">
+              <label>Altura (cm)<input id="freight-height" type="number" min="1" value="4" /></label>
+              <label>Largura (cm)<input id="freight-width" type="number" min="1" value="11" /></label>
+              <label>Comprimento (cm)<input id="freight-length" type="number" min="1" value="16" /></label>
+            </div>
+            <button type="button" id="freight-calc-btn" class="btn btn-primary btn-sm">Calcular frete</button>
+            <div id="freight-results" class="freight-results"></div>
+          </div>
+        </div>
+        <div id="thread-messages" class="thread-messages"></div>
+        <div id="quick-templates" class="quick-templates hidden">
+          <button type="button" id="template-combinar-btn" class="btn btn-ghost btn-sm">
+            📋 Msg: combinar entrega
+          </button>
+        </div>
+        <form id="reply-form" class="reply-form">
+          <textarea id="reply-text" placeholder="Escreva sua resposta..." required></textarea>
+          <button type="submit" class="btn btn-primary">Enviar</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
