@@ -111,6 +111,15 @@ async function reconcileAccount(sellerId) {
   const pending = await fetchPendingRead(accessToken);
 
   const items = Array.isArray(pending) ? pending : pending?.results || [];
+
+  // Log temporario de depuracao: mostra exatamente o que o Mercado Livre
+  // devolveu pra essa conta. Depois que confirmarmos que esta tudo certo,
+  // podemos remover (ou deixar so quando items.length === 0).
+  console.log(
+    `[reconcile] conta ${sellerId}: pending_read devolveu ${items.length} item(ns). Payload cru:`,
+    JSON.stringify(pending)
+  );
+
   for (const item of items) {
     // A resposta de /messages/pending_read traz o pack_id dentro do campo
     // "resource" (ex: "/packs/123/sellers/456"), nao em "pack_id"/"id"
@@ -132,6 +141,10 @@ async function reconcileAccount(sellerId) {
 
 async function reconcileAllAccounts() {
   const { rows: accounts } = await db.query("SELECT id FROM accounts");
+  console.log(
+    `[reconcile] contas conectadas no banco:`,
+    accounts.map((a) => a.id)
+  );
   for (const acc of accounts) {
     try {
       await reconcileAccount(acc.id);
