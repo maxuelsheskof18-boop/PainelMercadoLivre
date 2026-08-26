@@ -428,6 +428,12 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* Com muitas transportadoras cotadas, a caixa nao pode crescer sem limite
+     e "empurrar" o resto da tela pra fora — o painel corta o que passa do
+     tamanho da tela (thread-pane tem overflow:hidden), entao sem isso as
+     ultimas opcoes ficavam invisiveis e sem jeito de rolar ate elas. */
+  max-height: min(360px, 50vh);
+  overflow-y: auto;
 }
 .freight-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .freight-row label {

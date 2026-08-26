@@ -10,6 +10,7 @@ const state = {
 const listEl = document.getElementById("conversation-list");
 const bellCount = document.getElementById("bell-count");
 const tabCountPending = document.getElementById("tab-count-pending");
+const tabCountNoContact = document.getElementById("tab-count-nocontact");
 const threadEmpty = document.getElementById("thread-empty");
 const threadEl = document.getElementById("thread");
 const threadBuyer = document.getElementById("thread-buyer");
@@ -44,6 +45,15 @@ const freightResults = document.getElementById("freight-results");
 // dado pro pedido); cai pro apelido, e por ultimo pro numero do comprador.
 function buyerLabel(conv) {
   return conv.buyer_full_name || conv.buyer_nickname || "Comprador #" + (conv.buyer_id || "?");
+}
+
+// Formata um valor numerico como "R$ 149,90". Aceita null/undefined/string
+// (o Postgres devolve NUMERIC como string em JSON) e devolve "" se nao der
+// pra converter, pra nunca mostrar "R$ NaN" na tela.
+function fmtMoney(value) {
+  const n = Number(value);
+  if (value == null || Number.isNaN(n)) return "";
+  return `R$ ${n.toFixed(2).replace(".", ",")}`;
 }
 
 // ---------- Avatares (gerados, sem precisar de imagem) ----------
@@ -146,6 +156,13 @@ async function loadPendingCount() {
     tabCountPending.classList.add("hidden");
   }
 
+  if (data.noContact > 0) {
+    tabCountNoContact.textContent = data.noContact;
+    tabCountNoContact.classList.remove("hidden");
+  } else {
+    tabCountNoContact.classList.add("hidden");
+  }
+
   // Toca o som so quando o numero de pendencias SOBE em relacao a ultima
   // vez que checamos (ou seja, chegou mensagem nova) — nunca no primeiro
   // carregamento da pagina (lastPendingCount ainda null) nem quando o
@@ -154,6 +171,13 @@ async function loadPendingCount() {
     playNotificationSound();
   }
   state.lastPendingCount = data.pending;
+}
+
+// Rotulo do status em portugues, usado na mensagem de "lista vazia".
+function statusLabel(status) {
+  if (status === "no_contact") return "sem contato ainda";
+  if (status === "answered") return "respondida";
+  return "pendente";
 }
 
 async function loadConversations() {
@@ -170,9 +194,10 @@ async function loadConversations() {
   const items = await res.json();
 
   if (items.length === 0) {
+    const label = statusLabel(state.status);
     const msg = state.onlyCombinar
-      ? `Nenhuma conversa de "combinar entrega" ${state.status === "pending" ? "pendente" : "respondida"}.`
-      : `Nenhuma conversa ${state.status === "pending" ? "pendente" : "respondida"}.`;
+      ? `Nenhuma conversa de "combinar entrega" ${label}.`
+      : `Nenhuma conversa ${label}.`;
     listEl.innerHTML = `<p class="muted empty-msg">${msg}</p>`;
     return;
   }
@@ -180,12 +205,17 @@ async function loadConversations() {
   listEl.innerHTML = "";
   for (const conv of items) {
     const div = document.createElement("div");
-    const isUnread = conv.status === "pending";
+    const isUnread = conv.status === "pending" || conv.status === "no_contact";
     div.className =
       "conversation-item" +
       (conv.pack_id === state.selectedPackId ? " selected" : "") +
       (isUnread ? " unread" : "");
     const label = buyerLabel(conv);
+    const preview = conv.last_message_text
+      ? conv.last_message_text.slice(0, 90)
+      : conv.status === "no_contact"
+      ? "Nenhuma mensagem trocada ainda — inicie o contato"
+      : "";
     div.innerHTML = `
       ${avatarHtml(label)}
       <div class="ci-body">
@@ -194,9 +224,9 @@ async function loadConversations() {
           <span class="ci-store">${conv.seller_nickname || ""}</span>
         </div>
         ${conv.product_title ? `<div class="ci-product">${conv.product_title}</div>` : ""}
-        <div class="ci-preview">${(conv.last_message_text || "").slice(0, 90)}</div>
+        <div class="ci-preview">${preview}</div>
         <div class="ci-bottom">
-          <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · #${conv.order_id}` : ""}</span>
+          <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · #${conv.order_id}` : ""}${fmtMoney(conv.order_total) ? ` · ${fmtMoney(conv.order_total)}` : ""}</span>
           ${conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
         </div>
       </div>
@@ -232,7 +262,11 @@ function renderThreadInfo(conv) {
   if (conv.product_title || conv.order_id) {
     orderCard.classList.remove("hidden");
     orderCardProduct.textContent = conv.product_title || "Produto nao identificado";
-    orderCardMeta.textContent = conv.order_id ? `Pedido #${conv.order_id}` : "";
+    const orderMetaBits = [];
+    if (conv.order_id) orderMetaBits.push(`Pedido #${conv.order_id}`);
+    const orderTotalLabel = fmtMoney(conv.order_total);
+    if (orderTotalLabel) orderMetaBits.push(orderTotalLabel);
+    orderCardMeta.textContent = orderMetaBits.join(" · ");
     if (conv.order_id) {
       orderCardLink.href = `https://www.mercadolivre.com.br/vendas/${conv.order_id}/detalhe`;
       orderCardLink.classList.remove("hidden");
@@ -358,6 +392,11 @@ freightCalcBtn.addEventListener("click", async () => {
 
 function renderMessages(messages) {
   threadMessages.innerHTML = "";
+  if (messages.length === 0) {
+    threadMessages.innerHTML =
+      '<p class="muted centered">Nenhuma mensagem trocada ainda. Escreva abaixo pra iniciar o contato.</p>';
+    return;
+  }
   for (const m of messages) {
     const div = document.createElement("div");
     div.className = "msg " + (m.direction === "out" ? "msg-out" : "msg-in");
