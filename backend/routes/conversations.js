@@ -2,7 +2,7 @@ const express = require("express");
 const db = require("../db");
 const { requireLogin } = require("../authMiddleware");
 const { getValidAccessToken } = require("../ml/tokens");
-const { sendMessage, fetchMe } = require("../ml/api");
+const { sendMessage, fetchMe, fetchRecentOrders, fetchPackMessages } = require("../ml/api");
 const { reconcileAllAccounts } = require("../sync");
 
 const router = express.Router();
@@ -114,6 +114,69 @@ router.post("/sync", async (req, res) => {
     console.error("[sync]", err.message);
     res.status(500).json({ error: "Falha ao sincronizar", detail: err.message });
   }
+});
+
+// Rota TEMPORARIA de diagnostico: busca pedidos recentes de cada conta (via
+// API de Orders, que e estavel) e tenta buscar as mensagens de cada um
+// (via /messages/packs/.../sellers/...), pra descobrir se o problema e so
+// no endpoint de "listar pendentes" ou se e a API de mensagens inteira que
+// esta bloqueada pra essa aplicacao. Depois de resolvido, pode remover essa
+// rota (e o require de fetchRecentOrders/fetchPackMessages acima).
+router.get("/debug/probe-messages", async (req, res) => {
+  const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts");
+  const report = [];
+
+  for (const acc of accounts) {
+    const sellerId = acc.id;
+    const entry = { sellerId, nickname: acc.nickname };
+    try {
+      const accessToken = await getValidAccessToken(sellerId);
+
+      let orders;
+      try {
+        orders = await fetchRecentOrders(accessToken, sellerId);
+      } catch (err) {
+        entry.ordersError = { status: err.status, body: err.body || err.message };
+        report.push(entry);
+        continue;
+      }
+
+      const sample = (orders.results || []).slice(0, 3).map((o) => ({
+        order_id: o.id,
+        pack_id: o.pack_id || null,
+        status: o.status,
+      }));
+      entry.totalOrders = orders.paging?.total ?? null;
+      entry.sampleOrders = sample;
+      entry.probes = [];
+
+      for (const o of sample) {
+        const idToTry = o.pack_id || o.order_id;
+        try {
+          const packData = await fetchPackMessages(accessToken, idToTry, sellerId);
+          entry.probes.push({
+            tried: idToTry,
+            usedPackId: !!o.pack_id,
+            ok: true,
+            messageCount: Array.isArray(packData?.messages) ? packData.messages.length : null,
+          });
+        } catch (err) {
+          entry.probes.push({
+            tried: idToTry,
+            usedPackId: !!o.pack_id,
+            ok: false,
+            status: err.status,
+            body: err.body || err.message,
+          });
+        }
+      }
+    } catch (err) {
+      entry.error = err.message;
+    }
+    report.push(entry);
+  }
+
+  res.json(report);
 });
 
 module.exports = router;
