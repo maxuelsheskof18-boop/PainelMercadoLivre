@@ -10,7 +10,7 @@ const {
   fetchOrderById,
   fetchShipment,
 } = require("../ml/api");
-const { reconcileAllAccounts } = require("../sync");
+const { reconcileAllAccounts, extractOrderInfo } = require("../sync");
 
 const router = express.Router();
 
@@ -55,11 +55,53 @@ router.get("/conversations", async (req, res) => {
 });
 
 router.get("/conversations/:packId/messages", async (req, res) => {
-  const { rows } = await db.query(
+  const packId = req.params.packId;
+
+  const { rows: messages } = await db.query(
     "SELECT * FROM messages WHERE pack_id = $1 ORDER BY id ASC",
-    [req.params.packId]
+    [packId]
   );
-  res.json(rows);
+
+  const { rows: convRows } = await db.query(
+    `SELECT c.*, a.nickname AS seller_nickname
+       FROM conversations c
+       JOIN accounts a ON a.id = c.seller_id
+      WHERE c.pack_id = $1`,
+    [packId]
+  );
+  let conversation = convRows[0] || null;
+
+  // Conversas mais antigas (que ja sairam da janela dos pedidos recentes
+  // verificados pela reconciliacao periodica) podem nao ter produto/tipo
+  // de entrega ainda. Como o usuario esta olhando essa conversa agora, vale
+  // a pena buscar na hora, em vez de esperar ela entrar de novo na janela.
+  if (conversation && conversation.product_title == null && conversation.order_id) {
+    try {
+      const accessToken = await getValidAccessToken(conversation.seller_id);
+      const order = await fetchOrderById(accessToken, conversation.order_id);
+      const orderInfo = extractOrderInfo(order);
+
+      const { rows: updated } = await db.query(
+        `UPDATE conversations
+            SET buyer_full_name = COALESCE($1, buyer_full_name),
+                product_title = COALESCE($2, product_title),
+                is_combinar_entrega = COALESCE($3, is_combinar_entrega),
+                updated_at = now()
+          WHERE pack_id = $4
+          RETURNING *`,
+        [orderInfo?.buyerFullName ?? null, orderInfo?.productTitle ?? null, orderInfo?.isCombinarEntrega ?? null, packId]
+      );
+      if (updated[0]) conversation = { ...conversation, ...updated[0] };
+    } catch (err) {
+      console.warn(
+        `[conversations] nao consegui enriquecer o pedido ${conversation.order_id} sob demanda:`,
+        err.status,
+        err.body || err.message
+      );
+    }
+  }
+
+  res.json({ conversation, messages });
 });
 
 router.post("/conversations/:packId/reply", express.json(), async (req, res) => {
@@ -113,9 +155,16 @@ router.post("/conversations/:packId/reply", express.json(), async (req, res) => 
     res.json({ ok: true });
   } catch (err) {
     console.error("[reply]", err.status, err.body || err.message);
+    // err.body normalmente vem da API do Mercado Livre como um objeto tipo
+    // {message: "...", error: "...", cause: [...]}. Extraimos uma frase
+    // legivel pra mostrar na tela, em vez de so "[object Object]".
+    const mlMessage =
+      err.body?.message ||
+      err.body?.cause?.[0]?.message ||
+      (typeof err.body === "string" ? err.body : null);
     res.status(502).json({
       error: "Falha ao enviar a mensagem para o Mercado Livre.",
-      detail: err.body || err.message,
+      detail: mlMessage || err.message || "Sem detalhes do Mercado Livre.",
     });
   }
 });
