@@ -22,21 +22,23 @@ router.use(requireLogin);
 
 router.get("/pending-count", async (req, res) => {
   const { rows } = await db.query(
-    "SELECT COUNT(*)::int AS total FROM conversations WHERE status = 'pending'"
+    `SELECT
+       COUNT(*) FILTER (WHERE status = 'pending')::int AS pending,
+       COUNT(*) FILTER (WHERE status = 'no_contact')::int AS no_contact
+     FROM conversations`
   );
-  res.json({ pending: rows[0].total });
+  res.json({ pending: rows[0].pending, noContact: rows[0].no_contact });
 });
 
 router.get("/conversations", async (req, res) => {
-  const status = ["pending", "answered"].includes(req.query.status)
+  const status = ["pending", "answered", "no_contact"].includes(req.query.status)
     ? req.query.status
     : "pending";
 
   // Filtro opcional: so as conversas classificadas como "combinar entrega"
-  // (coluna is_combinar_entrega). Enquanto essa classificacao nao estiver
-  // implementada em sync.js, a coluna fica sempre nula e esse filtro
-  // simplesmente nao retorna nada — nao quebra, so ainda nao filtra de
-  // verdade.
+  // (coluna is_combinar_entrega). Na aba "no_contact" isso e sempre
+  // verdadeiro (so entra la quem e combinar entrega), mas nao atrapalha
+  // deixar o filtro ligado tambem.
   const onlyCombinar = req.query.combinar === "1";
   const where = onlyCombinar
     ? "c.status = $1 AND c.is_combinar_entrega = true"
@@ -47,7 +49,7 @@ router.get("/conversations", async (req, res) => {
        FROM conversations c
        JOIN accounts a ON a.id = c.seller_id
        WHERE ${where}
-       ORDER BY c.last_message_date DESC`,
+       ORDER BY c.last_message_date DESC NULLS LAST, c.updated_at DESC`,
     [status]
   );
 
@@ -75,7 +77,11 @@ router.get("/conversations/:packId/messages", async (req, res) => {
   // verificados pela reconciliacao periodica) podem nao ter produto/tipo
   // de entrega ainda. Como o usuario esta olhando essa conversa agora, vale
   // a pena buscar na hora, em vez de esperar ela entrar de novo na janela.
-  if (conversation && conversation.product_title == null && conversation.order_id) {
+  if (
+    conversation &&
+    conversation.order_id &&
+    (conversation.product_title == null || conversation.order_total == null)
+  ) {
     try {
       const accessToken = await getValidAccessToken(conversation.seller_id);
       const order = await fetchOrderById(accessToken, conversation.order_id);
@@ -86,10 +92,17 @@ router.get("/conversations/:packId/messages", async (req, res) => {
             SET buyer_full_name = COALESCE($1, buyer_full_name),
                 product_title = COALESCE($2, product_title),
                 is_combinar_entrega = COALESCE($3, is_combinar_entrega),
+                order_total = COALESCE($4, order_total),
                 updated_at = now()
-          WHERE pack_id = $4
+          WHERE pack_id = $5
           RETURNING *`,
-        [orderInfo?.buyerFullName ?? null, orderInfo?.productTitle ?? null, orderInfo?.isCombinarEntrega ?? null, packId]
+        [
+          orderInfo?.buyerFullName ?? null,
+          orderInfo?.productTitle ?? null,
+          orderInfo?.isCombinarEntrega ?? null,
+          orderInfo?.orderTotal ?? null,
+          packId,
+        ]
       );
       if (updated[0]) conversation = { ...conversation, ...updated[0] };
     } catch (err) {
