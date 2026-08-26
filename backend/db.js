@@ -42,6 +42,8 @@ async function init() {
       order_id TEXT,
       buyer_id TEXT,
       buyer_nickname TEXT,
+      buyer_full_name TEXT,                     -- nome real (order.buyer), quando disponivel
+      product_title TEXT,                       -- nome do(s) produto(s) do pedido
       last_message_text TEXT,
       last_message_date TEXT,
       status TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'answered'
@@ -71,6 +73,8 @@ async function init() {
   // coluna ja existir).
   await pool.query(`
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_combinar_entrega BOOLEAN;
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS buyer_full_name TEXT;
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS product_title TEXT;
   `);
 }
 

@@ -2,7 +2,7 @@
 // as tabelas locais (conversations + messages), decidindo se ela fica
 // "pending" (aguardando resposta do vendedor) ou "answered".
 const db = require("./db");
-const { fetchPackMessages, fetchRecentOrders } = require("./ml/api");
+const { fetchPackMessages, fetchRecentOrders, fetchOrderById } = require("./ml/api");
 const { getValidAccessToken } = require("./ml/tokens");
 
 // Quantos pedidos recentes verificar por conta a cada reconciliacao. O
@@ -25,7 +25,33 @@ function messageDate(msg) {
   );
 }
 
-async function upsertConversationFromPack(sellerId, packId, packData, orderId) {
+// A tag "no_shipping" num pedido significa que nao ha envio pelo Mercado
+// Envios associado — ou seja, a entrega e combinada diretamente entre
+// vendedor e comprador. Confirmamos isso comparando pedidos reais: os que
+// tinham essa tag eram exatamente os de "combinar entrega", e o unico
+// pedido com envio de verdade (logistic_type real) nao tinha essa tag.
+function extractOrderInfo(order) {
+  if (!order) return null;
+  const tags = Array.isArray(order.tags) ? order.tags : [];
+  const isCombinarEntrega = tags.includes("no_shipping");
+
+  const productTitle =
+    (order.order_items || [])
+      .map((oi) => oi?.item?.title)
+      .filter(Boolean)
+      .join(", ") || null;
+
+  const buyerFullName = order.buyer
+    ? [order.buyer.first_name, order.buyer.last_name]
+        .map((s) => (s || "").trim())
+        .filter(Boolean)
+        .join(" ") || null
+    : null;
+
+  return { isCombinarEntrega, productTitle, buyerFullName };
+}
+
+async function upsertConversationFromPack(sellerId, packId, packData, orderId, orderInfo) {
   const messages = Array.isArray(packData?.messages) ? [...packData.messages] : [];
 
   // Ordena por data (mais antiga -> mais recente). Se a data vier vazia,
@@ -55,15 +81,25 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId) {
   }
 
   const buyerNickname = packData?.buyer?.nickname || null;
+  const productTitle = orderInfo?.productTitle ?? null;
+  const buyerFullName = orderInfo?.buyerFullName ?? null;
+  // is_combinar_entrega fica null (nao "false") quando ainda nao
+  // conseguimos os detalhes do pedido — assim nao classificamos errado por
+  // falta de dado, so quando o proprio orderInfo.isCombinarEntrega==false.
+  const isCombinarEntrega =
+    orderInfo && typeof orderInfo.isCombinarEntrega === "boolean" ? orderInfo.isCombinarEntrega : null;
 
   await db.query(
     `INSERT INTO conversations
-       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, last_message_text, last_message_date, status, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, is_combinar_entrega, last_message_text, last_message_date, status, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
      ON CONFLICT (pack_id) DO UPDATE SET
        order_id = EXCLUDED.order_id,
        buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
        buyer_nickname = COALESCE(EXCLUDED.buyer_nickname, conversations.buyer_nickname),
+       buyer_full_name = COALESCE(EXCLUDED.buyer_full_name, conversations.buyer_full_name),
+       product_title = COALESCE(EXCLUDED.product_title, conversations.product_title),
+       is_combinar_entrega = COALESCE(EXCLUDED.is_combinar_entrega, conversations.is_combinar_entrega),
        last_message_text = EXCLUDED.last_message_text,
        last_message_date = EXCLUDED.last_message_date,
        status = EXCLUDED.status,
@@ -74,6 +110,9 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId) {
       orderId || null,
       buyerId,
       buyerNickname,
+      buyerFullName,
+      productTitle,
+      isCombinarEntrega,
       last?.text || null,
       messageDate(last),
       status,
@@ -109,7 +148,27 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId) {
 async function syncPack(sellerId, packId, orderId) {
   const accessToken = await getValidAccessToken(sellerId);
   const packData = await fetchPackMessages(accessToken, packId, sellerId);
-  await upsertConversationFromPack(sellerId, packId, packData, orderId);
+
+  // O webhook normalmente so manda o pack_id, sem order_id. Quando o
+  // pedido nao faz parte de um envio combinado (o caso mais comum, e
+  // exatamente o dos pedidos de "combinar entrega"), pack_id == order_id —
+  // entao usamos o pack_id como palpite de order_id pra buscar os detalhes
+  // (produto, comprador, tipo de entrega). Se falhar, so seguimos sem
+  // esses detalhes extras; a mensagem em si e salva do mesmo jeito.
+  const effectiveOrderId = orderId || packId;
+  let orderInfo = null;
+  try {
+    const order = await fetchOrderById(accessToken, effectiveOrderId);
+    orderInfo = extractOrderInfo(order);
+  } catch (err) {
+    console.warn(
+      `[syncPack] nao consegui buscar detalhes do pedido ${effectiveOrderId}:`,
+      err.status,
+      err.body || err.message
+    );
+  }
+
+  await upsertConversationFromPack(sellerId, packId, packData, effectiveOrderId, orderInfo);
 }
 
 // Varredura de reconciliacao: olha os pedidos recentes do vendedor e checa
@@ -141,7 +200,23 @@ async function reconcileAccount(sellerId) {
       const packData = await fetchPackMessages(accessToken, packId, sellerId);
       if (Array.isArray(packData?.messages) && packData.messages.length > 0) {
         comMensagens++;
-        await upsertConversationFromPack(sellerId, packId, packData, order?.id);
+
+        // So busca o detalhe completo do pedido (produto/comprador/tipo de
+        // entrega) pros que realmente tem mensagem — evita gastar chamadas
+        // de API a toa nos outros ~50 pedidos que nao tem nada pendente.
+        let orderInfo = null;
+        try {
+          const fullOrder = await fetchOrderById(accessToken, order?.id);
+          orderInfo = extractOrderInfo(fullOrder);
+        } catch (err) {
+          console.warn(
+            `[reconcile] nao consegui buscar detalhes do pedido ${order?.id}:`,
+            err.status,
+            err.body || err.message
+          );
+        }
+
+        await upsertConversationFromPack(sellerId, packId, packData, order?.id, orderInfo);
       }
     } catch (err) {
       console.warn(
