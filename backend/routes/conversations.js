@@ -2,7 +2,14 @@ const express = require("express");
 const db = require("../db");
 const { requireLogin } = require("../authMiddleware");
 const { getValidAccessToken } = require("../ml/tokens");
-const { sendMessage, fetchMe, fetchRecentOrders, fetchPackMessages } = require("../ml/api");
+const {
+  sendMessage,
+  fetchMe,
+  fetchRecentOrders,
+  fetchPackMessages,
+  fetchOrderById,
+  fetchShipment,
+} = require("../ml/api");
 const { reconcileAllAccounts } = require("../sync");
 
 const router = express.Router();
@@ -25,11 +32,21 @@ router.get("/conversations", async (req, res) => {
     ? req.query.status
     : "pending";
 
+  // Filtro opcional: so as conversas classificadas como "combinar entrega"
+  // (coluna is_combinar_entrega). Enquanto essa classificacao nao estiver
+  // implementada em sync.js, a coluna fica sempre nula e esse filtro
+  // simplesmente nao retorna nada — nao quebra, so ainda nao filtra de
+  // verdade.
+  const onlyCombinar = req.query.combinar === "1";
+  const where = onlyCombinar
+    ? "c.status = $1 AND c.is_combinar_entrega = true"
+    : "c.status = $1";
+
   const { rows } = await db.query(
     `SELECT c.*, a.nickname AS seller_nickname
        FROM conversations c
        JOIN accounts a ON a.id = c.seller_id
-       WHERE c.status = $1
+       WHERE ${where}
        ORDER BY c.last_message_date DESC`,
     [status]
   );
@@ -168,6 +185,50 @@ router.get("/debug/probe-messages", async (req, res) => {
             status: err.status,
             body: err.body || err.message,
           });
+        }
+      }
+    } catch (err) {
+      entry.error = err.message;
+    }
+    report.push(entry);
+  }
+
+  res.json(report);
+});
+
+// Rota TEMPORARIA de diagnostico: pega ate 5 conversas pendentes reais que
+// ja estao no banco e busca o envio (shipment) de cada uma, pra descobrir
+// qual campo/valor identifica um envio do tipo "a combinar com o
+// comprador" (nao ha essa informacao confiavel na documentacao publica).
+router.get("/debug/probe-shipping", async (req, res) => {
+  const { rows: convs } = await db.query(
+    `SELECT pack_id, seller_id, order_id, buyer_nickname, status
+       FROM conversations
+      WHERE order_id IS NOT NULL
+      ORDER BY status ASC, last_message_date DESC
+      LIMIT 5`
+  );
+
+  const report = [];
+  for (const conv of convs) {
+    const entry = { pack_id: conv.pack_id, order_id: conv.order_id, status: conv.status };
+    try {
+      const accessToken = await getValidAccessToken(conv.seller_id);
+      const order = await fetchOrderById(accessToken, conv.order_id);
+      entry.orderTags = order?.tags || null;
+      entry.shippingId = order?.shipping?.id || null;
+
+      if (entry.shippingId) {
+        try {
+          const shipment = await fetchShipment(accessToken, entry.shippingId);
+          entry.shipment = {
+            logistic_type: shipment?.logistic_type,
+            mode: shipment?.mode,
+            status: shipment?.status,
+            substatus: shipment?.substatus,
+          };
+        } catch (err) {
+          entry.shipmentError = { status: err.status, body: err.body || err.message };
         }
       }
     } catch (err) {
