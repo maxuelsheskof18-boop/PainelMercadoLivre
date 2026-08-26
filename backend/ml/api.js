@@ -38,8 +38,25 @@ async function mlFetch(path, accessToken, options = {}) {
 }
 
 // Lista os packs/pedidos com mensagens nao lidas para essa conta.
+//
+// A documentacao "antiga" do Mercado Livre descreve o endpoint
+// /messages/pending_read, mas ele pode devolver 404 (parece ter sido
+// descontinuado/substituido em algumas contas). A documentacao mais
+// recente usa /messages/packs?tag=post_sale&role=seller. Por seguranca,
+// tentamos o primeiro e, se der 404, caimos automaticamente pro segundo —
+// assim nao dependemos de adivinhar qual esta ativo pra essa conta.
 async function fetchPendingRead(accessToken) {
-  return mlFetch(`/messages/pending_read?role=seller`, accessToken);
+  try {
+    return await mlFetch(`/messages/pending_read?role=seller`, accessToken);
+  } catch (err) {
+    if (err.status === 404) {
+      console.warn(
+        "[fetchPendingRead] /messages/pending_read deu 404, tentando /messages/packs?tag=post_sale&role=seller"
+      );
+      return mlFetch(`/messages/packs?tag=post_sale&role=seller`, accessToken);
+    }
+    throw err;
+  }
 }
 
 // Busca a conversa completa de um pedido (pack).
@@ -55,15 +72,17 @@ async function fetchResource(accessToken, resourcePath) {
   return mlFetch(resourcePath, accessToken);
 }
 
-// Extrai pack_id e seller_id de um "resource" devolvido pela API do
-// Mercado Livre. O formato muda dependendo de onde ele vem:
-//   - webhook de notificacao: "/messages/packs/{pack_id}/sellers/{seller_id}"
-//   - GET /messages/pending_read: "/packs/{pack_id}/sellers/{seller_id}"
-// (sem o prefixo "/messages"). Por isso o regex nao exige esse prefixo.
+// Extrai pack_id (e seller_id, quando presente) de um "resource" devolvido
+// pela API do Mercado Livre. O formato muda dependendo de onde ele vem:
+//   - webhook de notificacao:        "/messages/packs/{pack_id}/sellers/{seller_id}"
+//   - GET /messages/pending_read:    "/packs/{pack_id}/sellers/{seller_id}"
+//   - GET /messages/packs (novo):    "/packs/{pack_id}" (sem "/sellers/...")
+// O regex captura so o pack_id como obrigatorio; o seller_id, quando vem
+// no resource, e capturado a parte (pode nao existir).
 function parsePackResource(resource) {
-  const match = /packs\/([^/]+)\/sellers\/([^/?]+)/i.exec(resource || "");
+  const match = /packs\/([^/?]+)(?:\/sellers\/([^/?]+))?/i.exec(resource || "");
   if (!match) return null;
-  return { packId: match[1], sellerId: match[2] };
+  return { packId: match[1], sellerId: match[2] || null };
 }
 
 // Envia uma resposta numa conversa.
