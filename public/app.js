@@ -229,6 +229,40 @@ function renderThreadInfo(conv) {
   }
 }
 
+function renderMessages(messages) {
+  threadMessages.innerHTML = "";
+  for (const m of messages) {
+    const div = document.createElement("div");
+    div.className = "msg " + (m.direction === "out" ? "msg-out" : "msg-in");
+    div.innerHTML = `<div class="msg-text"></div><div class="msg-date">${fmtDate(m.sent_date)}</div>`;
+    div.querySelector(".msg-text").textContent = m.text || "";
+    threadMessages.appendChild(div);
+  }
+  threadMessages.scrollTop = threadMessages.scrollHeight;
+}
+
+// Busca as mensagens (e o resto dos dados) de uma conversa e atualiza a
+// tela do chat que ja esta aberta — usada tanto ao abrir uma conversa
+// quanto para atualizar a mesma conversa depois de enviar uma resposta
+// (sem fechar/trocar de tela, como um chat de verdade).
+async function loadThreadMessages(packId) {
+  const res = await fetch(`/api/conversations/${encodeURIComponent(packId)}/messages`);
+  if (handleSessionExpired(res)) return false;
+  if (!res.ok) {
+    threadMessages.innerHTML = '<p class="muted">Erro ao carregar as mensagens.</p>';
+    return false;
+  }
+  const data = await res.json();
+
+  // O servidor pode ter descoberto produto/comprador/tipo de entrega na
+  // hora (conversa antiga que ainda nao tinha esses dados) — atualiza o
+  // cabecalho com essa versao mais completa.
+  if (data.conversation) renderThreadInfo(data.conversation);
+
+  renderMessages(data.messages || []);
+  return true;
+}
+
 async function openThread(conv) {
   state.selectedPackId = conv.pack_id;
   document.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
@@ -240,30 +274,7 @@ async function openThread(conv) {
   replyForm.dataset.packId = conv.pack_id;
   openMobileThread();
 
-  const res = await fetch(`/api/conversations/${encodeURIComponent(conv.pack_id)}/messages`);
-  if (handleSessionExpired(res)) return;
-  if (!res.ok) {
-    threadMessages.innerHTML = '<p class="muted">Erro ao carregar as mensagens.</p>';
-    return;
-  }
-  const data = await res.json();
-  const messages = data.messages || [];
-
-  // O servidor pode ter descoberto produto/comprador/tipo de entrega na
-  // hora (conversa antiga que ainda nao tinha esses dados) — atualiza o
-  // cabecalho com essa versao mais completa.
-  if (data.conversation) renderThreadInfo(data.conversation);
-
-  threadMessages.innerHTML = "";
-  for (const m of messages) {
-    const div = document.createElement("div");
-    div.className = "msg " + (m.direction === "out" ? "msg-out" : "msg-in");
-    div.innerHTML = `<div class="msg-text"></div><div class="msg-date">${fmtDate(m.sent_date)}</div>`;
-    div.querySelector(".msg-text").textContent = m.text || "";
-    threadMessages.appendChild(div);
-  }
-  threadMessages.scrollTop = threadMessages.scrollHeight;
-
+  await loadThreadMessages(conv.pack_id);
   await loadConversations();
 }
 
@@ -293,10 +304,11 @@ replyForm.addEventListener("submit", async (e) => {
       return;
     }
     replyText.value = "";
-    threadEl.classList.add("hidden");
-    threadEmpty.classList.remove("hidden");
-    state.selectedPackId = null;
-    closeMobileThread();
+    // Continua na mesma conversa (igual um chat de verdade), so atualizando
+    // as mensagens e a lista ao lado — nao fecha nem volta pra tela inicial.
+    if (packId === state.selectedPackId) {
+      await loadThreadMessages(packId);
+    }
     await Promise.all([loadConversations(), loadPendingCount()]);
   } finally {
     btn.disabled = false;
