@@ -4,6 +4,7 @@ const state = {
   pollTimer: null,
   onlyCombinar: false,
   lastPendingCount: null, // usado pra saber se aumentou (tocar som) sem tocar no primeiro carregamento
+  melhorEnvio: { connected: false, originPostalCode: null },
 };
 
 const listEl = document.getElementById("conversation-list");
@@ -24,6 +25,20 @@ const replyForm = document.getElementById("reply-form");
 const replyText = document.getElementById("reply-text");
 const filterCombinar = document.getElementById("filter-combinar");
 const threadBackBtn = document.getElementById("thread-back");
+
+const freightAccountBtn = document.getElementById("freight-account-btn");
+const freightAccountLabel = document.getElementById("freight-account-label");
+const freightBox = document.getElementById("freight-box");
+const freightToggle = document.getElementById("freight-toggle");
+const freightToggleArrow = document.getElementById("freight-toggle-arrow");
+const freightForm = document.getElementById("freight-form");
+const freightCep = document.getElementById("freight-cep");
+const freightWeight = document.getElementById("freight-weight");
+const freightHeight = document.getElementById("freight-height");
+const freightWidth = document.getElementById("freight-width");
+const freightLength = document.getElementById("freight-length");
+const freightCalcBtn = document.getElementById("freight-calc-btn");
+const freightResults = document.getElementById("freight-results");
 
 // Prefere o nome real do comprador (quando o Mercado Livre libera esse
 // dado pro pedido); cai pro apelido, e por ultimo pro numero do comprador.
@@ -227,7 +242,119 @@ function renderThreadInfo(conv) {
   } else {
     orderCard.classList.add("hidden");
   }
+
+  // A caixa de calcular frete so aparece se o Melhor Envio ja foi
+  // conectado. Toda vez que abre uma conversa (ou troca de conversa), a
+  // caixa comeca fechada e limpa — o CEP de destino e sempre digitado na
+  // hora, ja que nao vem estruturado do Mercado Livre pra pedidos de
+  // "combinar entrega".
+  freightBox.classList.toggle("hidden", !state.melhorEnvio.connected);
+  freightForm.classList.add("hidden");
+  freightToggleArrow.textContent = "▾";
+  freightResults.innerHTML = "";
+  freightCep.value = "";
 }
+
+async function loadMelhorEnvioStatus() {
+  try {
+    const res = await fetch("/api/melhorenvio/status");
+    if (handleSessionExpired(res)) return;
+    if (!res.ok) return;
+    state.melhorEnvio = await res.json();
+  } catch (e) {
+    console.warn("Nao foi possivel checar o status do Melhor Envio:", e);
+    return;
+  }
+
+  if (state.melhorEnvio.connected) {
+    freightAccountLabel.textContent = "Melhor Envio ✓";
+    freightAccountBtn.classList.add("btn-connected");
+    freightAccountBtn.title = "Melhor Envio conectado — clique pra ver/editar o CEP de origem";
+  } else {
+    freightAccountLabel.textContent = "Melhor Envio";
+    freightAccountBtn.classList.remove("btn-connected");
+    freightAccountBtn.title = "Conectar Melhor Envio pra calcular frete";
+  }
+
+  // Se a conversa atual ja estiver aberta, atualiza a visibilidade da caixa
+  // de frete sem precisar reabrir a conversa.
+  if (!threadEl.classList.contains("hidden")) {
+    freightBox.classList.toggle("hidden", !state.melhorEnvio.connected);
+  }
+}
+
+freightAccountBtn.addEventListener("click", async () => {
+  if (!state.melhorEnvio.connected) {
+    window.location.href = "/melhorenvio/connect";
+    return;
+  }
+  const current = state.melhorEnvio.originPostalCode || "";
+  const novo = prompt(
+    "CEP de origem (de onde os pacotes saem) pra calcular o frete no Melhor Envio:",
+    current
+  );
+  if (novo === null) return; // cancelou
+  await fetch("/api/melhorenvio/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ originPostalCode: novo.trim() }),
+  });
+  await loadMelhorEnvioStatus();
+});
+
+freightToggle.addEventListener("click", () => {
+  const willShow = freightForm.classList.contains("hidden");
+  freightForm.classList.toggle("hidden", !willShow);
+  freightToggleArrow.textContent = willShow ? "▴" : "▾";
+});
+
+freightCalcBtn.addEventListener("click", async () => {
+  const toPostalCode = freightCep.value.trim();
+  if (!toPostalCode) {
+    freightResults.innerHTML = '<p class="freight-msg freight-error">Informe o CEP de destino.</p>';
+    return;
+  }
+
+  freightCalcBtn.disabled = true;
+  freightResults.innerHTML = '<p class="freight-msg muted">Calculando...</p>';
+  try {
+    const res = await fetch("/api/melhorenvio/calculate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        toPostalCode,
+        weight: freightWeight.value,
+        height: freightHeight.value,
+        width: freightWidth.value,
+        length: freightLength.value,
+      }),
+    });
+    if (handleSessionExpired(res)) return;
+    const data = await res.json();
+    if (!res.ok) {
+      freightResults.innerHTML = `<p class="freight-msg freight-error">${data.error || "Falha ao calcular o frete."}</p>`;
+      return;
+    }
+    if (!data.options || data.options.length === 0) {
+      freightResults.innerHTML = '<p class="freight-msg muted">Nenhuma opcao de frete encontrada pra esse CEP/pacote.</p>';
+      return;
+    }
+    freightResults.innerHTML = data.options
+      .map(
+        (o) => `
+      <div class="freight-option">
+        <span class="freight-option-name">${o.company ? o.company + " — " : ""}${o.name}</span>
+        <span class="freight-option-time muted">${o.deliveryTime ? o.deliveryTime + " dia(s) util" : ""}</span>
+        <span class="freight-option-price">R$ ${o.price.toFixed(2).replace(".", ",")}</span>
+      </div>`
+      )
+      .join("");
+  } catch (e) {
+    freightResults.innerHTML = '<p class="freight-msg freight-error">Falha ao calcular o frete.</p>';
+  } finally {
+    freightCalcBtn.disabled = false;
+  }
+});
 
 function renderMessages(messages) {
   threadMessages.innerHTML = "";
@@ -374,6 +501,20 @@ document.getElementById("bell").addEventListener("click", () => {
 // tempos enquanto a aba estiver aberta).
 loadConversations();
 loadPendingCount();
+loadMelhorEnvioStatus().then(() => {
+  // Acabou de voltar do OAuth do Melhor Envio (?me_connected=1) e ainda nao
+  // tem CEP de origem configurado — pede de uma vez, pra nao precisar
+  // lembrar de clicar no botao depois.
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("me_connected") === "1") {
+    window.history.replaceState({}, "", window.location.pathname);
+    if (state.melhorEnvio.connected && !state.melhorEnvio.originPostalCode) {
+      freightAccountBtn.click();
+    } else {
+      alert("Melhor Envio conectado!");
+    }
+  }
+});
 setInterval(loadPendingCount, 20000);
 setInterval(() => {
   if (!state.selectedPackId) loadConversations();

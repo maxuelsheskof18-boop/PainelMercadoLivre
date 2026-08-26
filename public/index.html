@@ -20,6 +20,9 @@
       <a href="/connect" class="btn btn-ghost">
         <span class="btn-icon">+</span><span class="btn-label">Conectar conta</span>
       </a>
+      <button id="freight-account-btn" class="btn btn-ghost" title="Conectar Melhor Envio pra calcular frete">
+        <span class="btn-icon">📦</span><span class="btn-label" id="freight-account-label">Melhor Envio</span>
+      </button>
       <button id="bell" class="bell" title="Mensagens pendentes">
         🔔<span id="bell-count" class="badge hidden">0</span>
       </button>
@@ -70,6 +73,22 @@
             <span id="order-card-meta" class="muted small"></span>
           </div>
           <a id="order-card-link" href="#" target="_blank" rel="noopener" class="order-card-link">Ver no Mercado Livre ↗</a>
+        </div>
+        <div id="freight-box" class="freight-box hidden">
+          <button type="button" id="freight-toggle" class="freight-toggle">📦 Calcular frete (Melhor Envio) <span id="freight-toggle-arrow">▾</span></button>
+          <div id="freight-form" class="freight-form hidden">
+            <div class="freight-row">
+              <label>CEP destino<input id="freight-cep" placeholder="00000-000" /></label>
+              <label>Peso (kg)<input id="freight-weight" type="number" step="0.01" min="0" value="0.3" /></label>
+            </div>
+            <div class="freight-row">
+              <label>Altura (cm)<input id="freight-height" type="number" min="1" value="4" /></label>
+              <label>Largura (cm)<input id="freight-width" type="number" min="1" value="11" /></label>
+              <label>Comprimento (cm)<input id="freight-length" type="number" min="1" value="16" /></label>
+            </div>
+            <button type="button" id="freight-calc-btn" class="btn btn-primary btn-sm">Calcular frete</button>
+            <div id="freight-results" class="freight-results"></div>
+          </div>
         </div>
         <div id="thread-messages" class="thread-messages"></div>
         <form id="reply-form" class="reply-form">
