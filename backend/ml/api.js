@@ -135,13 +135,15 @@ function parsePackResource(resource) {
 // Envia uma resposta numa conversa.
 //
 // Diferente do GET (que so precisa do access_token), a documentacao oficial
-// do POST de mensagens pos-venda exige tambem a identificacao da PROPRIA
+// do POST de mensagens pos-venda tambem exige a identificacao da PROPRIA
 // APLICACAO: o parametro "application_id" na URL e o cabecalho "X-Client-Id",
 // ambos com o client_id da aplicacao (o mesmo ML_CLIENT_ID usado no OAuth).
-// Sem isso, o Mercado Livre responde com um erro generico de "recurso nao
-// encontrado" (a mensagem padrao apontando para o site de desenvolvedores),
-// mesmo com um access_token valido — foi exatamente esse erro generico que
-// apareceu em producao, o que aponta pra esse parametro faltando.
+// Isso ja foi adicionado, mas mesmo assim o Mercado Livre continuou
+// respondendo 404 "resource not found" em producao — entao tambem
+// adicionamos "?tag=post_sale" na URL, igual ao GET (fetchPackMessages),
+// que e o unico que sabidamente funciona pra essa conta. A hipotese e que,
+// sem essa tag, o Mercado Livre nao acha o pack como um recurso de mensagem
+// pos-venda (pode existir mais de um "tipo" de pack/conversa com o mesmo id).
 async function sendMessage({
   accessToken,
   packId,
@@ -151,9 +153,12 @@ async function sendMessage({
   text,
 }) {
   const clientId = process.env.ML_CLIENT_ID;
-  const path = `/messages/packs/${packId}/sellers/${sellerId}${
-    clientId ? `?application_id=${encodeURIComponent(clientId)}` : ""
-  }`;
+  const params = new URLSearchParams({ tag: "post_sale" });
+  if (clientId) params.set("application_id", clientId);
+  const path = `/messages/packs/${packId}/sellers/${sellerId}?${params.toString()}`;
+
+  console.log(`[sendMessage] chamando POST ${path}`);
+
   return mlFetch(path, accessToken, {
     method: "POST",
     headers: {
