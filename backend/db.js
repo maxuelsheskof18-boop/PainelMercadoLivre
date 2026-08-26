@@ -44,9 +44,10 @@ async function init() {
       buyer_nickname TEXT,
       buyer_full_name TEXT,                     -- nome real (order.buyer), quando disponivel
       product_title TEXT,                       -- nome do(s) produto(s) do pedido
+      order_total NUMERIC(12,2),                -- valor total da venda (order.total_amount)
       last_message_text TEXT,
       last_message_date TEXT,
-      status TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'answered' | 'blocked'
+      status TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'answered' | 'blocked' | 'no_contact'
       is_combinar_entrega BOOLEAN,              -- null = ainda nao classificado
       blocked_reason TEXT,                      -- ex: 'blocked_by_refund', 'blocked_by_mediation'
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -92,6 +93,7 @@ async function init() {
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS buyer_full_name TEXT;
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS product_title TEXT;
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS blocked_reason TEXT;
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS order_total NUMERIC(12,2);
   `);
 }
 

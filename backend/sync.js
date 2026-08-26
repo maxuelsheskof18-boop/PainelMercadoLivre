@@ -48,7 +48,11 @@ function extractOrderInfo(order) {
         .join(" ") || null
     : null;
 
-  return { isCombinarEntrega, productTitle, buyerFullName };
+  // total_amount e o valor total da venda (soma dos itens); e o mesmo
+  // numero que aparece como "Total" na tela do pedido no Mercado Livre.
+  const orderTotal = typeof order.total_amount === "number" ? order.total_amount : null;
+
+  return { isCombinarEntrega, productTitle, buyerFullName, orderTotal };
 }
 
 async function upsertConversationFromPack(sellerId, packId, packData, orderId, orderInfo) {
@@ -83,6 +87,7 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
   const buyerNickname = packData?.buyer?.nickname || null;
   const productTitle = orderInfo?.productTitle ?? null;
   const buyerFullName = orderInfo?.buyerFullName ?? null;
+  const orderTotal = orderInfo && typeof orderInfo.orderTotal === "number" ? orderInfo.orderTotal : null;
   // is_combinar_entrega fica null (nao "false") quando ainda nao
   // conseguimos os detalhes do pedido — assim nao classificamos errado por
   // falta de dado, so quando o proprio orderInfo.isCombinarEntrega==false.
@@ -91,14 +96,15 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
 
   await db.query(
     `INSERT INTO conversations
-       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, is_combinar_entrega, last_message_text, last_message_date, status, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, is_combinar_entrega, last_message_text, last_message_date, status, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
      ON CONFLICT (pack_id) DO UPDATE SET
        order_id = EXCLUDED.order_id,
        buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
        buyer_nickname = COALESCE(EXCLUDED.buyer_nickname, conversations.buyer_nickname),
        buyer_full_name = COALESCE(EXCLUDED.buyer_full_name, conversations.buyer_full_name),
        product_title = COALESCE(EXCLUDED.product_title, conversations.product_title),
+       order_total = COALESCE(EXCLUDED.order_total, conversations.order_total),
        is_combinar_entrega = COALESCE(EXCLUDED.is_combinar_entrega, conversations.is_combinar_entrega),
        last_message_text = EXCLUDED.last_message_text,
        last_message_date = EXCLUDED.last_message_date,
@@ -112,6 +118,7 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
       buyerNickname,
       buyerFullName,
       productTitle,
+      orderTotal,
       isCombinarEntrega,
       last?.text || null,
       messageDate(last),
@@ -142,6 +149,51 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
       ]
     );
   }
+}
+
+// Grava um pedido de "combinar entrega" que AINDA NAO TEM nenhuma mensagem
+// trocada — acontece quando o comprador compra sem perceber que precisa
+// combinar a entrega, e por isso nunca escreve. O vendedor pediu pra ver
+// esses pedidos tambem (numa lista separada, "Sem contato"), pra poder
+// iniciar a conversa. Diferente de upsertConversationFromPack, aqui nao ha
+// mensagens pra gravar na tabela "messages" — so o pedido em si.
+//
+// O ON CONFLICT so atualiza quando a conversa ja gravada tambem esta como
+// 'no_contact' (ou e um registro novo): se ja existe uma conversa de
+// verdade (pending/answered/blocked) pra esse pack_id, esse UPDATE nao mexe
+// nela — quem manda nesse caso e sempre upsertConversationFromPack.
+async function upsertNoContactOrder(sellerId, packId, order, orderInfo) {
+  const sellerIdStr = String(sellerId);
+  const buyerId = order?.buyer?.id != null ? String(order.buyer.id) : null;
+  const buyerNickname = order?.buyer?.nickname || null;
+  const buyerFullName = orderInfo?.buyerFullName ?? null;
+  const productTitle = orderInfo?.productTitle ?? null;
+  const orderTotal = orderInfo && typeof orderInfo.orderTotal === "number" ? orderInfo.orderTotal : null;
+
+  await db.query(
+    `INSERT INTO conversations
+       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, is_combinar_entrega, last_message_text, last_message_date, status, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, NULL, NULL, 'no_contact', now())
+     ON CONFLICT (pack_id) DO UPDATE SET
+       buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
+       buyer_nickname = COALESCE(EXCLUDED.buyer_nickname, conversations.buyer_nickname),
+       buyer_full_name = COALESCE(EXCLUDED.buyer_full_name, conversations.buyer_full_name),
+       product_title = COALESCE(EXCLUDED.product_title, conversations.product_title),
+       order_total = COALESCE(EXCLUDED.order_total, conversations.order_total),
+       is_combinar_entrega = true,
+       updated_at = now()
+     WHERE conversations.status = 'no_contact'`,
+    [
+      String(packId),
+      sellerIdStr,
+      order?.id != null ? String(order.id) : null,
+      buyerId,
+      buyerNickname,
+      buyerFullName,
+      productTitle,
+      orderTotal,
+    ]
+  );
 }
 
 // Puxa uma conversa especifica (usado pelo webhook, que ja sabe o pack_id).
@@ -190,6 +242,7 @@ async function reconcileAccount(sellerId) {
   );
 
   let comMensagens = 0;
+  let semContato = 0;
   for (const order of list) {
     // Pedidos que nao fazem parte de um envio combinado nao tem pack_id
     // (vem null) — nesse caso o proprio order_id funciona no lugar.
@@ -217,6 +270,32 @@ async function reconcileAccount(sellerId) {
         }
 
         await upsertConversationFromPack(sellerId, packId, packData, order?.id, orderInfo);
+      } else {
+        // Sem mensagem nenhuma ainda. O usuario pediu pra ver tambem os
+        // pedidos de "combinar entrega" nesse estado (tem comprador que
+        // compra sem saber que precisa combinar a entrega, e por isso nunca
+        // escreve) — /orders/search ja devolve o pedido completo (com
+        // "tags"), entao normalmente da pra classificar sem uma chamada
+        // extra a API. So busca o pedido completo de novo se "tags" nao
+        // vier nessa listagem (defensivo, caso a API mude).
+        let orderForInfo = order;
+        if (!Array.isArray(order?.tags)) {
+          try {
+            orderForInfo = await fetchOrderById(accessToken, order?.id);
+          } catch (err) {
+            console.warn(
+              `[reconcile] nao consegui buscar detalhes do pedido ${order?.id} (sem tags na listagem):`,
+              err.status,
+              err.body || err.message
+            );
+            orderForInfo = null;
+          }
+        }
+        const orderInfo = orderForInfo ? extractOrderInfo(orderForInfo) : null;
+        if (orderInfo?.isCombinarEntrega) {
+          semContato++;
+          await upsertNoContactOrder(sellerId, packId, order, orderInfo);
+        }
       }
     } catch (err) {
       console.warn(
@@ -227,7 +306,9 @@ async function reconcileAccount(sellerId) {
     }
   }
 
-  console.log(`[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens encontrados.`);
+  console.log(
+    `[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens, ${semContato} combinar-entrega sem contato ainda.`
+  );
 }
 
 async function reconcileAllAccounts() {
@@ -245,4 +326,11 @@ async function reconcileAllAccounts() {
   }
 }
 
-module.exports = { syncPack, reconcileAccount, reconcileAllAccounts, upsertConversationFromPack };
+module.exports = {
+  syncPack,
+  reconcileAccount,
+  reconcileAllAccounts,
+  upsertConversationFromPack,
+  upsertNoContactOrder,
+  extractOrderInfo,
+};
