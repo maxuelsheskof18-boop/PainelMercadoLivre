@@ -133,6 +133,15 @@ function parsePackResource(resource) {
 }
 
 // Envia uma resposta numa conversa.
+//
+// Diferente do GET (que so precisa do access_token), a documentacao oficial
+// do POST de mensagens pos-venda exige tambem a identificacao da PROPRIA
+// APLICACAO: o parametro "application_id" na URL e o cabecalho "X-Client-Id",
+// ambos com o client_id da aplicacao (o mesmo ML_CLIENT_ID usado no OAuth).
+// Sem isso, o Mercado Livre responde com um erro generico de "recurso nao
+// encontrado" (a mensagem padrao apontando para o site de desenvolvedores),
+// mesmo com um access_token valido — foi exatamente esse erro generico que
+// apareceu em producao, o que aponta pra esse parametro faltando.
 async function sendMessage({
   accessToken,
   packId,
@@ -141,9 +150,16 @@ async function sendMessage({
   sellerEmail,
   text,
 }) {
-  return mlFetch(`/messages/packs/${packId}/sellers/${sellerId}`, accessToken, {
+  const clientId = process.env.ML_CLIENT_ID;
+  const path = `/messages/packs/${packId}/sellers/${sellerId}${
+    clientId ? `?application_id=${encodeURIComponent(clientId)}` : ""
+  }`;
+  return mlFetch(path, accessToken, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(clientId ? { "X-Client-Id": clientId } : {}),
+    },
     body: JSON.stringify({
       from: { user_id: String(sellerId), ...(sellerEmail ? { email: sellerEmail } : {}) },
       to: { user_id: String(buyerId) },
