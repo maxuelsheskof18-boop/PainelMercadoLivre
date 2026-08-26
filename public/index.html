@@ -17,9 +17,20 @@
       <button id="sync-btn" class="btn btn-ghost" title="Buscar novidades agora">
         <span class="btn-icon">⟳</span><span class="btn-label">Atualizar</span>
       </button>
-      <a href="/connect" class="btn btn-ghost">
-        <span class="btn-icon">+</span><span class="btn-label">Conectar conta</span>
-      </a>
+      <div class="accounts-dropdown">
+        <button id="accounts-btn" class="btn btn-ghost" title="Ver contas do Mercado Livre conectadas">
+          <span class="btn-icon">👤</span><span class="btn-label">Contas</span><span id="accounts-count" class="tab-count hidden">0</span>
+        </button>
+        <div id="accounts-panel" class="accounts-panel hidden">
+          <div class="accounts-panel-header">Contas do Mercado Livre conectadas</div>
+          <div id="accounts-list" class="accounts-list">
+            <p class="muted small" style="padding: 8px 14px;">Carregando...</p>
+          </div>
+          <a href="/connect" class="btn btn-ghost btn-sm accounts-panel-add">
+            <span class="btn-icon">+</span> Conectar outra conta
+          </a>
+        </div>
+      </div>
       <button id="freight-account-btn" class="btn btn-ghost" title="Conectar Melhor Envio pra calcular frete">
         <span class="btn-icon">📦</span><span class="btn-label" id="freight-account-label">Melhor Envio</span>
       </button>
@@ -94,6 +105,11 @@
           </div>
         </div>
         <div id="thread-messages" class="thread-messages"></div>
+        <div id="quick-templates" class="quick-templates hidden">
+          <button type="button" id="template-combinar-btn" class="btn btn-ghost btn-sm">
+            📋 Msg: combinar entrega
+          </button>
+        </div>
         <form id="reply-form" class="reply-form">
           <textarea id="reply-text" placeholder="Escreva sua resposta..." required></textarea>
           <button type="submit" class="btn btn-primary">Enviar</button>

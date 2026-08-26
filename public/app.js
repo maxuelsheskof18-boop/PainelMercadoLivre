@@ -41,6 +41,14 @@ const freightLength = document.getElementById("freight-length");
 const freightCalcBtn = document.getElementById("freight-calc-btn");
 const freightResults = document.getElementById("freight-results");
 
+const quickTemplates = document.getElementById("quick-templates");
+const templateCombinarBtn = document.getElementById("template-combinar-btn");
+
+const accountsBtn = document.getElementById("accounts-btn");
+const accountsPanel = document.getElementById("accounts-panel");
+const accountsList = document.getElementById("accounts-list");
+const accountsCount = document.getElementById("accounts-count");
+
 // Prefere o nome real do comprador (quando o Mercado Livre libera esse
 // dado pro pedido); cai pro apelido, e por ultimo pro numero do comprador.
 function buyerLabel(conv) {
@@ -74,6 +82,15 @@ function fmtDate(d) {
   if (!d) return "";
   try {
     return new Date(d).toLocaleString("pt-BR");
+  } catch {
+    return d;
+  }
+}
+
+function fmtDateShort(d) {
+  if (!d) return "";
+  try {
+    return new Date(d).toLocaleDateString("pt-BR");
   } catch {
     return d;
   }
@@ -258,6 +275,9 @@ function renderThreadInfo(conv) {
   if (conv.order_id) accountBits.push(`Pedido #${conv.order_id}`);
   threadAccount.textContent = accountBits.join(" · ");
   threadDeliveryTag.classList.toggle("hidden", !conv.is_combinar_entrega);
+  // O atalho da mensagem padrao de "combinar entrega" so faz sentido pra
+  // pedidos classificados assim — nos outros, fica escondido.
+  quickTemplates.classList.toggle("hidden", !conv.is_combinar_entrega);
 
   if (conv.product_title || conv.order_id) {
     orderCard.classList.remove("hidden");
@@ -316,6 +336,53 @@ async function loadMelhorEnvioStatus() {
     freightBox.classList.toggle("hidden", !state.melhorEnvio.connected);
   }
 }
+
+// Lista as contas do Mercado Livre ja conectadas (o usuario perguntou como
+// saber isso — antes so dava pra perceber pelo nome da loja em cada
+// conversa). Atualiza o numero no botao e, se o painel estiver aberto,
+// tambem a lista detalhada.
+async function loadAccounts() {
+  const res = await fetch("/api/accounts");
+  if (handleSessionExpired(res)) return [];
+  if (!res.ok) return [];
+  const accounts = await res.json();
+
+  if (accounts.length > 0) {
+    accountsCount.textContent = accounts.length;
+    accountsCount.classList.remove("hidden");
+  } else {
+    accountsCount.classList.add("hidden");
+  }
+
+  if (accounts.length === 0) {
+    accountsList.innerHTML =
+      '<p class="muted small" style="padding: 10px 14px;">Nenhuma conta conectada ainda.</p>';
+  } else {
+    accountsList.innerHTML = accounts
+      .map(
+        (a) => `
+      <div class="account-row">
+        <span class="account-row-name">${a.nickname || a.id}</span>
+        <span class="account-row-since">Conectada em ${fmtDateShort(a.created_at)}</span>
+      </div>`
+      )
+      .join("");
+  }
+  return accounts;
+}
+
+accountsBtn.addEventListener("click", async () => {
+  const willShow = accountsPanel.classList.contains("hidden");
+  accountsPanel.classList.toggle("hidden", !willShow);
+  if (willShow) await loadAccounts();
+});
+
+// Fecha o painel se o usuario clicar em qualquer outro lugar da tela.
+document.addEventListener("click", (e) => {
+  if (!accountsPanel.classList.contains("hidden") && !e.target.closest(".accounts-dropdown")) {
+    accountsPanel.classList.add("hidden");
+  }
+});
 
 freightAccountBtn.addEventListener("click", async () => {
   if (!state.melhorEnvio.connected) {
@@ -391,10 +458,17 @@ freightCalcBtn.addEventListener("click", async () => {
   }
 });
 
-// Margem que o vendedor cobra em cima do valor cotado no Melhor Envio (ele
-// pediu especificamente 20% — se um dia quiser mudar, e so trocar esse
-// numero). O valor final e o que entra na mensagem pro comprador.
-const FREIGHT_MARKUP = 0.2;
+// Margem que o vendedor cobra em cima do valor cotado no Melhor Envio, em
+// escalonamento por faixa de preco (pedido explicitamente pelo vendedor):
+//   - ate R$ 50,00 de frete: soma R$ 10,00 fixos
+//   - de R$ 50,01 ate R$ 100,00: soma 20% do valor do frete
+//   - acima de R$ 100,00: soma 15% do valor do frete
+// O valor final (ja com a margem) e o que entra na mensagem pro comprador.
+function applyFreightMarkup(basePrice) {
+  if (basePrice <= 50) return basePrice + 10;
+  if (basePrice <= 100) return basePrice * 1.2;
+  return basePrice * 1.15;
+}
 
 function pluralDias(n) {
   const num = Number(n);
@@ -404,7 +478,7 @@ function pluralDias(n) {
 
 // Mensagem padrao que o vendedor usa pra avisar o comprador do frete
 // combinado. Os campos "Prazo de entrega" e "Valor" vem da cotacao clicada
-// (com a margem de 20% ja aplicada no valor).
+// (com a margem ja aplicada no valor).
 function buildFreightMessage({ deliveryTime, finalPrice }) {
   const prazo = pluralDias(deliveryTime);
   return `Calculamos o frete para o seu endereço:
@@ -415,7 +489,7 @@ ATENÇÃO: Esperamos sua confirmação de pagamento`;
 }
 
 // Clicar numa cotacao ja calculada preenche a caixa de resposta com a
-// mensagem padrao (com o valor ja com a margem de 20% aplicada) e fecha a
+// mensagem padrao (com a margem escalonada ja aplicada) e fecha a
 // calculadora — assim o vendedor so confere e clica "Enviar", e a tela
 // volta a mostrar a conversa inteira (sem a calculadora ocupando espaco).
 freightResults.addEventListener("click", (e) => {
@@ -424,7 +498,7 @@ freightResults.addEventListener("click", (e) => {
 
   const basePrice = Number(optionEl.dataset.price);
   if (!basePrice || Number.isNaN(basePrice)) return;
-  const finalPrice = basePrice * (1 + FREIGHT_MARKUP);
+  const finalPrice = applyFreightMarkup(basePrice);
 
   replyText.value = buildFreightMessage({
     deliveryTime: optionEl.dataset.delivery,
@@ -436,6 +510,34 @@ freightResults.addEventListener("click", (e) => {
   // vendedor precisa ver agora pra conferir e enviar a mensagem.
   freightForm.classList.add("hidden");
   freightToggleArrow.textContent = "▾";
+});
+
+// Mensagem padrao explicando a modalidade "combinar entrega" (retirada ou
+// entrega com frete a parte) pro comprador que ainda nao sabe como
+// prosseguir. Fixa, sem calculo nenhum — o vendedor pediu pra ter um atalho
+// que preenche isso na hora, principalmente pros pedidos da aba "Sem
+// contato" (que nunca receberam mensagem nenhuma).
+const COMBINAR_ENTREGA_TEMPLATE = `Olá! Você comprou na modalidade *Combinar entrega com o vendedor*.
+Você pode:
+1. Retirar grátis no CEP 03055-000,Brás próximo ao Templo de Salomão; ou
+2. Receber no seu endereço, com frete à parte.
+Para cotação:
+Cep:
+N°:
+Rua:
+telefone:
+Cpf:
+Atendimento: seg. a sex., das 9h às 18h.
+Qualquer duvida estamos a disposição.`;
+
+templateCombinarBtn.addEventListener("click", () => {
+  // So confirma antes de sobrescrever se ja tem algo digitado — assim nao
+  // se perde uma resposta que o vendedor ja estava escrevendo por engano.
+  if (replyText.value.trim() && !confirm("Isso vai substituir o texto que voce ja escreveu. Continuar?")) {
+    return;
+  }
+  replyText.value = COMBINAR_ENTREGA_TEMPLATE;
+  replyText.focus();
 });
 
 function renderMessages(messages) {
@@ -588,6 +690,7 @@ document.getElementById("bell").addEventListener("click", () => {
 // tempos enquanto a aba estiver aberta).
 loadConversations();
 loadPendingCount();
+loadAccounts();
 loadMelhorEnvioStatus().then(() => {
   // Acabou de voltar do OAuth do Melhor Envio (?me_connected=1) e ainda nao
   // tem CEP de origem configurado — pede de uma vez, pra nao precisar
