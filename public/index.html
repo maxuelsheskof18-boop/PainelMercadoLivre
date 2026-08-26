@@ -4,26 +4,44 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Painel de Mensagens - Mercado Livre</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <header class="topbar">
-    <h1>Painel de Mensagens</h1>
+    <div class="topbar-brand">
+      <span class="brand-mark">ML</span>
+      <h1>Painel de Mensagens</h1>
+    </div>
     <div class="topbar-actions">
-      <button id="sync-btn" class="ghost" title="Buscar novidades agora">Atualizar</button>
-      <a href="/connect" class="ghost">+ Conectar conta</a>
+      <button id="sync-btn" class="btn btn-ghost" title="Buscar novidades agora">
+        <span class="btn-icon">⟳</span><span class="btn-label">Atualizar</span>
+      </button>
+      <a href="/connect" class="btn btn-ghost">
+        <span class="btn-icon">+</span><span class="btn-label">Conectar conta</span>
+      </a>
       <button id="bell" class="bell" title="Mensagens pendentes">
         🔔<span id="bell-count" class="badge hidden">0</span>
       </button>
-      <button id="logout-btn" class="ghost">Sair</button>
+      <button id="logout-btn" class="btn btn-ghost btn-icon-only" title="Sair">
+        <span class="btn-icon">⏻</span>
+      </button>
     </div>
   </header>
 
   <main class="layout">
     <section class="list-pane">
       <div class="tabs">
-        <button class="tab active" data-status="pending">Pendentes</button>
+        <button class="tab active" data-status="pending">
+          Pendentes<span id="tab-count-pending" class="tab-count hidden">0</span>
+        </button>
         <button class="tab" data-status="answered">Respondidas</button>
+      </div>
+      <div class="filter-bar">
+        <label class="filter-toggle">
+          <input type="checkbox" id="filter-combinar" />
+          <span>Só "combinar entrega"</span>
+        </label>
       </div>
       <div id="conversation-list" class="conversation-list">
         <p class="muted empty-msg">Carregando...</p>
@@ -31,18 +49,23 @@
     </section>
 
     <section class="thread-pane">
-      <div id="thread-empty" class="muted centered">
-        Selecione uma conversa na lista ao lado.
+      <div id="thread-empty" class="muted centered empty-state">
+        <span class="empty-state-icon">💬</span>
+        <p>Selecione uma conversa na lista ao lado.</p>
       </div>
       <div id="thread" class="thread hidden">
         <div class="thread-header">
-          <strong id="thread-buyer">-</strong>
-          <span id="thread-account" class="muted"></span>
+          <button id="thread-back" class="btn-back" title="Voltar para a lista">←</button>
+          <div class="thread-header-info">
+            <strong id="thread-buyer">-</strong>
+            <span id="thread-account" class="muted small"></span>
+          </div>
+          <span id="thread-delivery-tag" class="tag tag-delivery hidden">Combinar entrega</span>
         </div>
         <div id="thread-messages" class="thread-messages"></div>
         <form id="reply-form" class="reply-form">
           <textarea id="reply-text" placeholder="Escreva sua resposta..." required></textarea>
-          <button type="submit">Enviar resposta</button>
+          <button type="submit" class="btn btn-primary">Enviar</button>
         </form>
       </div>
     </section>

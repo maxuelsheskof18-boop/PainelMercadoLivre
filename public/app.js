@@ -2,17 +2,23 @@ const state = {
   status: "pending",
   selectedPackId: null,
   pollTimer: null,
+  onlyCombinar: false,
+  lastPendingCount: null, // usado pra saber se aumentou (tocar som) sem tocar no primeiro carregamento
 };
 
 const listEl = document.getElementById("conversation-list");
 const bellCount = document.getElementById("bell-count");
+const tabCountPending = document.getElementById("tab-count-pending");
 const threadEmpty = document.getElementById("thread-empty");
 const threadEl = document.getElementById("thread");
 const threadBuyer = document.getElementById("thread-buyer");
 const threadAccount = document.getElementById("thread-account");
+const threadDeliveryTag = document.getElementById("thread-delivery-tag");
 const threadMessages = document.getElementById("thread-messages");
 const replyForm = document.getElementById("reply-form");
 const replyText = document.getElementById("reply-text");
+const filterCombinar = document.getElementById("filter-combinar");
+const threadBackBtn = document.getElementById("thread-back");
 
 function fmtDate(d) {
   if (!d) return "";
@@ -20,6 +26,55 @@ function fmtDate(d) {
     return new Date(d).toLocaleString("pt-BR");
   } catch {
     return d;
+  }
+}
+
+// ---------- Som de notificacao ----------
+// Toca um "ding" curto usando Web Audio, sem precisar de nenhum arquivo de
+// audio externo. Navegadores só liberam som depois de alguma interacao do
+// usuario na pagina (clique, toque) — por isso "destravamos" o contexto de
+// audio no primeiro clique, pra os sons automaticos (do polling) tocarem
+// sem problema depois.
+let audioCtx = null;
+function getAudioCtx() {
+  if (!audioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    audioCtx = new Ctx();
+  }
+  return audioCtx;
+}
+document.addEventListener(
+  "click",
+  () => {
+    const ctx = getAudioCtx();
+    if (ctx && ctx.state === "suspended") ctx.resume();
+  },
+  { once: true }
+);
+
+function playNotificationSound() {
+  try {
+    const ctx = getAudioCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [
+      [880, now, 0.11],
+      [1320, now + 0.11, 0.16],
+    ].forEach(([freq, start, dur]) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.25, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + dur + 0.05);
+    });
+  } catch (e) {
+    console.warn("Nao foi possivel tocar o som de notificacao:", e);
   }
 }
 
@@ -40,17 +95,33 @@ async function loadPendingCount() {
   if (handleSessionExpired(res)) return;
   if (!res.ok) return;
   const data = await res.json();
+
   if (data.pending > 0) {
     bellCount.textContent = data.pending;
     bellCount.classList.remove("hidden");
+    tabCountPending.textContent = data.pending;
+    tabCountPending.classList.remove("hidden");
   } else {
     bellCount.classList.add("hidden");
+    tabCountPending.classList.add("hidden");
   }
+
+  // Toca o som so quando o numero de pendencias SOBE em relacao a ultima
+  // vez que checamos (ou seja, chegou mensagem nova) — nunca no primeiro
+  // carregamento da pagina (lastPendingCount ainda null) nem quando o
+  // numero cai (conversa foi respondida).
+  if (state.lastPendingCount !== null && data.pending > state.lastPendingCount) {
+    playNotificationSound();
+  }
+  state.lastPendingCount = data.pending;
 }
 
 async function loadConversations() {
   listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
-  const res = await fetch(`/api/conversations?status=${state.status}`);
+  const params = new URLSearchParams({ status: state.status });
+  if (state.onlyCombinar) params.set("combinar", "1");
+
+  const res = await fetch(`/api/conversations?${params.toString()}`);
   if (handleSessionExpired(res)) return;
   if (!res.ok) {
     listEl.innerHTML = '<p class="muted empty-msg">Erro ao carregar.</p>';
@@ -59,27 +130,42 @@ async function loadConversations() {
   const items = await res.json();
 
   if (items.length === 0) {
-    listEl.innerHTML = `<p class="muted empty-msg">Nenhuma conversa ${
-      state.status === "pending" ? "pendente" : "respondida"
-    }.</p>`;
+    const msg = state.onlyCombinar
+      ? `Nenhuma conversa de "combinar entrega" ${state.status === "pending" ? "pendente" : "respondida"}.`
+      : `Nenhuma conversa ${state.status === "pending" ? "pendente" : "respondida"}.`;
+    listEl.innerHTML = `<p class="muted empty-msg">${msg}</p>`;
     return;
   }
 
   listEl.innerHTML = "";
   for (const conv of items) {
     const div = document.createElement("div");
-    div.className = "conversation-item" + (conv.pack_id === state.selectedPackId ? " selected" : "");
+    const isUnread = conv.status === "pending";
+    div.className =
+      "conversation-item" +
+      (conv.pack_id === state.selectedPackId ? " selected" : "") +
+      (isUnread ? " unread" : "");
     div.innerHTML = `
       <div class="ci-top">
-        <strong>${conv.buyer_nickname || "Comprador #" + (conv.buyer_id || "?")}</strong>
-        <span class="muted small">${conv.seller_nickname || ""}</span>
+        <span class="ci-buyer">${conv.buyer_nickname || "Comprador #" + (conv.buyer_id || "?")}</span>
+        <span class="ci-store">${conv.seller_nickname || ""}</span>
       </div>
-      <div class="ci-preview muted">${(conv.last_message_text || "").slice(0, 90)}</div>
-      <div class="ci-date muted small">${fmtDate(conv.last_message_date)}</div>
+      <div class="ci-preview">${(conv.last_message_text || "").slice(0, 90)}</div>
+      <div class="ci-bottom">
+        <span class="ci-date">${fmtDate(conv.last_message_date)}</span>
+        ${conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
+      </div>
     `;
     div.addEventListener("click", () => openThread(conv));
     listEl.appendChild(div);
   }
+}
+
+function openMobileThread() {
+  document.body.classList.add("thread-open");
+}
+function closeMobileThread() {
+  document.body.classList.remove("thread-open");
 }
 
 async function openThread(conv) {
@@ -90,8 +176,10 @@ async function openThread(conv) {
   threadEl.classList.remove("hidden");
   threadBuyer.textContent = conv.buyer_nickname || "Comprador #" + (conv.buyer_id || "?");
   threadAccount.textContent = conv.seller_nickname ? `Loja: ${conv.seller_nickname}` : "";
+  threadDeliveryTag.classList.toggle("hidden", !conv.is_combinar_entrega);
   threadMessages.innerHTML = '<p class="muted">Carregando mensagens...</p>';
   replyForm.dataset.packId = conv.pack_id;
+  openMobileThread();
 
   const res = await fetch(`/api/conversations/${encodeURIComponent(conv.pack_id)}/messages`);
   if (handleSessionExpired(res)) return;
@@ -105,7 +193,7 @@ async function openThread(conv) {
   for (const m of messages) {
     const div = document.createElement("div");
     div.className = "msg " + (m.direction === "out" ? "msg-out" : "msg-in");
-    div.innerHTML = `<div class="msg-text"></div><div class="msg-date muted small">${fmtDate(m.sent_date)}</div>`;
+    div.innerHTML = `<div class="msg-text"></div><div class="msg-date">${fmtDate(m.sent_date)}</div>`;
     div.querySelector(".msg-text").textContent = m.text || "";
     threadMessages.appendChild(div);
   }
@@ -113,6 +201,10 @@ async function openThread(conv) {
 
   await loadConversations();
 }
+
+threadBackBtn.addEventListener("click", () => {
+  closeMobileThread();
+});
 
 replyForm.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -138,6 +230,7 @@ replyForm.addEventListener("submit", async (e) => {
     threadEl.classList.add("hidden");
     threadEmpty.classList.remove("hidden");
     state.selectedPackId = null;
+    closeMobileThread();
     await Promise.all([loadConversations(), loadPendingCount()]);
   } finally {
     btn.disabled = false;
@@ -153,16 +246,22 @@ document.querySelectorAll(".tab").forEach((tab) => {
   });
 });
 
+filterCombinar.addEventListener("change", () => {
+  state.onlyCombinar = filterCombinar.checked;
+  loadConversations();
+});
+
 document.getElementById("sync-btn").addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;
-  btn.textContent = "Atualizando...";
+  const label = btn.querySelector(".btn-label");
+  if (label) label.textContent = "Atualizando...";
   try {
     await fetch("/api/sync", { method: "POST" });
     await Promise.all([loadConversations(), loadPendingCount()]);
   } finally {
     btn.disabled = false;
-    btn.textContent = "Atualizar";
+    if (label) label.textContent = "Atualizar";
   }
 });
 
