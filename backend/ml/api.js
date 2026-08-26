@@ -39,24 +39,36 @@ async function mlFetch(path, accessToken, options = {}) {
 
 // Lista os packs/pedidos com mensagens nao lidas para essa conta.
 //
-// A documentacao "antiga" do Mercado Livre descreve o endpoint
-// /messages/pending_read, mas ele pode devolver 404 (parece ter sido
-// descontinuado/substituido em algumas contas). A documentacao mais
-// recente usa /messages/packs?tag=post_sale&role=seller. Por seguranca,
-// tentamos o primeiro e, se der 404, caimos automaticamente pro segundo —
-// assim nao dependemos de adivinhar qual esta ativo pra essa conta.
+// A documentacao do Mercado Livre sobre esse endpoint esta inconsistente
+// entre si (paginas diferentes, aparentemente de epocas diferentes,
+// descrevem caminhos diferentes). Ja vimos 404 em pelo menos um deles nessa
+// conta. Em vez de apostar em um so, tentamos varios candidatos conhecidos,
+// em ordem, e usamos o primeiro que responder com sucesso — registrando
+// nos logs o resultado de cada tentativa pra sabermos exatamente qual
+// funciona nessa conta.
+const PENDING_READ_CANDIDATES = [
+  "/messages/pending_read?role=seller",
+  "/messages/unread?role=seller",
+  "/messages/packs?tag=post_sale&role=seller",
+];
+
 async function fetchPendingRead(accessToken) {
-  try {
-    return await mlFetch(`/messages/pending_read?role=seller`, accessToken);
-  } catch (err) {
-    if (err.status === 404) {
-      console.warn(
-        "[fetchPendingRead] /messages/pending_read deu 404, tentando /messages/packs?tag=post_sale&role=seller"
-      );
-      return mlFetch(`/messages/packs?tag=post_sale&role=seller`, accessToken);
+  const attempts = [];
+  for (const path of PENDING_READ_CANDIDATES) {
+    try {
+      const data = await mlFetch(path, accessToken);
+      console.log(`[fetchPendingRead] sucesso em ${path}`);
+      return data;
+    } catch (err) {
+      attempts.push(`${path} -> ${err.status || "?"} ${JSON.stringify(err.body || err.message)}`);
+      console.warn(`[fetchPendingRead] falhou em ${path}: ${err.status}`, err.body || err.message);
     }
-    throw err;
   }
+  const err = new Error(
+    `Nenhum endpoint de mensagens pendentes funcionou. Tentativas: ${attempts.join(" | ")}`
+  );
+  err.attempts = attempts;
+  throw err;
 }
 
 // Busca a conversa completa de um pedido (pack).
