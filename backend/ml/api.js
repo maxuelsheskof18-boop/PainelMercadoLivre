@@ -90,6 +90,17 @@ async function fetchPackMessages(accessToken, packId, sellerId) {
   );
 }
 
+// Busca pedidos recentes do vendedor (API de Orders, bem mais estavel/
+// documentada que a de mensagens). Usado so pra diagnostico: cada pedido
+// devolve "pack_id" (as vezes null, quando o pedido nao faz parte de um
+// envio combinado) e "id" (o order_id).
+async function fetchRecentOrders(accessToken, sellerId) {
+  return mlFetch(
+    `/orders/search?seller=${sellerId}&sort=date_desc&limit=5`,
+    accessToken
+  );
+}
+
 // Segue um link de recurso vindo de um webhook (ex: "/messages/packs/123/sellers/456").
 async function fetchResource(accessToken, resourcePath) {
   return mlFetch(resourcePath, accessToken);
@@ -137,6 +148,7 @@ async function fetchMe(accessToken) {
 module.exports = {
   fetchPendingRead,
   fetchPackMessages,
+  fetchRecentOrders,
   fetchResource,
   parsePackResource,
   sendMessage,
