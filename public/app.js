@@ -299,6 +299,23 @@ replyForm.addEventListener("submit", async (e) => {
     if (handleSessionExpired(res)) return;
     const data = await res.json();
     if (!res.ok) {
+      if (data.blocked) {
+        // Bloqueio permanente (reembolso, mediacao encerrada, etc.) — o
+        // servidor ja marcou essa conversa como "blocked" no banco, entao
+        // ela nao aparece mais em Pendentes nem Respondidas. Avisa e fecha
+        // a tela do chat, em vez de deixar o usuario tentando de novo a toa.
+        alert(
+          `Este pedido foi bloqueado pelo Mercado Livre para novas mensagens (${
+            data.blockReasonLabel || data.blockReason || "motivo nao informado"
+          }) e foi removido da lista de pendentes.`
+        );
+        threadEl.classList.add("hidden");
+        threadEmpty.classList.remove("hidden");
+        state.selectedPackId = null;
+        closeMobileThread();
+        await Promise.all([loadConversations(), loadPendingCount()]);
+        return;
+      }
       const detail = typeof data.detail === "string" ? data.detail : "";
       alert((data.error || "Falha ao enviar a mensagem.") + (detail ? `\n\nMotivo: ${detail}` : ""));
       return;
