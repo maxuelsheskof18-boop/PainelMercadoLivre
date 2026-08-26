@@ -13,12 +13,19 @@ const threadEmpty = document.getElementById("thread-empty");
 const threadEl = document.getElementById("thread");
 const threadBuyer = document.getElementById("thread-buyer");
 const threadAccount = document.getElementById("thread-account");
+const threadProduct = document.getElementById("thread-product");
 const threadDeliveryTag = document.getElementById("thread-delivery-tag");
 const threadMessages = document.getElementById("thread-messages");
 const replyForm = document.getElementById("reply-form");
 const replyText = document.getElementById("reply-text");
 const filterCombinar = document.getElementById("filter-combinar");
 const threadBackBtn = document.getElementById("thread-back");
+
+// Prefere o nome real do comprador (quando o Mercado Livre libera esse
+// dado pro pedido); cai pro apelido, e por ultimo pro numero do comprador.
+function buyerLabel(conv) {
+  return conv.buyer_full_name || conv.buyer_nickname || "Comprador #" + (conv.buyer_id || "?");
+}
 
 function fmtDate(d) {
   if (!d) return "";
@@ -147,12 +154,13 @@ async function loadConversations() {
       (isUnread ? " unread" : "");
     div.innerHTML = `
       <div class="ci-top">
-        <span class="ci-buyer">${conv.buyer_nickname || "Comprador #" + (conv.buyer_id || "?")}</span>
+        <span class="ci-buyer">${buyerLabel(conv)}</span>
         <span class="ci-store">${conv.seller_nickname || ""}</span>
       </div>
+      ${conv.product_title ? `<div class="ci-product">${conv.product_title}</div>` : ""}
       <div class="ci-preview">${(conv.last_message_text || "").slice(0, 90)}</div>
       <div class="ci-bottom">
-        <span class="ci-date">${fmtDate(conv.last_message_date)}</span>
+        <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · Pedido #${conv.order_id}` : ""}</span>
         ${conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
       </div>
     `;
@@ -174,8 +182,13 @@ async function openThread(conv) {
 
   threadEmpty.classList.add("hidden");
   threadEl.classList.remove("hidden");
-  threadBuyer.textContent = conv.buyer_nickname || "Comprador #" + (conv.buyer_id || "?");
-  threadAccount.textContent = conv.seller_nickname ? `Loja: ${conv.seller_nickname}` : "";
+  threadBuyer.textContent = buyerLabel(conv);
+  const accountBits = [];
+  if (conv.seller_nickname) accountBits.push(`Loja: ${conv.seller_nickname}`);
+  if (conv.order_id) accountBits.push(`Pedido #${conv.order_id}`);
+  threadAccount.textContent = accountBits.join(" · ");
+  threadProduct.textContent = conv.product_title || "";
+  threadProduct.classList.toggle("hidden", !conv.product_title);
   threadDeliveryTag.classList.toggle("hidden", !conv.is_combinar_entrega);
   threadMessages.innerHTML = '<p class="muted">Carregando mensagens...</p>';
   replyForm.dataset.packId = conv.pack_id;

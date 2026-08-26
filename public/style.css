@@ -267,6 +267,15 @@ body {
 .ci-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 3px; }
 .ci-buyer { font-weight: 700; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ci-store { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+.ci-product {
+  font-size: 11.5px;
+  color: var(--accent-dark);
+  font-weight: 600;
+  margin-bottom: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .ci-preview {
   font-size: 13px;
   color: var(--text-soft);
