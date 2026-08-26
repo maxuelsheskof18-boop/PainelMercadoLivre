@@ -181,14 +181,32 @@ body {
   display: grid;
   grid-template-columns: 380px 1fr;
   height: calc(100vh - 53px);
+  background: var(--bg);
 }
 
 .list-pane {
-  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background: var(--card);
+}
+
+/* Em telas grandes, os dois paineis viram "cartoes" flutuantes com sombra
+   e um respiro entre eles, em vez de blocos colados um no outro — da a
+   sensacao de um app (tipo WhatsApp Web/Intercom) em vez de uma planilha. */
+@media (min-width: 901px) {
+  .layout {
+    gap: 16px;
+    padding: 16px;
+    height: calc(100vh - 53px - 32px);
+  }
+  .list-pane,
+  .thread-pane {
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    border: 1px solid var(--border);
+  }
+  .thread-pane { overflow: hidden; }
 }
 
 .tabs { display: flex; border-bottom: 1px solid var(--border); padding: 0 8px; }
@@ -244,25 +262,42 @@ body {
 .empty-msg { padding: 32px 16px; text-align: center; font-size: 13.5px; }
 
 .conversation-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
   padding: 13px 16px;
   border-bottom: 1px solid var(--border);
+  border-left: 3px solid transparent;
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background 0.1s, border-color 0.1s;
   position: relative;
 }
 .conversation-item:hover { background: var(--bg); }
 .conversation-item.selected { background: var(--accent-soft); }
-.conversation-item.unread::before {
-  content: "";
-  position: absolute;
-  left: 5px;
-  top: 20px;
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--accent);
+.conversation-item.unread {
+  border-left-color: var(--accent);
+  background: #fbfcff;
 }
-.conversation-item.unread { padding-left: 24px; }
+.conversation-item.unread:hover { background: var(--accent-soft); }
+
+/* ---------- Avatares ---------- */
+.avatar {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: 15px;
+  text-transform: uppercase;
+  box-shadow: var(--shadow-sm);
+}
+.avatar-lg { width: 46px; height: 46px; font-size: 17px; }
+
+.ci-body { flex: 1; min-width: 0; }
 
 .ci-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 3px; }
 .ci-buyer { font-weight: 700; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -329,6 +364,34 @@ body {
   color: var(--text-soft);
 }
 .btn-back:hover { background: var(--bg); }
+
+/* ---------- Card de detalhe do pedido (dentro da conversa) ---------- */
+.order-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 20px 0;
+  padding: 12px 14px;
+  background: var(--accent-soft);
+  border: 1px solid #dbe7ff;
+  border-radius: var(--radius-md);
+}
+.order-card-icon { font-size: 21px; flex-shrink: 0; line-height: 1; }
+.order-card-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.order-card-info strong {
+  font-size: 13.5px;
+  line-height: 1.35;
+  overflow-wrap: break-word;
+}
+.order-card-link {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-dark);
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.order-card-link:hover { text-decoration: underline; }
 
 .thread-messages {
   flex: 1;
@@ -401,4 +464,7 @@ body {
   .thread-messages { padding: 14px; }
   .msg { max-width: 82%; }
   .reply-form { padding: 10px 12px; }
+  .order-card { margin: 10px 12px 0; padding: 10px 12px; }
+  .avatar { width: 36px; height: 36px; font-size: 13.5px; }
+  .avatar-lg { width: 40px; height: 40px; font-size: 15px; }
 }

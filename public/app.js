@@ -12,8 +12,12 @@ const tabCountPending = document.getElementById("tab-count-pending");
 const threadEmpty = document.getElementById("thread-empty");
 const threadEl = document.getElementById("thread");
 const threadBuyer = document.getElementById("thread-buyer");
+const threadAvatar = document.getElementById("thread-avatar");
 const threadAccount = document.getElementById("thread-account");
-const threadProduct = document.getElementById("thread-product");
+const orderCard = document.getElementById("thread-order-card");
+const orderCardProduct = document.getElementById("order-card-product");
+const orderCardMeta = document.getElementById("order-card-meta");
+const orderCardLink = document.getElementById("order-card-link");
 const threadDeliveryTag = document.getElementById("thread-delivery-tag");
 const threadMessages = document.getElementById("thread-messages");
 const replyForm = document.getElementById("reply-form");
@@ -25,6 +29,20 @@ const threadBackBtn = document.getElementById("thread-back");
 // dado pro pedido); cai pro apelido, e por ultimo pro numero do comprador.
 function buyerLabel(conv) {
   return conv.buyer_full_name || conv.buyer_nickname || "Comprador #" + (conv.buyer_id || "?");
+}
+
+// ---------- Avatares (gerados, sem precisar de imagem) ----------
+const AVATAR_COLORS = ["#2563eb", "#7c3aed", "#db2777", "#d97706", "#059669", "#0891b2", "#dc2626", "#4f46e5"];
+function avatarColor(seed) {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = seed.charCodeAt(i) + ((hash << 5) - hash);
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+function avatarInitial(name) {
+  return (name || "?").trim().charAt(0).toUpperCase() || "?";
+}
+function avatarHtml(label, extraClass) {
+  return `<div class="avatar${extraClass ? " " + extraClass : ""}" style="background:${avatarColor(label)}">${avatarInitial(label)}</div>`;
 }
 
 function fmtDate(d) {
@@ -152,16 +170,20 @@ async function loadConversations() {
       "conversation-item" +
       (conv.pack_id === state.selectedPackId ? " selected" : "") +
       (isUnread ? " unread" : "");
+    const label = buyerLabel(conv);
     div.innerHTML = `
-      <div class="ci-top">
-        <span class="ci-buyer">${buyerLabel(conv)}</span>
-        <span class="ci-store">${conv.seller_nickname || ""}</span>
-      </div>
-      ${conv.product_title ? `<div class="ci-product">${conv.product_title}</div>` : ""}
-      <div class="ci-preview">${(conv.last_message_text || "").slice(0, 90)}</div>
-      <div class="ci-bottom">
-        <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · Pedido #${conv.order_id}` : ""}</span>
-        ${conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
+      ${avatarHtml(label)}
+      <div class="ci-body">
+        <div class="ci-top">
+          <span class="ci-buyer">${label}</span>
+          <span class="ci-store">${conv.seller_nickname || ""}</span>
+        </div>
+        ${conv.product_title ? `<div class="ci-product">${conv.product_title}</div>` : ""}
+        <div class="ci-preview">${(conv.last_message_text || "").slice(0, 90)}</div>
+        <div class="ci-bottom">
+          <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · #${conv.order_id}` : ""}</span>
+          ${conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
+        </div>
       </div>
     `;
     div.addEventListener("click", () => openThread(conv));
@@ -176,20 +198,44 @@ function closeMobileThread() {
   document.body.classList.remove("thread-open");
 }
 
+// Preenche o cabecalho e o card de detalhes do pedido a partir de um
+// objeto de conversa. Chamada duas vezes: uma na hora (com o dado que ja
+// tinhamos na lista) e outra depois que a resposta do servidor chega
+// (que pode ter enriquecido produto/comprador/tipo de entrega na hora).
+function renderThreadInfo(conv) {
+  const label = buyerLabel(conv);
+  threadBuyer.textContent = label;
+  threadAvatar.innerHTML = "";
+  threadAvatar.style.background = avatarColor(label);
+  threadAvatar.textContent = avatarInitial(label);
+  const accountBits = [];
+  if (conv.seller_nickname) accountBits.push(`Loja: ${conv.seller_nickname}`);
+  if (conv.order_id) accountBits.push(`Pedido #${conv.order_id}`);
+  threadAccount.textContent = accountBits.join(" · ");
+  threadDeliveryTag.classList.toggle("hidden", !conv.is_combinar_entrega);
+
+  if (conv.product_title || conv.order_id) {
+    orderCard.classList.remove("hidden");
+    orderCardProduct.textContent = conv.product_title || "Produto nao identificado";
+    orderCardMeta.textContent = conv.order_id ? `Pedido #${conv.order_id}` : "";
+    if (conv.order_id) {
+      orderCardLink.href = `https://www.mercadolivre.com.br/vendas/${conv.order_id}/detalhe`;
+      orderCardLink.classList.remove("hidden");
+    } else {
+      orderCardLink.classList.add("hidden");
+    }
+  } else {
+    orderCard.classList.add("hidden");
+  }
+}
+
 async function openThread(conv) {
   state.selectedPackId = conv.pack_id;
   document.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
 
   threadEmpty.classList.add("hidden");
   threadEl.classList.remove("hidden");
-  threadBuyer.textContent = buyerLabel(conv);
-  const accountBits = [];
-  if (conv.seller_nickname) accountBits.push(`Loja: ${conv.seller_nickname}`);
-  if (conv.order_id) accountBits.push(`Pedido #${conv.order_id}`);
-  threadAccount.textContent = accountBits.join(" · ");
-  threadProduct.textContent = conv.product_title || "";
-  threadProduct.classList.toggle("hidden", !conv.product_title);
-  threadDeliveryTag.classList.toggle("hidden", !conv.is_combinar_entrega);
+  renderThreadInfo(conv);
   threadMessages.innerHTML = '<p class="muted">Carregando mensagens...</p>';
   replyForm.dataset.packId = conv.pack_id;
   openMobileThread();
@@ -200,7 +246,13 @@ async function openThread(conv) {
     threadMessages.innerHTML = '<p class="muted">Erro ao carregar as mensagens.</p>';
     return;
   }
-  const messages = await res.json();
+  const data = await res.json();
+  const messages = data.messages || [];
+
+  // O servidor pode ter descoberto produto/comprador/tipo de entrega na
+  // hora (conversa antiga que ainda nao tinha esses dados) — atualiza o
+  // cabecalho com essa versao mais completa.
+  if (data.conversation) renderThreadInfo(data.conversation);
 
   threadMessages.innerHTML = "";
   for (const m of messages) {
@@ -236,7 +288,8 @@ replyForm.addEventListener("submit", async (e) => {
     if (handleSessionExpired(res)) return;
     const data = await res.json();
     if (!res.ok) {
-      alert(data.error || "Falha ao enviar a mensagem.");
+      const detail = typeof data.detail === "string" ? data.detail : "";
+      alert((data.error || "Falha ao enviar a mensagem.") + (detail ? `\n\nMotivo: ${detail}` : ""));
       return;
     }
     replyText.value = "";

@@ -56,12 +56,20 @@
       <div id="thread" class="thread hidden">
         <div class="thread-header">
           <button id="thread-back" class="btn-back" title="Voltar para a lista">←</button>
+          <div id="thread-avatar" class="avatar avatar-lg"></div>
           <div class="thread-header-info">
             <strong id="thread-buyer">-</strong>
             <span id="thread-account" class="muted small"></span>
-            <span id="thread-product" class="muted small hidden"></span>
           </div>
           <span id="thread-delivery-tag" class="tag tag-delivery hidden">Combinar entrega</span>
+        </div>
+        <div id="thread-order-card" class="order-card hidden">
+          <span class="order-card-icon">📦</span>
+          <div class="order-card-info">
+            <strong id="order-card-product">-</strong>
+            <span id="order-card-meta" class="muted small"></span>
+          </div>
+          <a id="order-card-link" href="#" target="_blank" rel="noopener" class="order-card-link">Ver no Mercado Livre ↗</a>
         </div>
         <div id="thread-messages" class="thread-messages"></div>
         <form id="reply-form" class="reply-form">
