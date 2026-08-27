@@ -11,7 +11,12 @@ const {
   fetchShipment,
   fetchPendingRead,
 } = require("../ml/api");
-const { reconcileAllAccounts, extractOrderInfo, upsertConversationFromPack } = require("../sync");
+const {
+  reconcileAllAccounts,
+  extractOrderInfo,
+  upsertConversationFromPack,
+  fetchShippingType,
+} = require("../sync");
 
 const router = express.Router();
 
@@ -125,12 +130,21 @@ router.get("/conversations/:packId/messages", async (req, res) => {
   if (
     conversation &&
     conversation.order_id &&
-    (conversation.product_title == null || conversation.order_total == null)
+    (conversation.product_title == null ||
+      conversation.order_total == null ||
+      (conversation.shipping_type == null && conversation.is_combinar_entrega !== true))
   ) {
     try {
       const accessToken = await getValidAccessToken(conversation.seller_id);
       const order = await fetchOrderById(accessToken, conversation.order_id);
       const orderInfo = extractOrderInfo(order);
+      // So busca o tipo de envio (Flex/Agência/etc.) se ainda nao tem — pedido
+      // de combinar entrega nunca vai ter (nao tem envio de verdade), entao
+      // nem tenta nesse caso pra nao gastar chamada de API a toa toda vez que
+      // essa conversa for aberta.
+      const shippingType = orderInfo?.isCombinarEntrega
+        ? null
+        : await fetchShippingType(accessToken, order);
 
       const { rows: updated } = await db.query(
         `UPDATE conversations
@@ -138,14 +152,16 @@ router.get("/conversations/:packId/messages", async (req, res) => {
                 product_title = COALESCE($2, product_title),
                 is_combinar_entrega = COALESCE($3, is_combinar_entrega),
                 order_total = COALESCE($4, order_total),
+                shipping_type = COALESCE($5, shipping_type),
                 updated_at = now()
-          WHERE pack_id = $5
+          WHERE pack_id = $6
           RETURNING *`,
         [
           orderInfo?.buyerFullName ?? null,
           orderInfo?.productTitle ?? null,
           orderInfo?.isCombinarEntrega ?? null,
           orderInfo?.orderTotal ?? null,
+          shippingType,
           packId,
         ]
       );
