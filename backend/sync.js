@@ -71,9 +71,15 @@ async function fetchAllNoShippingOrders(accessToken, sellerId) {
 // por causa de uma mensagem nova, so quando o status/envio muda. Por isso a
 // importancia de tambem confirmar se o webhook de "messages" esta mesmo
 // configurado e chegando pra essa conta.
+// Paginas mais curtas que as de "combinar entrega" (3 em vez de 6) de
+// proposito: essa busca (sem filtro de tag) e a de "delivered" abaixo somam
+// chamadas de API a cada reconciliacao (a cada 10 minutos), e numa conta de
+// altissimo volume como a que motivou essa correcao (quase 100 mudancas de
+// pedido notificadas em poucas horas) isso pode virar bastante chamada
+// extra. 150 pedidos por busca ja cobre bem o caso comum sem pesar demais.
 const RECENTLY_UPDATED_WINDOW_DAYS = 3;
 const RECENTLY_UPDATED_PAGE_SIZE = 50;
-const RECENTLY_UPDATED_MAX_PAGES = 6;
+const RECENTLY_UPDATED_MAX_PAGES = 3;
 
 // Formata uma data no formato que a API do Mercado Livre espera
 // (ISO 8601 com o offset de Brasilia, -03:00 — o Brasil nao tem mais
@@ -91,6 +97,7 @@ async function fetchAllRecentlyUpdatedOrders(accessToken, sellerId) {
   const from = new Date(to.getTime() - RECENTLY_UPDATED_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const all = [];
   let offset = 0;
+  let total = 0;
   for (let page = 0; page < RECENTLY_UPDATED_MAX_PAGES; page++) {
     const data = await fetchRecentOrders(accessToken, sellerId, {
       limit: RECENTLY_UPDATED_PAGE_SIZE,
@@ -101,8 +108,57 @@ async function fetchAllRecentlyUpdatedOrders(accessToken, sellerId) {
     const results = Array.isArray(data?.results) ? data.results : [];
     all.push(...results);
     offset += results.length;
-    const total = data?.paging?.total ?? offset;
+    total = data?.paging?.total ?? offset;
     if (results.length === 0 || offset >= total) break;
+  }
+  // Numa conta de altissimo volume (visto na pratica: uma conta chegou a
+  // gerar quase 100 notificacoes de mudanca de pedido em poucas horas),
+  // essa busca sem filtro de tag pode ter MUITO mais pedidos "com atividade
+  // recente" (qualquer mudanca de status) do que da pra cobrir nas paginas
+  // buscadas — e ai um pedido especifico com mensagem nova pode acabar
+  // ficando de fora mesmo assim. Melhor avisar isso no log (sem cortar
+  // silenciosamente) do que fingir que a cobertura foi completa.
+  if (total > all.length) {
+    console.warn(
+      `[reconcile] busca de atividade recente da conta ${sellerId}: so cobri ${all.length} de ${total} pedidos (limite de paginas atingido) — pode haver pedidos com mensagem nova fora dessa varredura.`
+    );
+  }
+  return all;
+}
+
+// Quarta rede de seguranca, mais direcionada que a de "atividade recente"
+// acima: busca os pedidos com a tag "delivered" (ja entregues), sem filtro
+// de data. A API do Mercado Livre ordena por data_desc que, pra contas de
+// vendedor, e a data de FECHAMENTO do pedido (nao de criacao) — entao os
+// primeiros resultados sao sempre os pedidos entregues/fechados MAIS
+// RECENTEMENTE, o que cobre bem o caso de "comprador manda mensagem logo
+// depois da entrega" sem depender do campo incerto date_last_updated.
+// Complementa (nao substitui) a busca acima: uma conta de alto volume tem
+// MUITO mais pedidos entregues no total do que "com atividade nas ultimas
+// 72h", entao aqui vale a pena olhar uma janela maior de paginas.
+const DELIVERED_PAGE_SIZE = 50;
+const DELIVERED_MAX_PAGES = 3;
+
+async function fetchAllDeliveredOrders(accessToken, sellerId) {
+  const all = [];
+  let offset = 0;
+  let total = 0;
+  for (let page = 0; page < DELIVERED_MAX_PAGES; page++) {
+    const data = await fetchRecentOrders(accessToken, sellerId, {
+      limit: DELIVERED_PAGE_SIZE,
+      offset,
+      tags: "delivered",
+    });
+    const results = Array.isArray(data?.results) ? data.results : [];
+    all.push(...results);
+    offset += results.length;
+    total = data?.paging?.total ?? offset;
+    if (results.length === 0 || offset >= total) break;
+  }
+  if (total > all.length) {
+    console.warn(
+      `[reconcile] busca de pedidos entregues (tags=delivered) da conta ${sellerId}: so cobri ${all.length} de ${total} pedidos entregues no total (limite de paginas atingido) — como a lista vem ordenada pelos fechados mais recentemente primeiro, os pedidos entregues ha mais tempo podem ficar de fora, mas os recem-entregues (que sao os que costumam receber mensagem de pos-entrega) estao cobertos.`
+    );
   }
   return all;
 }
@@ -370,11 +426,22 @@ async function reconcileAccount(sellerId) {
     );
   }
 
-  // Junta as tres listas removendo duplicados (um mesmo pedido pode
+  let deliveredList = [];
+  try {
+    deliveredList = await fetchAllDeliveredOrders(accessToken, sellerId);
+  } catch (err) {
+    console.warn(
+      `[reconcile] falha ao buscar pedidos entregues (tags=delivered) da conta ${sellerId}:`,
+      err.status,
+      err.body || err.message
+    );
+  }
+
+  // Junta as quatro listas removendo duplicados (um mesmo pedido pode
   // aparecer em mais de uma busca).
   const seenIds = new Set(recentList.map((o) => o?.id));
   const list = [...recentList];
-  for (const order of [...noShippingList, ...recentlyUpdatedList]) {
+  for (const order of [...noShippingList, ...recentlyUpdatedList, ...deliveredList]) {
     if (order?.id != null && !seenIds.has(order.id)) {
       seenIds.add(order.id);
       list.push(order);
@@ -384,7 +451,7 @@ async function reconcileAccount(sellerId) {
   console.log(
     `[reconcile] conta ${sellerId}: ${recentList.length} pedido(s) recente(s) (de um total de ${
       orders?.paging?.total ?? "?"
-    }) + ${noShippingList.length} de combinar entrega dedicados + ${recentlyUpdatedList.length} com atividade recente dedicados = ${list.length} pedido(s) a verificar.`
+    }) + ${noShippingList.length} de combinar entrega dedicados + ${recentlyUpdatedList.length} com atividade recente dedicados + ${deliveredList.length} entregues dedicados = ${list.length} pedido(s) a verificar.`
   );
 
   let comMensagens = 0;
