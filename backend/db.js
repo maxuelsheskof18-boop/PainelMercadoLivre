@@ -69,6 +69,9 @@ async function init() {
       author_user_id TEXT,
       text TEXT,
       sent_date TEXT,
+      operator_name TEXT,        -- nome de quem respondeu pelo painel (so em mensagens
+                                  -- direction='out' enviadas por aqui); null nas recebidas
+                                  -- do comprador e em envios antigos, de antes dessa coluna.
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
@@ -148,6 +151,9 @@ async function init() {
       message TEXT,
       attachments JSONB,
       sent_date TEXT,
+      operator_name TEXT,                       -- nome de quem respondeu pelo painel (so em
+                                                 -- mensagens sender_role='respondent' enviadas
+                                                 -- por aqui); null nas demais.
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_claim_messages_claim ON claim_messages(claim_id);
@@ -181,6 +187,8 @@ async function init() {
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS order_total NUMERIC(12,2);
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_delivered BOOLEAN;
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS shipping_type TEXT;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS operator_name TEXT;
+    ALTER TABLE claim_messages ADD COLUMN IF NOT EXISTS operator_name TEXT;
   `);
 }
 
