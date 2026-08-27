@@ -75,6 +75,12 @@ function extractOrderInfo(order) {
   if (!order) return null;
   const tags = Array.isArray(order.tags) ? order.tags : [];
   const isCombinarEntrega = tags.includes("no_shipping");
+  // Mesma tag usada em isAlreadyResolved() (pedidos sem mensagem que ja
+  // foram entregues/concluidos). Aqui serve pra outro caso: pedidos que TEM
+  // mensagem, mas o comprador escreveu depois de ja ter recebido a compra
+  // (ex: pedindo nota fiscal, duvida geral) — esses vao pra uma aba propria
+  // ("Entregues"), separada de Pendentes/Respondidas/Sem contato.
+  const isDelivered = tags.includes("delivered");
 
   const productTitle =
     (order.order_items || [])
@@ -93,7 +99,7 @@ function extractOrderInfo(order) {
   // numero que aparece como "Total" na tela do pedido no Mercado Livre.
   const orderTotal = typeof order.total_amount === "number" ? order.total_amount : null;
 
-  return { isCombinarEntrega, productTitle, buyerFullName, orderTotal };
+  return { isCombinarEntrega, isDelivered, productTitle, buyerFullName, orderTotal };
 }
 
 async function upsertConversationFromPack(sellerId, packId, packData, orderId, orderInfo) {
@@ -134,11 +140,15 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
   // falta de dado, so quando o proprio orderInfo.isCombinarEntrega==false.
   const isCombinarEntrega =
     orderInfo && typeof orderInfo.isCombinarEntrega === "boolean" ? orderInfo.isCombinarEntrega : null;
+  // Mesma logica do is_combinar_entrega: fica null (nao "false") quando
+  // ainda nao temos os detalhes do pedido, pra nao reclassificar por engano
+  // uma conversa que ja estava marcada como "ja entregue" antes.
+  const isDelivered = orderInfo && typeof orderInfo.isDelivered === "boolean" ? orderInfo.isDelivered : null;
 
   await db.query(
     `INSERT INTO conversations
-       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, is_combinar_entrega, last_message_text, last_message_date, status, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
+       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, is_combinar_entrega, is_delivered, last_message_text, last_message_date, status, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
      ON CONFLICT (pack_id) DO UPDATE SET
        order_id = EXCLUDED.order_id,
        buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
@@ -147,6 +157,7 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
        product_title = COALESCE(EXCLUDED.product_title, conversations.product_title),
        order_total = COALESCE(EXCLUDED.order_total, conversations.order_total),
        is_combinar_entrega = COALESCE(EXCLUDED.is_combinar_entrega, conversations.is_combinar_entrega),
+       is_delivered = COALESCE(EXCLUDED.is_delivered, conversations.is_delivered),
        last_message_text = EXCLUDED.last_message_text,
        last_message_date = EXCLUDED.last_message_date,
        status = EXCLUDED.status,
@@ -161,6 +172,7 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
       productTitle,
       orderTotal,
       isCombinarEntrega,
+      isDelivered,
       last?.text || null,
       messageDate(last),
       status,

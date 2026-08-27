@@ -49,6 +49,9 @@ async function init() {
       last_message_date TEXT,
       status TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'answered' | 'blocked' | 'no_contact' | 'cancelled' | 'resolved'
       is_combinar_entrega BOOLEAN,              -- null = ainda nao classificado
+      is_delivered BOOLEAN,                     -- true = pedido ja entregue (tag "delivered"); usado pra separar
+                                                 -- mensagens de pos-entrega (nota fiscal, duvidas) numa aba propria,
+                                                 -- fora de Pendentes/Respondidas. Independente de status.
       blocked_reason TEXT,                      -- ex: 'blocked_by_refund', 'blocked_by_mediation'
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
@@ -94,6 +97,7 @@ async function init() {
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS product_title TEXT;
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS blocked_reason TEXT;
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS order_total NUMERIC(12,2);
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_delivered BOOLEAN;
   `);
 }
 
