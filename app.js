@@ -3,6 +3,9 @@ const state = {
   selectedPackId: null,
   pollTimer: null,
   onlyCombinar: false,
+  searchQuery: "",
+  sellerId: "",
+  sort: "recent", // "recent" | "oldest"
   lastPendingCount: null, // usado pra saber se aumentou (tocar som) sem tocar no primeiro carregamento
   melhorEnvio: { connected: false, originPostalCode: null },
 };
@@ -11,6 +14,7 @@ const listEl = document.getElementById("conversation-list");
 const bellCount = document.getElementById("bell-count");
 const tabCountPending = document.getElementById("tab-count-pending");
 const tabCountNoContact = document.getElementById("tab-count-nocontact");
+const tabCountDelivered = document.getElementById("tab-count-delivered");
 const threadEmpty = document.getElementById("thread-empty");
 const threadEl = document.getElementById("thread");
 const threadBuyer = document.getElementById("thread-buyer");
@@ -21,10 +25,16 @@ const orderCardProduct = document.getElementById("order-card-product");
 const orderCardMeta = document.getElementById("order-card-meta");
 const orderCardLink = document.getElementById("order-card-link");
 const threadDeliveryTag = document.getElementById("thread-delivery-tag");
+const threadDeliveredTag = document.getElementById("thread-delivered-tag");
 const threadMessages = document.getElementById("thread-messages");
 const replyForm = document.getElementById("reply-form");
 const replyText = document.getElementById("reply-text");
 const filterCombinar = document.getElementById("filter-combinar");
+const filterSearch = document.getElementById("filter-search");
+const filterSeller = document.getElementById("filter-seller");
+const filterSortBtn = document.getElementById("filter-sort-btn");
+const filterSortIcon = document.getElementById("filter-sort-icon");
+const filterSortLabel = document.getElementById("filter-sort-label");
 const threadBackBtn = document.getElementById("thread-back");
 
 const freightAccountBtn = document.getElementById("freight-account-btn");
@@ -43,6 +53,11 @@ const freightResults = document.getElementById("freight-results");
 
 const quickTemplates = document.getElementById("quick-templates");
 const templateCombinarBtn = document.getElementById("template-combinar-btn");
+
+const accountsBtn = document.getElementById("accounts-btn");
+const accountsPanel = document.getElementById("accounts-panel");
+const accountsList = document.getElementById("accounts-list");
+const accountsCount = document.getElementById("accounts-count");
 
 // Prefere o nome real do comprador (quando o Mercado Livre libera esse
 // dado pro pedido); cai pro apelido, e por ultimo pro numero do comprador.
@@ -77,6 +92,15 @@ function fmtDate(d) {
   if (!d) return "";
   try {
     return new Date(d).toLocaleString("pt-BR");
+  } catch {
+    return d;
+  }
+}
+
+function fmtDateShort(d) {
+  if (!d) return "";
+  try {
+    return new Date(d).toLocaleDateString("pt-BR");
   } catch {
     return d;
   }
@@ -150,12 +174,9 @@ async function loadPendingCount() {
   const data = await res.json();
 
   if (data.pending > 0) {
-    bellCount.textContent = data.pending;
-    bellCount.classList.remove("hidden");
     tabCountPending.textContent = data.pending;
     tabCountPending.classList.remove("hidden");
   } else {
-    bellCount.classList.add("hidden");
     tabCountPending.classList.add("hidden");
   }
 
@@ -166,27 +187,48 @@ async function loadPendingCount() {
     tabCountNoContact.classList.add("hidden");
   }
 
+  if (data.delivered > 0) {
+    tabCountDelivered.textContent = data.delivered;
+    tabCountDelivered.classList.remove("hidden");
+  } else {
+    tabCountDelivered.classList.add("hidden");
+  }
+
+  // O sino conta tudo que ainda precisa de resposta do vendedor — inclui as
+  // mensagens de pedidos ja entregues (aba "Entregues"), que tambem sao
+  // coisa pendente de responder, so que numa categoria separada.
+  const totalPending = data.pending + data.delivered;
+  if (totalPending > 0) {
+    bellCount.textContent = totalPending;
+    bellCount.classList.remove("hidden");
+  } else {
+    bellCount.classList.add("hidden");
+  }
+
   // Toca o som so quando o numero de pendencias SOBE em relacao a ultima
   // vez que checamos (ou seja, chegou mensagem nova) — nunca no primeiro
   // carregamento da pagina (lastPendingCount ainda null) nem quando o
   // numero cai (conversa foi respondida).
-  if (state.lastPendingCount !== null && data.pending > state.lastPendingCount) {
+  if (state.lastPendingCount !== null && totalPending > state.lastPendingCount) {
     playNotificationSound();
   }
-  state.lastPendingCount = data.pending;
+  state.lastPendingCount = totalPending;
 }
 
 // Rotulo do status em portugues, usado na mensagem de "lista vazia".
 function statusLabel(status) {
   if (status === "no_contact") return "sem contato ainda";
   if (status === "answered") return "respondida";
+  if (status === "delivered") return "de pedido já entregue";
   return "pendente";
 }
 
 async function loadConversations() {
   listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
-  const params = new URLSearchParams({ status: state.status });
+  const params = new URLSearchParams({ status: state.status, sort: state.sort });
   if (state.onlyCombinar) params.set("combinar", "1");
+  if (state.sellerId) params.set("sellerId", state.sellerId);
+  if (state.searchQuery) params.set("q", state.searchQuery);
 
   const res = await fetch(`/api/conversations?${params.toString()}`);
   if (handleSessionExpired(res)) return;
@@ -230,7 +272,7 @@ async function loadConversations() {
         <div class="ci-preview">${preview}</div>
         <div class="ci-bottom">
           <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · #${conv.order_id}` : ""}${fmtMoney(conv.order_total) ? ` · ${fmtMoney(conv.order_total)}` : ""}</span>
-          ${conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
+          ${conv.is_delivered ? '<span class="tag tag-delivered">Pedido já entregue</span>' : conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
         </div>
       </div>
     `;
@@ -261,6 +303,7 @@ function renderThreadInfo(conv) {
   if (conv.order_id) accountBits.push(`Pedido #${conv.order_id}`);
   threadAccount.textContent = accountBits.join(" · ");
   threadDeliveryTag.classList.toggle("hidden", !conv.is_combinar_entrega);
+  threadDeliveredTag.classList.toggle("hidden", !conv.is_delivered);
   // O atalho da mensagem padrao de "combinar entrega" so faz sentido pra
   // pedidos classificados assim — nos outros, fica escondido.
   quickTemplates.classList.toggle("hidden", !conv.is_combinar_entrega);
@@ -322,6 +365,64 @@ async function loadMelhorEnvioStatus() {
     freightBox.classList.toggle("hidden", !state.melhorEnvio.connected);
   }
 }
+
+// Lista as contas do Mercado Livre ja conectadas (o usuario perguntou como
+// saber isso — antes so dava pra perceber pelo nome da loja em cada
+// conversa). Atualiza o numero no botao e, se o painel estiver aberto,
+// tambem a lista detalhada.
+async function loadAccounts() {
+  const res = await fetch("/api/accounts");
+  if (handleSessionExpired(res)) return [];
+  if (!res.ok) return [];
+  const accounts = await res.json();
+
+  if (accounts.length > 0) {
+    accountsCount.textContent = accounts.length;
+    accountsCount.classList.remove("hidden");
+  } else {
+    accountsCount.classList.add("hidden");
+  }
+
+  if (accounts.length === 0) {
+    accountsList.innerHTML =
+      '<p class="muted small" style="padding: 10px 14px;">Nenhuma conta conectada ainda.</p>';
+  } else {
+    accountsList.innerHTML = accounts
+      .map(
+        (a) => `
+      <div class="account-row">
+        <span class="account-row-name">${a.nickname || a.id}</span>
+        <span class="account-row-since">Conectada em ${fmtDateShort(a.created_at)}</span>
+      </div>`
+      )
+      .join("");
+  }
+
+  // Popula o filtro de "loja" na lista de conversas, preservando a opcao
+  // ja selecionada (se ainda existir depois de recarregar).
+  const previousSelection = filterSeller.value;
+  filterSeller.innerHTML =
+    '<option value="">Todas as lojas</option>' +
+    accounts.map((a) => `<option value="${a.id}">${a.nickname || a.id}</option>`).join("");
+  if (accounts.some((a) => String(a.id) === previousSelection)) {
+    filterSeller.value = previousSelection;
+  }
+
+  return accounts;
+}
+
+accountsBtn.addEventListener("click", async () => {
+  const willShow = accountsPanel.classList.contains("hidden");
+  accountsPanel.classList.toggle("hidden", !willShow);
+  if (willShow) await loadAccounts();
+});
+
+// Fecha o painel se o usuario clicar em qualquer outro lugar da tela.
+document.addEventListener("click", (e) => {
+  if (!accountsPanel.classList.contains("hidden") && !e.target.closest(".accounts-dropdown")) {
+    accountsPanel.classList.add("hidden");
+  }
+});
 
 freightAccountBtn.addEventListener("click", async () => {
   if (!state.melhorEnvio.connected) {
@@ -601,6 +702,34 @@ filterCombinar.addEventListener("change", () => {
   loadConversations();
 });
 
+// Busca livre: espera o usuario parar de digitar (300ms) antes de recarregar
+// a lista, pra nao mandar uma requisicao a cada letra.
+let searchDebounceTimer = null;
+filterSearch.addEventListener("input", () => {
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(() => {
+    state.searchQuery = filterSearch.value.trim();
+    loadConversations();
+  }, 300);
+});
+
+filterSeller.addEventListener("change", () => {
+  state.sellerId = filterSeller.value;
+  loadConversations();
+});
+
+filterSortBtn.addEventListener("click", () => {
+  state.sort = state.sort === "recent" ? "oldest" : "recent";
+  if (state.sort === "oldest") {
+    filterSortIcon.textContent = "⬆";
+    filterSortLabel.textContent = "Mais antigas";
+  } else {
+    filterSortIcon.textContent = "⬇";
+    filterSortLabel.textContent = "Mais recentes";
+  }
+  loadConversations();
+});
+
 document.getElementById("sync-btn").addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;
@@ -629,6 +758,7 @@ document.getElementById("bell").addEventListener("click", () => {
 // tempos enquanto a aba estiver aberta).
 loadConversations();
 loadPendingCount();
+loadAccounts();
 loadMelhorEnvioStatus().then(() => {
   // Acabou de voltar do OAuth do Melhor Envio (?me_connected=1) e ainda nao
   // tem CEP de origem configurado — pede de uma vez, pra nao precisar

@@ -17,9 +17,20 @@
       <button id="sync-btn" class="btn btn-ghost" title="Buscar novidades agora">
         <span class="btn-icon">⟳</span><span class="btn-label">Atualizar</span>
       </button>
-      <a href="/connect" class="btn btn-ghost">
-        <span class="btn-icon">+</span><span class="btn-label">Conectar conta</span>
-      </a>
+      <div class="accounts-dropdown">
+        <button id="accounts-btn" class="btn btn-ghost" title="Ver contas do Mercado Livre conectadas">
+          <span class="btn-icon">👤</span><span class="btn-label">Contas</span><span id="accounts-count" class="tab-count hidden">0</span>
+        </button>
+        <div id="accounts-panel" class="accounts-panel hidden">
+          <div class="accounts-panel-header">Contas do Mercado Livre conectadas</div>
+          <div id="accounts-list" class="accounts-list">
+            <p class="muted small" style="padding: 8px 14px;">Carregando...</p>
+          </div>
+          <a href="/connect" class="btn btn-ghost btn-sm accounts-panel-add">
+            <span class="btn-icon">+</span> Conectar outra conta
+          </a>
+        </div>
+      </div>
       <button id="freight-account-btn" class="btn btn-ghost" title="Conectar Melhor Envio pra calcular frete">
         <span class="btn-icon">📦</span><span class="btn-label" id="freight-account-label">Melhor Envio</span>
       </button>
@@ -42,8 +53,25 @@
         <button class="tab" data-status="no_contact" title="Vendas de combinar entrega sem nenhuma mensagem trocada ainda">
           Sem contato<span id="tab-count-nocontact" class="tab-count hidden">0</span>
         </button>
+        <button class="tab" data-status="delivered" title="Mensagens recebidas em pedidos já entregues (nota fiscal, dúvidas, etc.)">
+          Entregues<span id="tab-count-delivered" class="tab-count hidden">0</span>
+        </button>
       </div>
       <div class="filter-bar">
+        <input
+          type="search"
+          id="filter-search"
+          class="filter-search"
+          placeholder="Buscar por comprador, produto ou nº do pedido..."
+        />
+        <div class="filter-row">
+          <select id="filter-seller" class="filter-select" title="Filtrar por loja">
+            <option value="">Todas as lojas</option>
+          </select>
+          <button type="button" id="filter-sort-btn" class="btn btn-ghost btn-sm" title="Alternar ordem por data">
+            <span id="filter-sort-icon">⬇</span> <span id="filter-sort-label">Mais recentes</span>
+          </button>
+        </div>
         <label class="filter-toggle">
           <input type="checkbox" id="filter-combinar" />
           <span>Só "combinar entrega"</span>
@@ -68,6 +96,7 @@
             <span id="thread-account" class="muted small"></span>
           </div>
           <span id="thread-delivery-tag" class="tag tag-delivery hidden">Combinar entrega</span>
+          <span id="thread-delivered-tag" class="tag tag-delivered hidden">Pedido já entregue</span>
         </div>
         <div id="thread-order-card" class="order-card hidden">
           <span class="order-card-icon">📦</span>
