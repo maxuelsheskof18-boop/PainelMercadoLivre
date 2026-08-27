@@ -47,7 +47,7 @@ async function init() {
       order_total NUMERIC(12,2),                -- valor total da venda (order.total_amount)
       last_message_text TEXT,
       last_message_date TEXT,
-      status TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'answered' | 'blocked' | 'no_contact' | 'cancelled'
+      status TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'answered' | 'blocked' | 'no_contact' | 'cancelled' | 'resolved'
       is_combinar_entrega BOOLEAN,              -- null = ainda nao classificado
       blocked_reason TEXT,                      -- ex: 'blocked_by_refund', 'blocked_by_mediation'
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

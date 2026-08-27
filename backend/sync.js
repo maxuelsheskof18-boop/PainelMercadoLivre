@@ -311,6 +311,7 @@ async function reconcileAccount(sellerId) {
   let comMensagens = 0;
   let semContato = 0;
   let cancelados = 0;
+  let resolvidosSemContato = 0;
   for (const order of list) {
     // Pedidos que nao fazem parte de um envio combinado nao tem pack_id
     // (vem null) — nesse caso o proprio order_id funciona no lugar.
@@ -377,8 +378,20 @@ async function reconcileAccount(sellerId) {
         }
         const orderInfo = orderForInfo ? extractOrderInfo(orderForInfo) : null;
         if (orderInfo?.isCombinarEntrega) {
-          semContato++;
-          await upsertNoContactOrder(sellerId, packId, order, orderInfo);
+          if (isAlreadyResolved(orderForInfo)) {
+            // Combinar entrega sem nenhuma mensagem, mas que ja foi
+            // entregue/concluido sozinho (ex: Mercado Livre fecha a venda
+            // automaticamente depois de 28 dias sem reclamacao, ou o
+            // comprador confirmou o recebimento por fora) — nao faz
+            // sentido pedir "inicie o contato" pra um pedido que ja
+            // acabou. Se por algum motivo ja tinha entrado como
+            // "no_contact" antes dessa checagem existir, tira das abas.
+            resolvidosSemContato++;
+            await markConversationResolved(packId);
+          } else {
+            semContato++;
+            await upsertNoContactOrder(sellerId, packId, order, orderInfo);
+          }
         }
       }
     } catch (err) {
@@ -391,8 +404,20 @@ async function reconcileAccount(sellerId) {
   }
 
   console.log(
-    `[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens, ${semContato} combinar-entrega sem contato ainda, ${cancelados} cancelado(s) ignorado(s).`
+    `[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens, ${semContato} combinar-entrega sem contato ainda, ${cancelados} cancelado(s) ignorado(s), ${resolvidosSemContato} ja entregue(s)/concluido(s) sem contato ignorado(s).`
   );
+}
+
+// Uma venda "combinar entrega" que ja foi entregue/concluida sozinha (sem
+// nunca precisar de mensagem) nao tem mais nada pra "combinar" — o
+// vendedor pediu pra essas so aparecerem no painel se o comprador de fato
+// mandar uma mensagem, e nao ficarem poluindo a aba "Sem contato" so
+// porque tecnicamente sao combinar entrega. A tag "delivered" e o sinal
+// que o Mercado Livre usa tanto pra confirmacao manual de entrega quanto
+// pro fechamento automatico da venda apos ~28 dias sem reclamacao.
+function isAlreadyResolved(order) {
+  const tags = Array.isArray(order?.tags) ? order.tags : [];
+  return tags.includes("delivered");
 }
 
 // Marca uma conversa como 'cancelled' se ela ja existir no banco (pedido
@@ -403,6 +428,17 @@ async function markConversationCancelled(packId) {
   await db.query(
     `UPDATE conversations SET status = 'cancelled', updated_at = now()
      WHERE pack_id = $1 AND status <> 'cancelled'`,
+    [String(packId)]
+  );
+}
+
+// Mesma ideia de markConversationCancelled, mas so mexe em conversas que
+// estavam como 'no_contact' — um pedido que ja tem mensagem de verdade
+// (pending/answered) nunca deveria ser tocado por essa checagem.
+async function markConversationResolved(packId) {
+  await db.query(
+    `UPDATE conversations SET status = 'resolved', updated_at = now()
+     WHERE pack_id = $1 AND status = 'no_contact'`,
     [String(packId)]
   );
 }
