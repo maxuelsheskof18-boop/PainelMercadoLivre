@@ -1,5 +1,5 @@
 const state = {
-  module: "messages", // "messages" | "claims" — qual dos dois paineis (menu lateral) esta ativo
+  module: "messages", // "messages" | "claims" | "history" — qual painel (menu lateral) esta ativo
   status: "pending", // aba dentro do modulo "messages"
   claimStatus: "open", // aba dentro do modulo "claims": "open" | "closed"
   selectedPackId: null,
@@ -87,6 +87,84 @@ const accountsBtn = document.getElementById("accounts-btn");
 const accountsPanel = document.getElementById("accounts-panel");
 const accountsList = document.getElementById("accounts-list");
 const accountsCount = document.getElementById("accounts-count");
+
+// Identificacao do operador (varias pessoas usando o mesmo login/senha).
+const OPERATOR_STORAGE_KEY = "ml-painel-operator-name";
+const operatorModal = document.getElementById("operator-modal");
+const operatorModalForm = document.getElementById("operator-modal-form");
+const operatorNameInput = document.getElementById("operator-name-input");
+const operatorModalClose = document.getElementById("operator-modal-close");
+const operatorChip = document.getElementById("operator-chip");
+const operatorChipName = document.getElementById("operator-chip-name");
+
+// Modulo "Histórico" (quem respondeu o que, e quando).
+const listPaneEl = document.getElementById("list-pane");
+const threadPaneEl = document.getElementById("thread-pane");
+const historyPane = document.getElementById("history-pane");
+const historyList = document.getElementById("history-list");
+const historyOperatorFilter = document.getElementById("history-operator-filter");
+const historyFrom = document.getElementById("history-from");
+const historyTo = document.getElementById("history-to");
+const historyRefreshBtn = document.getElementById("history-refresh-btn");
+
+// Nao e login: nao ha senha por pessoa, e nao bloqueia nada no servidor —
+// e so uma identificacao pra saber, depois, quem respondeu cada mensagem
+// (mandada junto em cada envio; ver rotas /reply e /evidence no backend).
+function getOperatorName() {
+  try {
+    return localStorage.getItem(OPERATOR_STORAGE_KEY) || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function setOperatorName(name) {
+  try {
+    localStorage.setItem(OPERATOR_STORAGE_KEY, name);
+  } catch (e) {
+    // sem localStorage: continua funcionando nesta sessao, so nao lembra
+    // da proxima vez que abrir o painel nesse aparelho.
+  }
+  if (operatorChipName) operatorChipName.textContent = name;
+}
+
+function openOperatorModal(mandatory) {
+  operatorNameInput.value = mandatory ? "" : getOperatorName();
+  if (operatorModalClose) operatorModalClose.classList.toggle("hidden", mandatory);
+  operatorModal.classList.remove("hidden");
+  setTimeout(() => operatorNameInput.focus(), 50);
+}
+
+function closeOperatorModal() {
+  operatorModal.classList.add("hidden");
+}
+
+if (operatorModalForm) {
+  operatorModalForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const name = operatorNameInput.value.trim();
+    if (!name) return;
+    setOperatorName(name);
+    closeOperatorModal();
+  });
+}
+if (operatorModalClose) {
+  operatorModalClose.addEventListener("click", () => closeOperatorModal());
+}
+if (operatorChip) {
+  // Deixa trocar de operador a qualquer momento (ex: troca de turno) sem
+  // precisar limpar o navegador.
+  operatorChip.addEventListener("click", () => openOperatorModal(false));
+}
+
+// Ao abrir o painel: se ninguem se identificou ainda neste aparelho, pede o
+// nome antes de liberar o uso (sem senha nenhuma — so essa identificacao).
+const existingOperatorName = getOperatorName();
+if (existingOperatorName) {
+  operatorChipName.textContent = existingOperatorName;
+} else {
+  openOperatorModal(true);
+}
 
 // Prefere o nome real do comprador (quando o Mercado Livre libera esse
 // dado pro pedido); cai pro apelido, e por ultimo pro numero do comprador.
@@ -529,6 +607,7 @@ async function submitClaimReply() {
   try {
     const formData = new FormData();
     formData.set("text", text);
+    formData.set("operatorName", getOperatorName());
     if (replyAttachmentInput.files[0]) {
       formData.set("file", replyAttachmentInput.files[0]);
     }
@@ -580,7 +659,7 @@ evidenceSendBtn.addEventListener("click", async () => {
   const claimId = state.selectedClaimId;
   if (!claimId) return;
   const method = evidenceMethodSelect.value;
-  const payload = { shipping_method: method };
+  const payload = { shipping_method: method, operatorName: getOperatorName() };
 
   if (method === "mail") {
     payload.shipping_company_name = document.getElementById("evidence-mail-company").value.trim();
@@ -1010,7 +1089,7 @@ replyForm.addEventListener("submit", async (e) => {
     const res = await fetch(`/api/conversations/${encodeURIComponent(packId)}/reply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, operatorName: getOperatorName() }),
     });
     if (handleSessionExpired(res)) return;
     const data = await res.json();
@@ -1050,23 +1129,126 @@ replyForm.addEventListener("submit", async (e) => {
 
 const filterCombinarToggle = filterCombinar.closest(".filter-toggle");
 
-// Menu lateral: alterna entre o modulo de Mensagens (conversas pos-venda) e
-// o de Reclamacoes — sistemas separados, cada um com sua propria barra de
-// abas por baixo (ver #tabs-messages/#tabs-claims). "Só combinar entrega" e
+// Menu lateral: alterna entre o modulo de Mensagens (conversas pos-venda), o
+// de Reclamacoes (cada um com sua propria barra de abas por baixo — ver
+// #tabs-messages/#tabs-claims) e o de Histórico (relatorio de largura
+// inteira, sem lista+conversa — ver #history-pane). "Só combinar entrega" e
 // a ordenacao so existem pra mensagens.
 moduleNavItems.forEach((btn) => {
   btn.addEventListener("click", () => {
     moduleNavItems.forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     state.module = btn.dataset.module;
+    const isMessages = state.module === "messages";
     const isClaims = state.module === "claims";
-    tabsMessages.classList.toggle("hidden", isClaims);
+    const isHistory = state.module === "history";
+
+    tabsMessages.classList.toggle("hidden", !isMessages);
     tabsClaims.classList.toggle("hidden", !isClaims);
-    filterCombinarToggle.classList.toggle("hidden", isClaims);
-    filterSortBtn.classList.toggle("hidden", isClaims);
-    loadList();
+    filterCombinarToggle.classList.toggle("hidden", !isMessages);
+    filterSortBtn.classList.toggle("hidden", !isMessages);
+
+    listPaneEl.classList.toggle("hidden", isHistory);
+    threadPaneEl.classList.toggle("hidden", isHistory);
+    historyPane.classList.toggle("hidden", !isHistory);
+
+    if (isHistory) {
+      populateOperatorFilter();
+      loadHistory();
+    } else {
+      loadList();
+    }
   });
 });
+
+// ---------- Histórico de respostas ----------
+const HISTORY_TYPE_LABELS = { message: "Mensagem", claim: "Reclamação" };
+
+function renderHistory(rows) {
+  if (!rows.length) {
+    historyList.innerHTML =
+      '<p class="muted empty-msg">Nenhuma resposta registrada ainda com esses filtros.</p>';
+    return;
+  }
+  historyList.innerHTML = rows
+    .map(
+      (r) => `
+    <div class="history-row">
+      <div class="history-row-main">
+        <strong class="history-operator"></strong>
+        <span class="tag ${r.type === "claim" ? "tag-claim" : "tag-shipping"}">${
+        HISTORY_TYPE_LABELS[r.type] || r.type
+      }</span>
+      </div>
+      <div class="history-row-meta muted small">
+        ${r.order_id ? `Pedido #${r.order_id} · ` : ""}${r.buyer_name || "Comprador"}${
+        r.seller_nickname ? ` · ${r.seller_nickname}` : ""
+      } · ${fmtDate(r.sent_date)}
+      </div>
+      <div class="history-row-text"></div>
+    </div>
+  `
+    )
+    .join("");
+
+  // Nome do operador e texto da mensagem sao preenchidos via textContent
+  // (nao interpolados no HTML acima) porque vem de digitacao livre.
+  const rowEls = historyList.querySelectorAll(".history-row");
+  rows.forEach((r, i) => {
+    rowEls[i].querySelector(".history-operator").textContent = r.operator_name || "-";
+    rowEls[i].querySelector(".history-row-text").textContent = r.text || "";
+  });
+}
+
+async function populateOperatorFilter() {
+  try {
+    const res = await fetch("/api/operators");
+    if (!res.ok) return;
+    const names = await res.json();
+    const current = historyOperatorFilter.value;
+    historyOperatorFilter.innerHTML = "";
+    const optAll = document.createElement("option");
+    optAll.value = "";
+    optAll.textContent = "Todos os operadores";
+    historyOperatorFilter.appendChild(optAll);
+    for (const name of names) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      historyOperatorFilter.appendChild(opt);
+    }
+    historyOperatorFilter.value = current;
+  } catch (e) {
+    // sem lista de operadores pro filtro nao impede o resto de funcionar
+  }
+}
+
+async function loadHistory() {
+  historyList.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
+
+  const params = new URLSearchParams();
+  if (historyOperatorFilter.value) params.set("operator", historyOperatorFilter.value);
+  if (historyFrom.value) params.set("from", historyFrom.value);
+  if (historyTo.value) params.set("to", historyTo.value);
+
+  try {
+    const res = await fetch(`/api/operator-log?${params.toString()}`);
+    if (handleSessionExpired(res)) return;
+    if (!res.ok) {
+      historyList.innerHTML = '<p class="muted">Erro ao carregar o histórico.</p>';
+      return;
+    }
+    const data = await res.json();
+    renderHistory(data.rows || []);
+  } catch (e) {
+    historyList.innerHTML = '<p class="muted">Erro ao carregar o histórico.</p>';
+  }
+}
+
+if (historyRefreshBtn) historyRefreshBtn.addEventListener("click", () => loadHistory());
+if (historyOperatorFilter) historyOperatorFilter.addEventListener("change", () => loadHistory());
+if (historyFrom) historyFrom.addEventListener("change", () => loadHistory());
+if (historyTo) historyTo.addEventListener("change", () => loadHistory());
 
 // Menu lateral recolhivel: so afeta telas grandes (no celular o CSS ignora
 // essas classes e mantem a barra horizontal de sempre). A preferencia fica

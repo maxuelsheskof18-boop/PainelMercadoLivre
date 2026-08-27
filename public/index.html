@@ -8,6 +8,25 @@
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+  <!-- Identificacao leve de quem esta operando o painel (varios atendentes
+       compartilham a mesma senha) — sem cadastro nem senha por pessoa, so
+       pede o nome uma vez por aparelho, pra registrar quem respondeu cada
+       pedido (ver modulo "Histórico"). -->
+  <div id="operator-modal" class="operator-modal hidden">
+    <div class="operator-modal-card">
+      <button type="button" id="operator-modal-close" class="operator-modal-close hidden" title="Fechar">×</button>
+      <div class="operator-modal-icon">🎧</div>
+      <h2>Quem está respondendo?</h2>
+      <p class="muted small">
+        Digite seu nome. Ele vai junto em cada mensagem que você enviar — com o pedido, a data e a hora — pra saber quem atendeu o quê.
+      </p>
+      <form id="operator-modal-form">
+        <input type="text" id="operator-name-input" placeholder="Seu nome" maxlength="60" autocomplete="off" required />
+        <button type="submit" class="btn btn-primary">Começar a atender</button>
+      </form>
+    </div>
+  </div>
+
   <header class="topbar">
     <div class="topbar-brand">
       <span class="brand-mark">ML</span>
@@ -33,6 +52,9 @@
       </div>
       <button id="freight-account-btn" class="btn btn-ghost" title="Conectar Melhor Envio pra calcular frete">
         <span class="btn-icon">📦</span><span class="btn-label" id="freight-account-label">Melhor Envio</span>
+      </button>
+      <button id="operator-chip" class="btn btn-ghost" title="Trocar de operador">
+        <span class="btn-icon">🎧</span><span class="btn-label" id="operator-chip-name">Operador</span>
       </button>
       <button id="bell" class="bell" title="Mensagens pendentes">
         🔔<span id="bell-count" class="badge hidden">0</span>
@@ -60,13 +82,19 @@
           <span class="module-nav-label">Reclamações</span>
           <span id="module-badge-claims" class="tab-count module-badge hidden">0</span>
         </button>
+        <button class="module-nav-item" data-module="history" title="Histórico">
+          <span class="module-nav-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+          </span>
+          <span class="module-nav-label">Histórico</span>
+        </button>
       </div>
       <button type="button" id="module-nav-toggle" class="module-nav-toggle" title="Recolher menu">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
         <span class="module-nav-toggle-label">Recolher</span>
       </button>
     </nav>
-    <section class="list-pane">
+    <section id="list-pane" class="list-pane">
       <div id="tabs-messages" class="tabs">
         <button class="tab active" data-status="pending">
           Pendentes<span id="tab-count-pending" class="tab-count hidden">0</span>
@@ -108,7 +136,7 @@
       </div>
     </section>
 
-    <section class="thread-pane">
+    <section id="thread-pane" class="thread-pane">
       <div id="thread-empty" class="muted centered empty-state">
         <span class="empty-state-icon">💬</span>
         <p>Selecione uma conversa na lista ao lado.</p>
@@ -207,6 +235,23 @@
           <button type="submit" class="btn btn-primary">Enviar</button>
         </form>
         <div id="reply-attachment-name" class="muted small hidden"></div>
+      </div>
+    </section>
+
+    <section id="history-pane" class="history-pane hidden">
+      <div class="history-header">
+        <h2>Histórico de respostas</h2>
+        <div class="history-filters">
+          <select id="history-operator-filter" title="Filtrar por operador">
+            <option value="">Todos os operadores</option>
+          </select>
+          <input type="date" id="history-from" title="A partir de" />
+          <input type="date" id="history-to" title="Até" />
+          <button type="button" id="history-refresh-btn" class="btn btn-ghost btn-sm" title="Atualizar lista">⟳ Atualizar</button>
+        </div>
+      </div>
+      <div id="history-list" class="history-list">
+        <p class="muted empty-msg">Carregando...</p>
       </div>
     </section>
   </main>

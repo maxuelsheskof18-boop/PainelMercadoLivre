@@ -223,6 +223,63 @@ body {
   justify-content: center;
 }
 
+/* ---------- Identificacao do operador ---------- */
+#operator-chip-name {
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.operator-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 20px;
+}
+.operator-modal-card {
+  position: relative;
+  background: var(--card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 34px 28px 28px;
+  width: 100%;
+  max-width: 360px;
+  text-align: center;
+}
+.operator-modal-icon { font-size: 32px; margin-bottom: 8px; }
+.operator-modal-card h2 { margin: 0 0 8px; font-size: 18px; letter-spacing: -0.01em; }
+.operator-modal-card p { margin: 0 0 20px; line-height: 1.5; }
+.operator-modal-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  border: none;
+  background: transparent;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 6px;
+  border-radius: var(--radius-sm);
+}
+.operator-modal-close:hover { background: var(--bg); color: var(--text); }
+#operator-modal-form { display: flex; flex-direction: column; gap: 10px; }
+#operator-name-input {
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.15s;
+}
+#operator-name-input:focus { border-color: var(--accent); }
+
 /* ---------- Layout ---------- */
 .layout {
   display: grid;
@@ -348,7 +405,8 @@ body {
   }
   .module-nav,
   .list-pane,
-  .thread-pane {
+  .thread-pane,
+  .history-pane {
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-md);
     border: 1px solid var(--border);
@@ -582,6 +640,55 @@ body {
 
 /* ---------- Thread ---------- */
 .thread-pane { display: flex; flex-direction: column; background: var(--bg); }
+
+/* ---------- Histórico de respostas (varios operadores) ---------- */
+/* Ocupa o mesmo espaco de list-pane + thread-pane juntos (colunas 2 e 3 do
+   grid), ja que essa tela nao e um chat — e uma lista/relatorio de largura
+   inteira. */
+.history-pane {
+  grid-column: 2 / 4;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--card);
+}
+.history-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.history-header h2 { margin: 0; font-size: 16px; letter-spacing: -0.01em; }
+.history-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.history-filters select,
+.history-filters input[type="date"] {
+  padding: 7px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  font-family: inherit;
+  color: var(--text-soft);
+  background: var(--card);
+}
+.history-list { flex: 1; overflow-y: auto; padding: 4px 20px 20px; }
+.history-row {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.history-row:last-child { border-bottom: none; }
+.history-row-main { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+.history-operator { font-size: 13.5px; }
+.history-row-meta { margin-bottom: 4px; }
+.history-row-text {
+  font-size: 13px;
+  color: var(--text-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .thread { display: flex; flex-direction: column; height: 100%; }
 .empty-state { flex-direction: column; gap: 10px; }
 .empty-state-icon { font-size: 34px; opacity: 0.5; }
@@ -817,6 +924,16 @@ body {
      celular o menu ja vira uma barra horizontal enxuta. */
   .module-nav-toggle {
     display: none;
+  }
+  /* No celular o grid vira 1 coluna so — sem isso, o "grid-column: 2 / 4"
+     do histórico criaria colunas extras fora da tela (rolagem horizontal). */
+  .history-pane {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .history-header {
+    flex-direction: column;
+    align-items: stretch;
   }
   .list-pane {
     border-right: none;
