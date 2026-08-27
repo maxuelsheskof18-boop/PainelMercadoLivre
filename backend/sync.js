@@ -356,6 +356,50 @@ async function upsertNoContactOrder(sellerId, packId, order, orderInfo) {
   );
 }
 
+// Um pedido ja entregue (mas que NAO e combinar entrega — esse caso ja e
+// tratado por isAlreadyResolved/markConversationResolved acima) que AINDA
+// NAO recebeu mensagem nenhuma. Diferente de "Sem contato" (que e uma aba
+// visivel), essa e uma marcacao interna ('delivered_watch', nunca aparece
+// em nenhuma aba) so pra "lembrar" desse pedido pros proximos ciclos de
+// reconciliacao — ver o passo de reverificacao logo depois do loop
+// principal em reconcileAccount. Sem isso, um pedido assim (encontrado hoje
+// pela busca dedicada tags=delivered) podia "sumir" de novo silenciosamente
+// assim que saisse da janela dessa busca (numa conta de alto volume, isso
+// acontece rapido), mesmo que o comprador so mande a mensagem dias depois.
+async function upsertDeliveredWatchOrder(sellerId, packId, order, orderInfo) {
+  const sellerIdStr = String(sellerId);
+  const buyerId = order?.buyer?.id != null ? String(order.buyer.id) : null;
+  const buyerNickname = order?.buyer?.nickname || null;
+  const buyerFullName = orderInfo?.buyerFullName ?? null;
+  const productTitle = orderInfo?.productTitle ?? null;
+  const orderTotal = orderInfo && typeof orderInfo.orderTotal === "number" ? orderInfo.orderTotal : null;
+
+  await db.query(
+    `INSERT INTO conversations
+       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, is_combinar_entrega, is_delivered, last_message_text, last_message_date, status, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, true, NULL, NULL, 'delivered_watch', now())
+     ON CONFLICT (pack_id) DO UPDATE SET
+       buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
+       buyer_nickname = COALESCE(EXCLUDED.buyer_nickname, conversations.buyer_nickname),
+       buyer_full_name = COALESCE(EXCLUDED.buyer_full_name, conversations.buyer_full_name),
+       product_title = COALESCE(EXCLUDED.product_title, conversations.product_title),
+       order_total = COALESCE(EXCLUDED.order_total, conversations.order_total),
+       is_delivered = true,
+       updated_at = now()
+     WHERE conversations.status = 'delivered_watch'`,
+    [
+      String(packId),
+      sellerIdStr,
+      order?.id != null ? String(order.id) : null,
+      buyerId,
+      buyerNickname,
+      buyerFullName,
+      productTitle,
+      orderTotal,
+    ]
+  );
+}
+
 // Puxa uma conversa especifica (usado pelo webhook, que ja sabe o pack_id).
 async function syncPack(sellerId, packId, orderId) {
   const accessToken = await getValidAccessToken(sellerId);
@@ -458,6 +502,7 @@ async function reconcileAccount(sellerId) {
   let semContato = 0;
   let cancelados = 0;
   let resolvidosSemContato = 0;
+  let emObservacao = 0;
   for (const order of list) {
     // Pedidos que nao fazem parte de um envio combinado nao tem pack_id
     // (vem null) — nesse caso o proprio order_id funciona no lugar.
@@ -538,6 +583,12 @@ async function reconcileAccount(sellerId) {
             semContato++;
             await upsertNoContactOrder(sellerId, packId, order, orderInfo);
           }
+        } else if (orderInfo?.isDelivered) {
+          // Pedido ja entregue, nao e combinar entrega, ainda sem mensagem
+          // — guarda so pra reverificar depois (ver upsertDeliveredWatchOrder),
+          // nunca aparece em aba nenhuma.
+          emObservacao++;
+          await upsertDeliveredWatchOrder(sellerId, packId, order, orderInfo);
         }
       }
     } catch (err) {
@@ -549,8 +600,46 @@ async function reconcileAccount(sellerId) {
     }
   }
 
+  // Reverifica os pedidos "em observacao" (ja entregues, sem mensagem da
+  // ultima vez que foram vistos) usando o pack_id ja guardado — sem
+  // depender de nenhuma busca por lista de pedidos. E esse passo que
+  // garante que, uma vez descoberto UMA VEZ (mesmo que so enquanto ainda
+  // estava dentro da janela da busca dedicada tags=delivered), um pedido
+  // nunca mais "se perde" so por ter envelhecido numa conta de alto volume.
+  const { rows: watchRows } = await db.query(
+    `SELECT pack_id, order_id FROM conversations WHERE seller_id = $1 AND status = 'delivered_watch'`,
+    [sellerId]
+  );
+  let promovidos = 0;
+  for (const watch of watchRows) {
+    try {
+      const packData = await fetchPackMessages(accessToken, watch.pack_id, sellerId);
+      if (Array.isArray(packData?.messages) && packData.messages.length > 0) {
+        promovidos++;
+        let orderInfo = null;
+        try {
+          const fullOrder = await fetchOrderById(accessToken, watch.order_id);
+          orderInfo = extractOrderInfo(fullOrder);
+        } catch (err) {
+          console.warn(
+            `[reconcile] nao consegui buscar detalhes do pedido em observacao ${watch.order_id}:`,
+            err.status,
+            err.body || err.message
+          );
+        }
+        await upsertConversationFromPack(sellerId, watch.pack_id, packData, watch.order_id, orderInfo);
+      }
+    } catch (err) {
+      console.warn(
+        `[reconcile] falha ao reverificar pedido em observacao ${watch.order_id} (pack ${watch.pack_id}):`,
+        err.status,
+        err.body || err.message
+      );
+    }
+  }
+
   console.log(
-    `[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens, ${semContato} combinar-entrega sem contato ainda, ${cancelados} cancelado(s) ignorado(s), ${resolvidosSemContato} ja entregue(s)/concluido(s) sem contato ignorado(s).`
+    `[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens, ${semContato} combinar-entrega sem contato ainda, ${cancelados} cancelado(s) ignorado(s), ${resolvidosSemContato} ja entregue(s)/concluido(s) sem contato ignorado(s), ${emObservacao} entregue(s) em observacao (sem mensagem ainda), ${watchRows.length} em observacao reverificado(s) (${promovidos} ganharam mensagem agora).`
   );
 }
 

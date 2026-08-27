@@ -47,7 +47,7 @@ async function init() {
       order_total NUMERIC(12,2),                -- valor total da venda (order.total_amount)
       last_message_text TEXT,
       last_message_date TEXT,
-      status TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'answered' | 'blocked' | 'no_contact' | 'cancelled' | 'resolved'
+      status TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'answered' | 'blocked' | 'no_contact' | 'cancelled' | 'resolved' | 'delivered_watch'
       is_combinar_entrega BOOLEAN,              -- null = ainda nao classificado
       is_delivered BOOLEAN,                     -- true = pedido ja entregue (tag "delivered"); usado pra separar
                                                  -- mensagens de pos-entrega (nota fiscal, duvidas) numa aba propria,
