@@ -101,7 +101,18 @@ async function fetchPackMessages(accessToken, packId, sellerId) {
 // pra pegar direto os pedidos de "combinar entrega", sem depender de eles
 // estarem entre os N pedidos mais recentes gerais (ver uso em sync.js).
 // "offset" (opcional) pagina alem dos primeiros resultados.
-async function fetchRecentOrders(accessToken, sellerId, { limit = 50, offset = 0, tags } = {}) {
+// "dateLastUpdatedFrom"/"dateLastUpdatedTo" (opcional) filtram por
+// order.date_last_updated — a API documenta esse campo separado de
+// date_created, o que permite achar pedidos ANTIGOS que tiveram alguma
+// atividade recente (ex: status mudou, ou — na esperanca que o campo
+// reflita isso tambem — uma mensagem nova chegou), mesmo que o pedido em
+// si nao esteja entre os mais recentes por data de criacao (ver uso em
+// sync.js).
+async function fetchRecentOrders(
+  accessToken,
+  sellerId,
+  { limit = 50, offset = 0, tags, dateLastUpdatedFrom, dateLastUpdatedTo } = {}
+) {
   const params = new URLSearchParams({
     seller: sellerId,
     sort: "date_desc",
@@ -109,6 +120,8 @@ async function fetchRecentOrders(accessToken, sellerId, { limit = 50, offset = 0
     offset: String(offset),
   });
   if (tags) params.set("tags", tags);
+  if (dateLastUpdatedFrom) params.set("order.date_last_updated.from", dateLastUpdatedFrom);
+  if (dateLastUpdatedTo) params.set("order.date_last_updated.to", dateLastUpdatedTo);
   return mlFetch(`/orders/search?${params.toString()}`, accessToken);
 }
 
