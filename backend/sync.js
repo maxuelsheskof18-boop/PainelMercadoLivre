@@ -11,9 +11,50 @@ const { getValidAccessToken } = require("./ml/tokens");
 // confirmamos isso testando ao vivo. Em vez disso, olhamos os N pedidos
 // mais recentes e checamos as mensagens de cada um. Isso cobre bem o caso
 // de uso (webhooks cuidam do tempo real; isso aqui e so uma rede de
-// seguranca), mas nao alcanca um pedido de "combinar entrega" muito antigo
-// que ja saiu dessa janela — se isso acontecer, aumente esse numero.
+// seguranca).
+//
+// PROBLEMA JA VISTO NA PRATICA: numa conta que vende muito (ex: dezenas de
+// pedidos por dia via Flex/Agencia, alem dos de combinar entrega), os N
+// pedidos MAIS RECENTES no geral podem ser todos de outros tipos de envio —
+// um pedido de combinar entrega de ontem pode ja ter saido dessa janela so
+// porque vieram 50+ pedidos de outros tipos depois dele. Foi exatamente o
+// que aconteceu com uma conta de maior volume: as mensagens dela paravam de
+// ser importadas.
+//
+// A correcao: alem dessa varredura geral (que continua servindo de rede de
+// seguranca ampla), fazemos TAMBEM uma busca dedicada e paginada so pelos
+// pedidos com a tag "no_shipping" (= combinar entrega) — assim um pedido
+// desse tipo nunca fica de fora so por causa do volume de outros tipos de
+// envio. Ver fetchAllNoShippingOrders() abaixo.
 const RECENT_ORDERS_LIMIT = 50;
+
+// Tamanho de cada pagina e quantas paginas buscar, no maximo, na varredura
+// dedicada de "combinar entrega". Combinar entrega costuma ser uma fatia
+// pequena do total de vendas de uma loja, entao da pra cobrir uma janela
+// bem mais larga (ate 300 pedidos) gastando poucas chamadas extras de API.
+const NO_SHIPPING_PAGE_SIZE = 50;
+const NO_SHIPPING_MAX_PAGES = 6;
+
+// Busca TODOS os pedidos recentes marcados com a tag "no_shipping"
+// (combinar entrega), paginando ate NO_SHIPPING_MAX_PAGES paginas ou ate
+// acabarem os resultados — o que vier primeiro.
+async function fetchAllNoShippingOrders(accessToken, sellerId) {
+  const all = [];
+  let offset = 0;
+  for (let page = 0; page < NO_SHIPPING_MAX_PAGES; page++) {
+    const data = await fetchRecentOrders(accessToken, sellerId, {
+      limit: NO_SHIPPING_PAGE_SIZE,
+      offset,
+      tags: "no_shipping",
+    });
+    const results = Array.isArray(data?.results) ? data.results : [];
+    all.push(...results);
+    offset += results.length;
+    const total = data?.paging?.total ?? offset;
+    if (results.length === 0 || offset >= total) break;
+  }
+  return all;
+}
 
 function messageDate(msg) {
   return (
@@ -233,12 +274,38 @@ async function reconcileAccount(sellerId) {
   const orders = await fetchRecentOrders(accessToken, sellerId, {
     limit: RECENT_ORDERS_LIMIT,
   });
-  const list = Array.isArray(orders?.results) ? orders.results : [];
+  const recentList = Array.isArray(orders?.results) ? orders.results : [];
+
+  // Busca dedicada: todos os pedidos de "combinar entrega" recentes, sem
+  // depender de estarem entre os RECENT_ORDERS_LIMIT pedidos mais recentes
+  // no geral (ver comentario acima de RECENT_ORDERS_LIMIT pra entender o
+  // problema que isso corrige).
+  let noShippingList = [];
+  try {
+    noShippingList = await fetchAllNoShippingOrders(accessToken, sellerId);
+  } catch (err) {
+    console.warn(
+      `[reconcile] falha ao buscar pedidos de combinar entrega (tags=no_shipping) da conta ${sellerId}:`,
+      err.status,
+      err.body || err.message
+    );
+  }
+
+  // Junta as duas listas removendo duplicados (um pedido de combinar
+  // entrega recente o suficiente pode aparecer nas duas buscas).
+  const seenIds = new Set(recentList.map((o) => o?.id));
+  const list = [...recentList];
+  for (const order of noShippingList) {
+    if (order?.id != null && !seenIds.has(order.id)) {
+      seenIds.add(order.id);
+      list.push(order);
+    }
+  }
 
   console.log(
-    `[reconcile] conta ${sellerId}: verificando ${list.length} pedido(s) recente(s) (de um total de ${
+    `[reconcile] conta ${sellerId}: ${recentList.length} pedido(s) recente(s) (de um total de ${
       orders?.paging?.total ?? "?"
-    } pedidos).`
+    }) + ${noShippingList.length} de combinar entrega dedicados = ${list.length} pedido(s) a verificar.`
   );
 
   let comMensagens = 0;
