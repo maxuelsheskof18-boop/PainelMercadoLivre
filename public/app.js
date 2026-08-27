@@ -20,6 +20,10 @@ const moduleBadgeMessages = document.getElementById("module-badge-messages");
 const moduleBadgeClaims = document.getElementById("module-badge-claims");
 const tabsMessages = document.getElementById("tabs-messages");
 const tabsClaims = document.getElementById("tabs-claims");
+const layoutEl = document.querySelector(".layout");
+const moduleNav = document.getElementById("module-nav");
+const moduleNavToggle = document.getElementById("module-nav-toggle");
+const moduleNavToggleLabel = moduleNavToggle ? moduleNavToggle.querySelector(".module-nav-toggle-label") : null;
 const tabCountPending = document.getElementById("tab-count-pending");
 const tabCountNoContact = document.getElementById("tab-count-nocontact");
 const tabCountDelivered = document.getElementById("tab-count-delivered");
@@ -1063,6 +1067,37 @@ moduleNavItems.forEach((btn) => {
     loadList();
   });
 });
+
+// Menu lateral recolhivel: so afeta telas grandes (no celular o CSS ignora
+// essas classes e mantem a barra horizontal de sempre). A preferencia fica
+// salva no navegador pra o vendedor nao ter que recolher de novo toda vez
+// que abrir o painel.
+function applyNavCollapsed(collapsed) {
+  if (moduleNav) moduleNav.classList.toggle("collapsed", collapsed);
+  if (layoutEl) layoutEl.classList.toggle("nav-collapsed", collapsed);
+  if (moduleNavToggle) moduleNavToggle.title = collapsed ? "Expandir menu" : "Recolher menu";
+  if (moduleNavToggleLabel) moduleNavToggleLabel.textContent = collapsed ? "Expandir" : "Recolher";
+}
+
+let navCollapsed = false;
+try {
+  navCollapsed = localStorage.getItem("ml-painel-nav-collapsed") === "1";
+} catch (e) {
+  // navegador sem localStorage (raro) — so segue com o menu expandido
+}
+applyNavCollapsed(navCollapsed);
+
+if (moduleNavToggle) {
+  moduleNavToggle.addEventListener("click", () => {
+    navCollapsed = !navCollapsed;
+    applyNavCollapsed(navCollapsed);
+    try {
+      localStorage.setItem("ml-painel-nav-collapsed", navCollapsed ? "1" : "0");
+    } catch (e) {
+      // sem localStorage: so nao persiste entre sessoes, sem quebrar nada
+    }
+  });
+}
 
 document.querySelectorAll("#tabs-messages .tab").forEach((tab) => {
   tab.addEventListener("click", () => {
