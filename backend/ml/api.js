@@ -96,11 +96,20 @@ async function fetchPackMessages(accessToken, packId, sellerId) {
 // pedido devolve "pack_id" (as vezes null, quando o pedido nao faz parte
 // de um envio combinado — nesse caso usa-se o proprio order_id) e "id"
 // (o order_id).
-async function fetchRecentOrders(accessToken, sellerId, { limit = 50 } = {}) {
-  return mlFetch(
-    `/orders/search?seller=${sellerId}&sort=date_desc&limit=${limit}`,
-    accessToken
-  );
+//
+// "tags" (opcional) filtra so pedidos com aquela tag — ex: "no_shipping"
+// pra pegar direto os pedidos de "combinar entrega", sem depender de eles
+// estarem entre os N pedidos mais recentes gerais (ver uso em sync.js).
+// "offset" (opcional) pagina alem dos primeiros resultados.
+async function fetchRecentOrders(accessToken, sellerId, { limit = 50, offset = 0, tags } = {}) {
+  const params = new URLSearchParams({
+    seller: sellerId,
+    sort: "date_desc",
+    limit: String(limit),
+    offset: String(offset),
+  });
+  if (tags) params.set("tags", tags);
+  return mlFetch(`/orders/search?${params.toString()}`, accessToken);
 }
 
 // Busca o detalhe completo de um pedido (inclui o campo "shipping.id").
