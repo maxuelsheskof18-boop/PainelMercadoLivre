@@ -2,8 +2,54 @@
 // as tabelas locais (conversations + messages), decidindo se ela fica
 // "pending" (aguardando resposta do vendedor) ou "answered".
 const db = require("./db");
-const { fetchPackMessages, fetchRecentOrders, fetchOrderById } = require("./ml/api");
+const { fetchPackMessages, fetchRecentOrders, fetchOrderById, fetchShipment } = require("./ml/api");
 const { getValidAccessToken } = require("./ml/tokens");
+
+// Rotulo legivel pra cada "logistic_type" que o Mercado Livre usa nos envios
+// (confirmado na documentacao oficial de Mercado Envios): "self_service" e o
+// Flex (o proprio vendedor, ou alguem contratado por ele, entrega);
+// "xd_drop_off" e a Agência (o vendedor leva o pacote pra um ponto/agencia
+// do Mercado Envios); "cross_docking" e a Coleta (uma transportadora busca
+// o pacote na casa/loja do vendedor); "drop_off" e o Correios (postagem
+// tradicional); "fulfillment" e o Full (estoque no proprio Mercado Livre).
+// Combinar entrega (tag "no_shipping") nao tem envio de verdade, entao nao
+// entra aqui — fica sempre sem esse rotulo.
+const SHIPPING_TYPE_LABELS = {
+  self_service: "Flex",
+  xd_drop_off: "Agência",
+  cross_docking: "Coleta",
+  drop_off: "Correios",
+  fulfillment: "Full",
+};
+
+// Busca o tipo de envio (Flex/Agência/Coleta/Correios/Full) de um pedido, pra
+// mostrar como uma tag no painel — o vendedor pediu isso pra saber de onde
+// veio a venda, do mesmo jeito que ja existe a tag de "combinar entrega".
+// So vale a pena chamar isso pros pedidos que ja vamos buscar o detalhe
+// completo de qualquer forma (ou seja, os que tem mensagem) — chamar pra
+// TODO pedido verificado a cada reconciliacao pesaria demais numa conta de
+// alto volume, sem necessidade (pedido sem mensagem nao aparece em nenhuma
+// aba, entao a tag nao seria vista mesmo).
+async function fetchShippingType(accessToken, order) {
+  if (!order) return null;
+  const tags = Array.isArray(order.tags) ? order.tags : [];
+  if (tags.includes("no_shipping")) return null; // combinar entrega: sem envio de verdade
+  const shippingId = order?.shipping?.id;
+  if (!shippingId) return null;
+  try {
+    const shipment = await fetchShipment(accessToken, shippingId);
+    const type = shipment?.logistic_type || shipment?.logistic?.type || null;
+    if (!type) return null;
+    return SHIPPING_TYPE_LABELS[type] || null;
+  } catch (err) {
+    console.warn(
+      `[shippingType] falha ao buscar o envio ${shippingId} do pedido ${order?.id}:`,
+      err.status,
+      err.body || err.message
+    );
+    return null;
+  }
+}
 
 // Quantos pedidos recentes verificar por conta a cada reconciliacao. O
 // Mercado Livre nao tem mais (ou nunca teve de forma confiavel, pra essa
@@ -251,11 +297,15 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
   // ainda nao temos os detalhes do pedido, pra nao reclassificar por engano
   // uma conversa que ja estava marcada como "ja entregue" antes.
   const isDelivered = orderInfo && typeof orderInfo.isDelivered === "boolean" ? orderInfo.isDelivered : null;
+  // Mesma logica: fica null (nao mexe no que ja tinha) quando ainda nao
+  // buscamos o envio dessa vez — so os pontos que ja buscam o pedido
+  // completo (ver fetchShippingType) preenchem isso de verdade.
+  const shippingType = orderInfo && orderInfo.shippingType !== undefined ? orderInfo.shippingType : null;
 
   await db.query(
     `INSERT INTO conversations
-       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, is_combinar_entrega, is_delivered, last_message_text, last_message_date, status, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
+       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, is_combinar_entrega, is_delivered, shipping_type, last_message_text, last_message_date, status, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
      ON CONFLICT (pack_id) DO UPDATE SET
        order_id = EXCLUDED.order_id,
        buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
@@ -265,6 +315,7 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
        order_total = COALESCE(EXCLUDED.order_total, conversations.order_total),
        is_combinar_entrega = COALESCE(EXCLUDED.is_combinar_entrega, conversations.is_combinar_entrega),
        is_delivered = COALESCE(EXCLUDED.is_delivered, conversations.is_delivered),
+       shipping_type = COALESCE(EXCLUDED.shipping_type, conversations.shipping_type),
        last_message_text = EXCLUDED.last_message_text,
        last_message_date = EXCLUDED.last_message_date,
        status = EXCLUDED.status,
@@ -280,6 +331,7 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
       orderTotal,
       isCombinarEntrega,
       isDelivered,
+      shippingType,
       last?.text || null,
       messageDate(last),
       status,
@@ -416,6 +468,7 @@ async function syncPack(sellerId, packId, orderId) {
   try {
     const order = await fetchOrderById(accessToken, effectiveOrderId);
     orderInfo = extractOrderInfo(order);
+    orderInfo.shippingType = await fetchShippingType(accessToken, order);
   } catch (err) {
     console.warn(
       `[syncPack] nao consegui buscar detalhes do pedido ${effectiveOrderId}:`,
@@ -537,6 +590,7 @@ async function reconcileAccount(sellerId) {
         try {
           const fullOrder = await fetchOrderById(accessToken, order?.id);
           orderInfo = extractOrderInfo(fullOrder);
+          orderInfo.shippingType = await fetchShippingType(accessToken, fullOrder);
         } catch (err) {
           console.warn(
             `[reconcile] nao consegui buscar detalhes do pedido ${order?.id}:`,
@@ -620,6 +674,7 @@ async function reconcileAccount(sellerId) {
         try {
           const fullOrder = await fetchOrderById(accessToken, watch.order_id);
           orderInfo = extractOrderInfo(fullOrder);
+          orderInfo.shippingType = await fetchShippingType(accessToken, fullOrder);
         } catch (err) {
           console.warn(
             `[reconcile] nao consegui buscar detalhes do pedido em observacao ${watch.order_id}:`,
@@ -829,6 +884,7 @@ async function runBackfillStep(sellerId, accessToken) {
         try {
           const fullOrder = await fetchOrderById(accessToken, order?.id);
           orderInfo = extractOrderInfo(fullOrder);
+          orderInfo.shippingType = await fetchShippingType(accessToken, fullOrder);
         } catch (err) {
           // Segue sem os detalhes extras — a mensagem em si ja vale a pena gravar.
         }
@@ -910,5 +966,6 @@ module.exports = {
   upsertConversationFromPack,
   upsertNoContactOrder,
   extractOrderInfo,
+  fetchShippingType,
   runBackfillStep,
 };

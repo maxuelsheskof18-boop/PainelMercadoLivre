@@ -52,6 +52,11 @@ async function init() {
       is_delivered BOOLEAN,                     -- true = pedido ja entregue (tag "delivered"); usado pra separar
                                                  -- mensagens de pos-entrega (nota fiscal, duvidas) numa aba propria,
                                                  -- fora de Pendentes/Respondidas. Independente de status.
+      shipping_type TEXT,                       -- rotulo legivel do tipo de envio (ex: "Flex", "Agência", "Coleta",
+                                                 -- "Correios", "Full") pra pedidos com envio de verdade pelo Mercado
+                                                 -- Envios. Fica NULL pra combinar entrega (nao tem envio) e enquanto
+                                                 -- ainda nao foi buscado (so buscamos quando ja vamos buscar os
+                                                 -- detalhes completos do pedido, pra nao gastar chamada de API a toa).
       blocked_reason TEXT,                      -- ex: 'blocked_by_refund', 'blocked_by_mediation'
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
@@ -132,6 +137,7 @@ async function init() {
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS blocked_reason TEXT;
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS order_total NUMERIC(12,2);
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_delivered BOOLEAN;
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS shipping_type TEXT;
   `);
 }
 
