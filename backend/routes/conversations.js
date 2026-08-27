@@ -17,6 +17,7 @@ const {
   upsertConversationFromPack,
   fetchShippingType,
 } = require("../sync");
+const { reconcileAllClaims } = require("../claimsSync");
 
 const router = express.Router();
 
@@ -34,7 +35,15 @@ router.get("/pending-count", async (req, res) => {
        COUNT(*) FILTER (WHERE status = 'pending' AND is_delivered = true)::int AS delivered
      FROM conversations`
   );
-  res.json({ pending: rows[0].pending, noContact: rows[0].no_contact, delivered: rows[0].delivered });
+  const { rows: claimRows } = await db.query(
+    `SELECT COUNT(*) FILTER (WHERE local_status = 'pending')::int AS pending FROM claims`
+  );
+  res.json({
+    pending: rows[0].pending,
+    noContact: rows[0].no_contact,
+    delivered: rows[0].delivered,
+    claims: claimRows[0].pending,
+  });
 });
 
 router.get("/conversations", async (req, res) => {
@@ -293,6 +302,15 @@ router.post("/conversations/:packId/reply", express.json(), async (req, res) => 
 router.post("/sync", async (req, res) => {
   try {
     await reconcileAllAccounts();
+    // Reclamacoes sao sincronizadas junto do mesmo botao "Atualizar" — nao
+    // deixa de responder ok se so essa parte falhar (ex: conta sem
+    // permissao de reclamacoes ainda), pra nao travar a atualizacao das
+    // mensagens normais por causa disso.
+    try {
+      await reconcileAllClaims();
+    } catch (err) {
+      console.error("[sync] falha ao sincronizar reclamacoes:", err.message);
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error("[sync]", err.message);

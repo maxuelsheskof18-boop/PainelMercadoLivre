@@ -15,11 +15,30 @@ const express = require("express");
 const db = require("../db");
 const { syncPack } = require("../sync");
 const { parsePackResource } = require("../ml/api");
+const { syncClaim } = require("../claimsSync");
 
 const router = express.Router();
 
 function isMessageTopic(topic) {
   return typeof topic === "string" && topic.toLowerCase().includes("message");
+}
+
+// O nome exato do topico de reclamacoes NUNCA foi confirmado com uma
+// notificacao de verdade (a documentacao publica de webhooks e inconsistente
+// sobre isso — as vezes aparece como "post_purchase", as vezes como
+// "claims"). Por isso o filtro aceita os dois candidatos, e a tabela
+// webhook_events (ver comentario em db.js) grava TODO topico recebido —
+// depois que a primeira reclamacao real chegar, da pra conferir ali qual
+// nome o Mercado Livre realmente usa e ajustar aqui se for diferente.
+function isClaimTopic(topic) {
+  if (typeof topic !== "string") return false;
+  const t = topic.toLowerCase();
+  return t.includes("claim") || t.includes("post_purchase") || t.includes("post-purchase");
+}
+
+function parseClaimResource(resource) {
+  const match = /claims\/([^/?]+)/i.exec(resource || "");
+  return match ? match[1] : null;
 }
 
 router.post("/webhooks/mercadolivre", express.json(), (req, res) => {
@@ -38,6 +57,28 @@ router.post("/webhooks/mercadolivre", express.json(), (req, res) => {
     `INSERT INTO webhook_events (topic, seller_id, resource) VALUES ($1, $2, $3)`,
     [topic || null, String(user_id || "") || null, resource || null]
   ).catch((err) => console.error("[webhook] falha ao gravar webhook_events:", err.message));
+
+  if (isClaimTopic(topic)) {
+    const claimId = parseClaimResource(resource);
+    const claimSellerId = String(user_id || "");
+    if (!claimId || !claimSellerId) {
+      console.warn("[webhook] nao consegui identificar reclamacao/seller em:", resource);
+      return;
+    }
+    (async () => {
+      try {
+        const { rows } = await db.query("SELECT 1 FROM accounts WHERE id = $1", [claimSellerId]);
+        if (!rows.length) {
+          console.warn(`[webhook] notificacao de reclamacao para conta nao conectada: ${claimSellerId}`);
+          return;
+        }
+        await syncClaim(claimSellerId, claimId);
+      } catch (err) {
+        console.error(`[webhook] falha ao sincronizar reclamacao ${claimId}:`, err.message);
+      }
+    })();
+    return;
+  }
 
   if (!isMessageTopic(topic)) return;
 
