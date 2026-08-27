@@ -44,8 +44,20 @@
   </header>
 
   <main class="layout">
+    <nav class="module-nav">
+      <button class="module-nav-item active" data-module="messages">
+        <span class="module-nav-icon">💬</span>
+        <span class="module-nav-label">Mensagens</span>
+        <span id="module-badge-messages" class="tab-count hidden">0</span>
+      </button>
+      <button class="module-nav-item" data-module="claims">
+        <span class="module-nav-icon">⚠️</span>
+        <span class="module-nav-label">Reclamações</span>
+        <span id="module-badge-claims" class="tab-count hidden">0</span>
+      </button>
+    </nav>
     <section class="list-pane">
-      <div class="tabs">
+      <div id="tabs-messages" class="tabs">
         <button class="tab active" data-status="pending">
           Pendentes<span id="tab-count-pending" class="tab-count hidden">0</span>
         </button>
@@ -56,6 +68,10 @@
         <button class="tab" data-status="delivered" title="Mensagens recebidas em pedidos já entregues (nota fiscal, dúvidas, etc.)">
           Entregues<span id="tab-count-delivered" class="tab-count hidden">0</span>
         </button>
+      </div>
+      <div id="tabs-claims" class="tabs hidden">
+        <button class="tab active" data-claim-status="open">Abertas</button>
+        <button class="tab" data-claim-status="closed">Fechadas</button>
       </div>
       <div class="filter-bar">
         <input
@@ -98,7 +114,9 @@
           <span id="thread-delivery-tag" class="tag tag-delivery hidden">Combinar entrega</span>
           <span id="thread-delivered-tag" class="tag tag-delivered hidden">Pedido já entregue</span>
           <span id="thread-shipping-tag" class="tag tag-shipping hidden">-</span>
+          <span id="thread-claim-stage-tag" class="tag tag-claim hidden">-</span>
         </div>
+        <div id="claim-due-banner" class="claim-due-banner hidden"></div>
         <div id="thread-order-card" class="order-card hidden">
           <span class="order-card-icon">📦</span>
           <div class="order-card-info">
@@ -106,6 +124,49 @@
             <span id="order-card-meta" class="muted small"></span>
           </div>
           <a id="order-card-link" href="#" target="_blank" rel="noopener" class="order-card-link">Ver no Mercado Livre ↗</a>
+        </div>
+        <div id="claim-info-card" class="order-card hidden">
+          <span class="order-card-icon">⚠️</span>
+          <div class="order-card-info">
+            <strong id="claim-info-title">-</strong>
+            <span id="claim-info-meta" class="muted small"></span>
+          </div>
+        </div>
+        <div id="evidence-box" class="freight-box hidden">
+          <button type="button" id="evidence-toggle" class="freight-toggle">
+            📮 Enviar comprovante de envio <span id="evidence-toggle-arrow">▾</span>
+          </button>
+          <div id="evidence-form" class="freight-form hidden">
+            <div class="freight-row">
+              <label>Método de envio
+                <select id="evidence-method">
+                  <option value="mail">Correios</option>
+                  <option value="courier">Transportadora</option>
+                  <option value="personal">Entrega pessoal</option>
+                  <option value="email">E-mail (produto digital)</option>
+                </select>
+              </label>
+            </div>
+            <div id="evidence-fields-mail" class="freight-row evidence-fields">
+              <label>Transportadora<input id="evidence-mail-company" placeholder="Correios" /></label>
+              <label>Data de envio<input id="evidence-mail-date" type="date" /></label>
+            </div>
+            <div id="evidence-fields-courier" class="freight-row evidence-fields hidden">
+              <label>Transportadora<input id="evidence-courier-company" /></label>
+              <label>Agência destino<input id="evidence-courier-agency" /></label>
+              <label>Data de envio<input id="evidence-courier-date" type="date" /></label>
+              <label>Nome do destinatário<input id="evidence-courier-receiver" /></label>
+            </div>
+            <div id="evidence-fields-personal" class="freight-row evidence-fields hidden">
+              <label>Data de entrega<input id="evidence-personal-date" type="date" /></label>
+            </div>
+            <div id="evidence-fields-email" class="freight-row evidence-fields hidden">
+              <label>E-mail do destinatário<input id="evidence-email-receiver" type="email" /></label>
+              <label>Data de envio<input id="evidence-email-date" type="date" /></label>
+            </div>
+            <button type="button" id="evidence-send-btn" class="btn btn-primary btn-sm">Enviar comprovante</button>
+            <div id="evidence-results" class="freight-results"></div>
+          </div>
         </div>
         <div id="freight-box" class="freight-box hidden">
           <button type="button" id="freight-toggle" class="freight-toggle">📦 Calcular frete (Melhor Envio) <span id="freight-toggle-arrow">▾</span></button>
@@ -130,9 +191,12 @@
           </button>
         </div>
         <form id="reply-form" class="reply-form">
+          <input type="file" id="reply-attachment" class="hidden" accept=".jpg,.jpeg,.png,.pdf,.txt" />
+          <button type="button" id="reply-attach-btn" class="btn btn-ghost btn-icon-only hidden" title="Anexar arquivo (JPG, PNG, PDF ou TXT, até 5MB)">📎</button>
           <textarea id="reply-text" placeholder="Escreva sua resposta..." required></textarea>
           <button type="submit" class="btn btn-primary">Enviar</button>
         </form>
+        <div id="reply-attachment-name" class="muted small hidden"></div>
       </div>
     </section>
   </main>

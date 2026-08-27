@@ -1,6 +1,9 @@
 const state = {
-  status: "pending",
+  module: "messages", // "messages" | "claims" — qual dos dois paineis (menu lateral) esta ativo
+  status: "pending", // aba dentro do modulo "messages"
+  claimStatus: "open", // aba dentro do modulo "claims": "open" | "closed"
   selectedPackId: null,
+  selectedClaimId: null, // reclamacao aberta no momento (mutuamente exclusivo com selectedPackId)
   pollTimer: null,
   onlyCombinar: false,
   searchQuery: "",
@@ -12,6 +15,11 @@ const state = {
 
 const listEl = document.getElementById("conversation-list");
 const bellCount = document.getElementById("bell-count");
+const moduleNavItems = document.querySelectorAll(".module-nav-item");
+const moduleBadgeMessages = document.getElementById("module-badge-messages");
+const moduleBadgeClaims = document.getElementById("module-badge-claims");
+const tabsMessages = document.getElementById("tabs-messages");
+const tabsClaims = document.getElementById("tabs-claims");
 const tabCountPending = document.getElementById("tab-count-pending");
 const tabCountNoContact = document.getElementById("tab-count-nocontact");
 const tabCountDelivered = document.getElementById("tab-count-delivered");
@@ -27,9 +35,17 @@ const orderCardLink = document.getElementById("order-card-link");
 const threadDeliveryTag = document.getElementById("thread-delivery-tag");
 const threadDeliveredTag = document.getElementById("thread-delivered-tag");
 const threadShippingTag = document.getElementById("thread-shipping-tag");
+const threadClaimStageTag = document.getElementById("thread-claim-stage-tag");
+const claimDueBanner = document.getElementById("claim-due-banner");
+const claimInfoCard = document.getElementById("claim-info-card");
+const claimInfoTitle = document.getElementById("claim-info-title");
+const claimInfoMeta = document.getElementById("claim-info-meta");
 const threadMessages = document.getElementById("thread-messages");
 const replyForm = document.getElementById("reply-form");
 const replyText = document.getElementById("reply-text");
+const replyAttachBtn = document.getElementById("reply-attach-btn");
+const replyAttachmentInput = document.getElementById("reply-attachment");
+const replyAttachmentNameEl = document.getElementById("reply-attachment-name");
 const filterCombinar = document.getElementById("filter-combinar");
 const filterSearch = document.getElementById("filter-search");
 const filterSeller = document.getElementById("filter-seller");
@@ -54,6 +70,14 @@ const freightResults = document.getElementById("freight-results");
 
 const quickTemplates = document.getElementById("quick-templates");
 const templateCombinarBtn = document.getElementById("template-combinar-btn");
+
+const evidenceBox = document.getElementById("evidence-box");
+const evidenceToggle = document.getElementById("evidence-toggle");
+const evidenceToggleArrow = document.getElementById("evidence-toggle-arrow");
+const evidenceForm = document.getElementById("evidence-form");
+const evidenceMethodSelect = document.getElementById("evidence-method");
+const evidenceSendBtn = document.getElementById("evidence-send-btn");
+const evidenceResults = document.getElementById("evidence-results");
 
 const accountsBtn = document.getElementById("accounts-btn");
 const accountsPanel = document.getElementById("accounts-panel");
@@ -195,10 +219,29 @@ async function loadPendingCount() {
     tabCountDelivered.classList.add("hidden");
   }
 
+  // Os badges dos dois itens do menu lateral (modulos) somam tudo que
+  // precisa de acao dentro de cada um, pra dar pra ver de relance qual dos
+  // dois painéis tem coisa pendente sem precisar entrar em nenhum dos dois.
+  const messagesPending = data.pending + data.delivered;
+  if (messagesPending > 0) {
+    moduleBadgeMessages.textContent = messagesPending;
+    moduleBadgeMessages.classList.remove("hidden");
+  } else {
+    moduleBadgeMessages.classList.add("hidden");
+  }
+
+  if (data.claims > 0) {
+    moduleBadgeClaims.textContent = data.claims;
+    moduleBadgeClaims.classList.remove("hidden");
+  } else {
+    moduleBadgeClaims.classList.add("hidden");
+  }
+
   // O sino conta tudo que ainda precisa de resposta do vendedor — inclui as
-  // mensagens de pedidos ja entregues (aba "Entregues"), que tambem sao
-  // coisa pendente de responder, so que numa categoria separada.
-  const totalPending = data.pending + data.delivered;
+  // mensagens de pedidos ja entregues (aba "Entregues") e as reclamacoes
+  // aguardando resposta, que tambem sao coisa pendente, so que em categorias
+  // separadas.
+  const totalPending = data.pending + data.delivered + (data.claims || 0);
   if (totalPending > 0) {
     bellCount.textContent = totalPending;
     bellCount.classList.remove("hidden");
@@ -283,6 +326,296 @@ async function loadConversations() {
   }
 }
 
+// ---------- Reclamacoes (Central de Resolucoes/mediacao) ----------
+// Sistema SEPARADO das conversas de mensagens pos-venda acima — tem seu
+// proprio endpoint (/api/claims), formato de dado e regras (ver
+// backend/claimsSync.js e backend/ml/claimsApi.js).
+const CLAIM_TYPE_LABELS = {
+  mediations: "Mediação",
+  cancel_purchase: "Cancelamento de compra",
+  return: "Devolução",
+  cancel_sale: "Cancelamento de venda",
+};
+const CLAIM_STAGE_LABELS = {
+  claim: "Reclamação",
+  dispute: "Em mediação (Mercado Livre)",
+  recontact: "Recontato",
+  none: "Reclamação",
+};
+
+function claimTypeLabel(claim) {
+  return CLAIM_TYPE_LABELS[claim.type] || claim.type || "Reclamação";
+}
+function claimStageLabel(claim) {
+  return CLAIM_STAGE_LABELS[claim.stage] || claim.stage || "Reclamação";
+}
+
+function loadList() {
+  return state.module === "claims" ? loadClaims() : loadConversations();
+}
+
+async function loadClaims() {
+  listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
+  const params = new URLSearchParams({ status: state.claimStatus });
+  if (state.sellerId) params.set("sellerId", state.sellerId);
+  if (state.searchQuery) params.set("q", state.searchQuery);
+
+  const res = await fetch(`/api/claims?${params.toString()}`);
+  if (handleSessionExpired(res)) return;
+  if (!res.ok) {
+    listEl.innerHTML = '<p class="muted empty-msg">Erro ao carregar.</p>';
+    return;
+  }
+  const items = await res.json();
+
+  if (items.length === 0) {
+    const label = state.claimStatus === "closed" ? "fechada" : "em aberto";
+    listEl.innerHTML = `<p class="muted empty-msg">Nenhuma reclamação ${label}.</p>`;
+    return;
+  }
+
+  listEl.innerHTML = "";
+  for (const claim of items) {
+    const div = document.createElement("div");
+    const isUnread = claim.local_status === "pending";
+    div.className =
+      "conversation-item" +
+      (claim.claim_id === state.selectedClaimId ? " selected" : "") +
+      (isUnread ? " unread" : "");
+    const label = claim.buyer_full_name || "Comprador #" + (claim.buyer_id || "?");
+    const preview = claim.last_message_text
+      ? claim.last_message_text.slice(0, 90)
+      : "Reclamação aberta — nenhuma mensagem trocada ainda";
+    div.innerHTML = `
+      ${avatarHtml(label)}
+      <div class="ci-body">
+        <div class="ci-top">
+          <span class="ci-buyer">${label}</span>
+          <span class="ci-store">${claim.seller_nickname || ""}</span>
+        </div>
+        ${claim.product_title ? `<div class="ci-product">${claim.product_title}</div>` : ""}
+        <div class="ci-preview">${preview}</div>
+        <div class="ci-bottom">
+          <span class="ci-date">${fmtDate(claim.last_message_date)}${claim.order_id ? ` · #${claim.order_id}` : ""}</span>
+          <span class="tag tag-claim">${claimTypeLabel(claim)}</span>
+        </div>
+      </div>
+    `;
+    div.addEventListener("click", () => openClaimThread(claim));
+    listEl.appendChild(div);
+  }
+}
+
+function renderClaimThreadInfo(claim) {
+  const label = claim.buyer_full_name || "Comprador #" + (claim.buyer_id || "?");
+  threadBuyer.textContent = label;
+  threadAvatar.innerHTML = "";
+  threadAvatar.style.background = avatarColor(label);
+  threadAvatar.textContent = avatarInitial(label);
+  const accountBits = [];
+  if (claim.seller_nickname) accountBits.push(`Loja: ${claim.seller_nickname}`);
+  if (claim.order_id) accountBits.push(`Pedido #${claim.order_id}`);
+  threadAccount.textContent = accountBits.join(" · ");
+
+  // Tags/atalhos das conversas de mensagens nao fazem sentido aqui.
+  threadDeliveryTag.classList.add("hidden");
+  threadDeliveredTag.classList.add("hidden");
+  threadShippingTag.classList.add("hidden");
+  quickTemplates.classList.add("hidden");
+  freightBox.classList.add("hidden");
+  orderCard.classList.add("hidden");
+
+  threadClaimStageTag.textContent = claimStageLabel(claim);
+  threadClaimStageTag.classList.remove("hidden");
+
+  if (claim.mandatory_action && claim.due_date) {
+    claimDueBanner.textContent = `⏰ Ação necessária até ${fmtDate(claim.due_date)} — responda ou envie o que for pedido antes do prazo.`;
+    claimDueBanner.classList.remove("hidden");
+  } else {
+    claimDueBanner.classList.add("hidden");
+  }
+
+  claimInfoCard.classList.remove("hidden");
+  claimInfoTitle.textContent = claim.product_title || claimTypeLabel(claim);
+  const metaBits = [claimTypeLabel(claim)];
+  if (claim.reason_id) metaBits.push(`Motivo: ${claim.reason_id}`);
+  if (claim.order_id) metaBits.push(`Pedido #${claim.order_id}`);
+  const totalLabel = fmtMoney(claim.order_total);
+  if (totalLabel) metaBits.push(totalLabel);
+  claimInfoMeta.textContent = metaBits.join(" · ");
+
+  evidenceBox.classList.remove("hidden");
+  evidenceForm.classList.add("hidden");
+  evidenceToggleArrow.textContent = "▾";
+  evidenceResults.innerHTML = "";
+
+  replyAttachBtn.classList.remove("hidden");
+  replyAttachmentInput.value = "";
+  replyAttachmentNameEl.classList.add("hidden");
+}
+
+function renderClaimMessages(messages) {
+  threadMessages.innerHTML = "";
+  if (messages.length === 0) {
+    threadMessages.innerHTML =
+      '<p class="muted centered">Nenhuma mensagem trocada ainda nesta reclamação.</p>';
+    return;
+  }
+  for (const m of messages) {
+    const div = document.createElement("div");
+    div.className = "msg " + (m.sender_role === "respondent" ? "msg-out" : "msg-in");
+    const roleLabel =
+      m.sender_role === "respondent" ? "Você" : m.sender_role === "mediator" ? "Mercado Livre" : "Comprador";
+    div.innerHTML = `<div class="msg-text"></div><div class="msg-date">${roleLabel} · ${fmtDate(m.sent_date)}</div>`;
+    div.querySelector(".msg-text").textContent = m.message || "";
+    threadMessages.appendChild(div);
+  }
+  threadMessages.scrollTop = threadMessages.scrollHeight;
+}
+
+async function loadClaimMessages(claimId) {
+  const res = await fetch(`/api/claims/${encodeURIComponent(claimId)}/messages`);
+  if (handleSessionExpired(res)) return false;
+  if (!res.ok) {
+    threadMessages.innerHTML = '<p class="muted">Erro ao carregar as mensagens.</p>';
+    return false;
+  }
+  const data = await res.json();
+  if (data.claim) renderClaimThreadInfo(data.claim);
+  renderClaimMessages(data.messages || []);
+  return true;
+}
+
+async function openClaimThread(claim) {
+  state.selectedClaimId = claim.claim_id;
+  state.selectedPackId = null;
+  document.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
+
+  threadEmpty.classList.add("hidden");
+  threadEl.classList.remove("hidden");
+  renderClaimThreadInfo(claim);
+  threadMessages.innerHTML = '<p class="muted">Carregando mensagens...</p>';
+  replyForm.dataset.mode = "claim";
+  replyForm.dataset.claimId = claim.claim_id;
+  delete replyForm.dataset.packId;
+  openMobileThread();
+
+  await loadClaimMessages(claim.claim_id);
+  await loadClaims();
+}
+
+replyAttachBtn.addEventListener("click", () => replyAttachmentInput.click());
+replyAttachmentInput.addEventListener("change", () => {
+  const f = replyAttachmentInput.files[0];
+  if (f) {
+    replyAttachmentNameEl.textContent = `📎 ${f.name} (${Math.ceil(f.size / 1024)} KB)`;
+    replyAttachmentNameEl.classList.remove("hidden");
+  } else {
+    replyAttachmentNameEl.classList.add("hidden");
+  }
+});
+
+async function submitClaimReply() {
+  const claimId = replyForm.dataset.claimId;
+  const text = replyText.value.trim();
+  if (!claimId || !text) return;
+
+  const btn = replyForm.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  try {
+    const formData = new FormData();
+    formData.set("text", text);
+    if (replyAttachmentInput.files[0]) {
+      formData.set("file", replyAttachmentInput.files[0]);
+    }
+    const res = await fetch(`/api/claims/${encodeURIComponent(claimId)}/reply`, {
+      method: "POST",
+      body: formData,
+    });
+    if (handleSessionExpired(res)) return;
+    const data = await res.json();
+    if (!res.ok) {
+      const detail = typeof data.detail === "string" ? data.detail : "";
+      alert((data.error || "Falha ao enviar a mensagem.") + (detail ? `\n\nMotivo: ${detail}` : ""));
+      return;
+    }
+    replyText.value = "";
+    replyAttachmentInput.value = "";
+    replyAttachmentNameEl.classList.add("hidden");
+    if (claimId === state.selectedClaimId) {
+      await loadClaimMessages(claimId);
+    }
+    await Promise.all([loadClaims(), loadPendingCount()]);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Converte um valor de <input type="date"> ("AAAA-MM-DD") pro formato ISO
+// 8601 com horario que a API de evidencias espera, usando meio-dia no
+// horario de Brasilia (o horario exato do dia nao importa pra essa
+// finalidade, so a data).
+function toEvidenceDateParam(dateStr) {
+  if (!dateStr) return null;
+  return `${dateStr}T12:00:00.000-03:00`;
+}
+
+evidenceToggle.addEventListener("click", () => {
+  const willShow = evidenceForm.classList.contains("hidden");
+  evidenceForm.classList.toggle("hidden", !willShow);
+  evidenceToggleArrow.textContent = willShow ? "▴" : "▾";
+});
+
+evidenceMethodSelect.addEventListener("change", () => {
+  document.querySelectorAll(".evidence-fields").forEach((el) => el.classList.add("hidden"));
+  const target = document.getElementById(`evidence-fields-${evidenceMethodSelect.value}`);
+  if (target) target.classList.remove("hidden");
+});
+
+evidenceSendBtn.addEventListener("click", async () => {
+  const claimId = state.selectedClaimId;
+  if (!claimId) return;
+  const method = evidenceMethodSelect.value;
+  const payload = { shipping_method: method };
+
+  if (method === "mail") {
+    payload.shipping_company_name = document.getElementById("evidence-mail-company").value.trim();
+    payload.date_shipped = toEvidenceDateParam(document.getElementById("evidence-mail-date").value);
+  } else if (method === "courier") {
+    payload.shipping_company_name = document.getElementById("evidence-courier-company").value.trim();
+    payload.destination_agency = document.getElementById("evidence-courier-agency").value.trim();
+    payload.date_shipped = toEvidenceDateParam(document.getElementById("evidence-courier-date").value);
+    payload.receiver_name = document.getElementById("evidence-courier-receiver").value.trim();
+  } else if (method === "personal") {
+    payload.date_delivered = toEvidenceDateParam(document.getElementById("evidence-personal-date").value);
+  } else if (method === "email") {
+    payload.receiver_email = document.getElementById("evidence-email-receiver").value.trim();
+    payload.date_shipped = toEvidenceDateParam(document.getElementById("evidence-email-date").value);
+  }
+
+  evidenceSendBtn.disabled = true;
+  evidenceResults.innerHTML = '<p class="freight-msg muted">Enviando...</p>';
+  try {
+    const res = await fetch(`/api/claims/${encodeURIComponent(claimId)}/evidence`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (handleSessionExpired(res)) return;
+    const data = await res.json();
+    if (!res.ok) {
+      evidenceResults.innerHTML = `<p class="freight-msg freight-error">${data.error || "Falha ao enviar o comprovante."}</p>`;
+      return;
+    }
+    evidenceResults.innerHTML = '<p class="freight-msg">Comprovante enviado!</p>';
+    await loadClaimMessages(claimId);
+  } catch (e) {
+    evidenceResults.innerHTML = '<p class="freight-msg freight-error">Falha ao enviar o comprovante.</p>';
+  } finally {
+    evidenceSendBtn.disabled = false;
+  }
+});
+
 function openMobileThread() {
   document.body.classList.add("thread-open");
 }
@@ -311,6 +644,16 @@ function renderThreadInfo(conv) {
   // O atalho da mensagem padrao de "combinar entrega" so faz sentido pra
   // pedidos classificados assim — nos outros, fica escondido.
   quickTemplates.classList.toggle("hidden", !conv.is_combinar_entrega);
+
+  // Elementos que so existem pra reclamacoes (ver renderClaimThreadInfo) —
+  // sempre escondidos numa conversa de mensagens normal.
+  threadClaimStageTag.classList.add("hidden");
+  claimDueBanner.classList.add("hidden");
+  claimInfoCard.classList.add("hidden");
+  evidenceBox.classList.add("hidden");
+  replyAttachBtn.classList.add("hidden");
+  replyAttachmentInput.value = "";
+  replyAttachmentNameEl.classList.add("hidden");
 
   if (conv.product_title || conv.order_id) {
     orderCard.classList.remove("hidden");
@@ -625,13 +968,16 @@ async function loadThreadMessages(packId) {
 
 async function openThread(conv) {
   state.selectedPackId = conv.pack_id;
+  state.selectedClaimId = null;
   document.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
 
   threadEmpty.classList.add("hidden");
   threadEl.classList.remove("hidden");
   renderThreadInfo(conv);
   threadMessages.innerHTML = '<p class="muted">Carregando mensagens...</p>';
+  replyForm.dataset.mode = "conversation";
   replyForm.dataset.packId = conv.pack_id;
+  delete replyForm.dataset.claimId;
   openMobileThread();
 
   await loadThreadMessages(conv.pack_id);
@@ -644,11 +990,17 @@ threadBackBtn.addEventListener("click", () => {
 
 replyForm.addEventListener("submit", async (e) => {
   e.preventDefault();
+
+  if (replyForm.dataset.mode === "claim") {
+    await submitClaimReply();
+    return;
+  }
+
   const packId = replyForm.dataset.packId;
   const text = replyText.value.trim();
   if (!packId || !text) return;
 
-  const btn = replyForm.querySelector("button");
+  const btn = replyForm.querySelector('button[type="submit"]');
   btn.disabled = true;
   try {
     const res = await fetch(`/api/conversations/${encodeURIComponent(packId)}/reply`, {
@@ -692,18 +1044,47 @@ replyForm.addEventListener("submit", async (e) => {
   }
 });
 
-document.querySelectorAll(".tab").forEach((tab) => {
+const filterCombinarToggle = filterCombinar.closest(".filter-toggle");
+
+// Menu lateral: alterna entre o modulo de Mensagens (conversas pos-venda) e
+// o de Reclamacoes — sistemas separados, cada um com sua propria barra de
+// abas por baixo (ver #tabs-messages/#tabs-claims). "Só combinar entrega" e
+// a ordenacao so existem pra mensagens.
+moduleNavItems.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    moduleNavItems.forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    state.module = btn.dataset.module;
+    const isClaims = state.module === "claims";
+    tabsMessages.classList.toggle("hidden", isClaims);
+    tabsClaims.classList.toggle("hidden", !isClaims);
+    filterCombinarToggle.classList.toggle("hidden", isClaims);
+    filterSortBtn.classList.toggle("hidden", isClaims);
+    loadList();
+  });
+});
+
+document.querySelectorAll("#tabs-messages .tab").forEach((tab) => {
   tab.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+    document.querySelectorAll("#tabs-messages .tab").forEach((t) => t.classList.remove("active"));
     tab.classList.add("active");
     state.status = tab.dataset.status;
-    loadConversations();
+    loadList();
+  });
+});
+
+document.querySelectorAll("#tabs-claims .tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll("#tabs-claims .tab").forEach((t) => t.classList.remove("active"));
+    tab.classList.add("active");
+    state.claimStatus = tab.dataset.claimStatus;
+    loadList();
   });
 });
 
 filterCombinar.addEventListener("change", () => {
   state.onlyCombinar = filterCombinar.checked;
-  loadConversations();
+  loadList();
 });
 
 // Busca livre: espera o usuario parar de digitar (300ms) antes de recarregar
@@ -713,13 +1094,13 @@ filterSearch.addEventListener("input", () => {
   clearTimeout(searchDebounceTimer);
   searchDebounceTimer = setTimeout(() => {
     state.searchQuery = filterSearch.value.trim();
-    loadConversations();
+    loadList();
   }, 300);
 });
 
 filterSeller.addEventListener("change", () => {
   state.sellerId = filterSeller.value;
-  loadConversations();
+  loadList();
 });
 
 filterSortBtn.addEventListener("click", () => {
@@ -731,7 +1112,7 @@ filterSortBtn.addEventListener("click", () => {
     filterSortIcon.textContent = "⬇";
     filterSortLabel.textContent = "Mais recentes";
   }
-  loadConversations();
+  loadList();
 });
 
 document.getElementById("sync-btn").addEventListener("click", async (e) => {
@@ -740,8 +1121,10 @@ document.getElementById("sync-btn").addEventListener("click", async (e) => {
   const label = btn.querySelector(".btn-label");
   if (label) label.textContent = "Atualizando...";
   try {
+    // O mesmo botao atualiza conversas E reclamacoes — /api/sync ja
+    // sincroniza as duas coisas do lado do servidor.
     await fetch("/api/sync", { method: "POST" });
-    await Promise.all([loadConversations(), loadPendingCount()]);
+    await Promise.all([loadList(), loadPendingCount()]);
   } finally {
     btn.disabled = false;
     if (label) label.textContent = "Atualizar";
@@ -754,13 +1137,14 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
 });
 
 document.getElementById("bell").addEventListener("click", () => {
-  document.querySelector('.tab[data-status="pending"]').click();
+  document.querySelector('.module-nav-item[data-module="messages"]').click();
+  document.querySelector('#tabs-messages .tab[data-status="pending"]').click();
 });
 
 // Carga inicial + verificacao periodica (sem precisar de webhook/servidor
 // mandando nada pro navegador: o proprio navegador pergunta de tempos em
 // tempos enquanto a aba estiver aberta).
-loadConversations();
+loadList();
 loadPendingCount();
 loadAccounts();
 loadMelhorEnvioStatus().then(() => {
@@ -779,5 +1163,5 @@ loadMelhorEnvioStatus().then(() => {
 });
 setInterval(loadPendingCount, 20000);
 setInterval(() => {
-  if (!state.selectedPackId) loadConversations();
+  if (!state.selectedPackId && !state.selectedClaimId) loadList();
 }, 30000);
