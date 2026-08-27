@@ -1,7 +1,7 @@
 const state = {
   module: "messages", // "messages" | "claims" | "history" — qual painel (menu lateral) esta ativo
   status: "pending", // aba dentro do modulo "messages"
-  claimStatus: "open", // aba dentro do modulo "claims": "open" | "closed"
+  claimStatus: "pending", // aba dentro do modulo "claims": "pending" | "answered" | "closed"
   selectedPackId: null,
   selectedClaimId: null, // reclamacao aberta no momento (mutuamente exclusivo com selectedPackId)
   pollTimer: null,
@@ -27,6 +27,7 @@ const moduleNavToggleLabel = moduleNavToggle ? moduleNavToggle.querySelector(".m
 const tabCountPending = document.getElementById("tab-count-pending");
 const tabCountNoContact = document.getElementById("tab-count-nocontact");
 const tabCountDelivered = document.getElementById("tab-count-delivered");
+const tabCountClaimsPending = document.getElementById("tab-count-claims-pending");
 const threadEmpty = document.getElementById("thread-empty");
 const threadEl = document.getElementById("thread");
 const threadBuyer = document.getElementById("thread-buyer");
@@ -44,6 +45,7 @@ const claimDueBanner = document.getElementById("claim-due-banner");
 const claimInfoCard = document.getElementById("claim-info-card");
 const claimInfoTitle = document.getElementById("claim-info-title");
 const claimInfoMeta = document.getElementById("claim-info-meta");
+const claimInfoLink = document.getElementById("claim-info-link");
 const threadMessages = document.getElementById("thread-messages");
 const replyForm = document.getElementById("reply-form");
 const replyText = document.getElementById("reply-text");
@@ -301,6 +303,13 @@ async function loadPendingCount() {
     tabCountDelivered.classList.add("hidden");
   }
 
+  if (data.claims > 0) {
+    tabCountClaimsPending.textContent = data.claims;
+    tabCountClaimsPending.classList.remove("hidden");
+  } else {
+    tabCountClaimsPending.classList.add("hidden");
+  }
+
   // Os badges dos dois itens do menu lateral (modulos) somam tudo que
   // precisa de acao dentro de cada um, pra dar pra ver de relance qual dos
   // dois painéis tem coisa pendente sem precisar entrar em nenhum dos dois.
@@ -451,7 +460,8 @@ async function loadClaims() {
   const items = await res.json();
 
   if (items.length === 0) {
-    const label = state.claimStatus === "closed" ? "fechada" : "em aberto";
+    const label =
+      state.claimStatus === "closed" ? "fechada" : state.claimStatus === "answered" ? "respondida" : "pendente";
     listEl.innerHTML = `<p class="muted empty-msg">Nenhuma reclamação ${label}.</p>`;
     return;
   }
@@ -479,6 +489,7 @@ async function loadClaims() {
         <div class="ci-preview">${preview}</div>
         <div class="ci-bottom">
           <span class="ci-date">${fmtDate(claim.last_message_date)}${claim.order_id ? ` · #${claim.order_id}` : ""}</span>
+          ${claim.shipping_type ? `<span class="tag tag-shipping">${claim.shipping_type}</span>` : ""}
           <span class="tag tag-claim">${claimTypeLabel(claim)}</span>
         </div>
       </div>
@@ -499,10 +510,12 @@ function renderClaimThreadInfo(claim) {
   if (claim.order_id) accountBits.push(`Pedido #${claim.order_id}`);
   threadAccount.textContent = accountBits.join(" · ");
 
-  // Tags/atalhos das conversas de mensagens nao fazem sentido aqui.
+  // Tags/atalhos das conversas de mensagens nao fazem sentido aqui — exceto
+  // o tipo de envio (Flex/Agência/etc.), que existe pras duas coisas.
   threadDeliveryTag.classList.add("hidden");
   threadDeliveredTag.classList.add("hidden");
-  threadShippingTag.classList.add("hidden");
+  threadShippingTag.textContent = claim.shipping_type || "-";
+  threadShippingTag.classList.toggle("hidden", !claim.shipping_type);
   quickTemplates.classList.add("hidden");
   freightBox.classList.add("hidden");
   orderCard.classList.add("hidden");
@@ -525,6 +538,12 @@ function renderClaimThreadInfo(claim) {
   const totalLabel = fmtMoney(claim.order_total);
   if (totalLabel) metaBits.push(totalLabel);
   claimInfoMeta.textContent = metaBits.join(" · ");
+  if (claim.order_id) {
+    claimInfoLink.href = `https://www.mercadolivre.com.br/vendas/${claim.order_id}/detalhe`;
+    claimInfoLink.classList.remove("hidden");
+  } else {
+    claimInfoLink.classList.add("hidden");
+  }
 
   evidenceBox.classList.remove("hidden");
   evidenceForm.classList.add("hidden");

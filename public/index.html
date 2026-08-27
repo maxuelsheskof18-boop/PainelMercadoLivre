@@ -108,7 +108,10 @@
         </button>
       </div>
       <div id="tabs-claims" class="tabs hidden">
-        <button class="tab active" data-claim-status="open">Abertas</button>
+        <button class="tab active" data-claim-status="pending" title="Reclamações aguardando sua resposta">
+          Pendentes<span id="tab-count-claims-pending" class="tab-count hidden">0</span>
+        </button>
+        <button class="tab" data-claim-status="answered">Respondidas</button>
         <button class="tab" data-claim-status="closed">Fechadas</button>
       </div>
       <div class="filter-bar">
@@ -169,6 +172,7 @@
             <strong id="claim-info-title">-</strong>
             <span id="claim-info-meta" class="muted small"></span>
           </div>
+          <a id="claim-info-link" href="#" target="_blank" rel="noopener" class="order-card-link hidden">Ver no Mercado Livre ↗</a>
         </div>
         <div id="evidence-box" class="freight-box hidden">
           <button type="button" id="evidence-toggle" class="freight-toggle">
