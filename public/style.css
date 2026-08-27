@@ -415,6 +415,11 @@ body {
   color: #047857;
   border: 1px solid #a7f3d0;
 }
+.tag-shipping {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
 
 /* ---------- Thread ---------- */
 .thread-pane { display: flex; flex-direction: column; background: var(--bg); }

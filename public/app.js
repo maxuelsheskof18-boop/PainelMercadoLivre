@@ -26,6 +26,7 @@ const orderCardMeta = document.getElementById("order-card-meta");
 const orderCardLink = document.getElementById("order-card-link");
 const threadDeliveryTag = document.getElementById("thread-delivery-tag");
 const threadDeliveredTag = document.getElementById("thread-delivered-tag");
+const threadShippingTag = document.getElementById("thread-shipping-tag");
 const threadMessages = document.getElementById("thread-messages");
 const replyForm = document.getElementById("reply-form");
 const replyText = document.getElementById("reply-text");
@@ -273,6 +274,7 @@ async function loadConversations() {
         <div class="ci-bottom">
           <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · #${conv.order_id}` : ""}${fmtMoney(conv.order_total) ? ` · ${fmtMoney(conv.order_total)}` : ""}</span>
           ${conv.is_delivered ? '<span class="tag tag-delivered">Pedido já entregue</span>' : conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
+          ${conv.shipping_type ? `<span class="tag tag-shipping">${conv.shipping_type}</span>` : ""}
         </div>
       </div>
     `;
@@ -304,6 +306,8 @@ function renderThreadInfo(conv) {
   threadAccount.textContent = accountBits.join(" · ");
   threadDeliveryTag.classList.toggle("hidden", !conv.is_combinar_entrega);
   threadDeliveredTag.classList.toggle("hidden", !conv.is_delivered);
+  threadShippingTag.textContent = conv.shipping_type || "-";
+  threadShippingTag.classList.toggle("hidden", !conv.shipping_type);
   // O atalho da mensagem padrao de "combinar entrega" so faz sentido pra
   // pedidos classificados assim — nos outros, fica escondido.
   quickTemplates.classList.toggle("hidden", !conv.is_combinar_entrega);
