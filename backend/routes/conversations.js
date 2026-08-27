@@ -23,23 +23,42 @@ router.use(requireLogin);
 router.get("/pending-count", async (req, res) => {
   const { rows } = await db.query(
     `SELECT
-       COUNT(*) FILTER (WHERE status = 'pending')::int AS pending,
-       COUNT(*) FILTER (WHERE status = 'no_contact')::int AS no_contact
+       COUNT(*) FILTER (WHERE status = 'pending' AND is_delivered IS NOT TRUE)::int AS pending,
+       COUNT(*) FILTER (WHERE status = 'no_contact')::int AS no_contact,
+       COUNT(*) FILTER (WHERE status = 'pending' AND is_delivered = true)::int AS delivered
      FROM conversations`
   );
-  res.json({ pending: rows[0].pending, noContact: rows[0].no_contact });
+  res.json({ pending: rows[0].pending, noContact: rows[0].no_contact, delivered: rows[0].delivered });
 });
 
 router.get("/conversations", async (req, res) => {
-  const status = ["pending", "answered", "no_contact"].includes(req.query.status)
+  const status = ["pending", "answered", "no_contact", "delivered"].includes(req.query.status)
     ? req.query.status
     : "pending";
 
   // Monta o WHERE dinamicamente, sempre com parametros posicionais (nunca
   // concatenando valor de usuario direto na string) pra evitar SQL
   // injection no campo de busca livre.
-  const conditions = ["c.status = $1"];
-  const params = [status];
+  const conditions = [];
+  const params = [];
+
+  if (status === "delivered") {
+    // Categoria separada (pedido do usuario): mensagens recebidas em
+    // pedidos JA ENTREGUES (ex: pedindo nota fiscal, duvida geral) — nao e
+    // mais sobre "combinar a entrega", entao fica fora de
+    // Pendentes/Respondidas, numa aba propria. Pode estar pendente ou ja
+    // respondida dentro dessa aba (por isso os dois status entram aqui).
+    conditions.push("c.is_delivered = true");
+    conditions.push("c.status IN ('pending', 'answered')");
+  } else {
+    params.push(status);
+    conditions.push(`c.status = $${params.length}`);
+    if (status === "pending" || status === "answered") {
+      // Pedidos ja entregues com mensagem saem daqui e vao exclusivamente
+      // pra aba "Entregues" acima, pra nao aparecer duplicado nas duas.
+      conditions.push("c.is_delivered IS NOT TRUE");
+    }
+  }
 
   // Filtro opcional: so as conversas classificadas como "combinar entrega"
   // (coluna is_combinar_entrega). Na aba "no_contact" isso e sempre
