@@ -35,22 +35,47 @@ router.get("/conversations", async (req, res) => {
     ? req.query.status
     : "pending";
 
+  // Monta o WHERE dinamicamente, sempre com parametros posicionais (nunca
+  // concatenando valor de usuario direto na string) pra evitar SQL
+  // injection no campo de busca livre.
+  const conditions = ["c.status = $1"];
+  const params = [status];
+
   // Filtro opcional: so as conversas classificadas como "combinar entrega"
   // (coluna is_combinar_entrega). Na aba "no_contact" isso e sempre
   // verdadeiro (so entra la quem e combinar entrega), mas nao atrapalha
   // deixar o filtro ligado tambem.
-  const onlyCombinar = req.query.combinar === "1";
-  const where = onlyCombinar
-    ? "c.status = $1 AND c.is_combinar_entrega = true"
-    : "c.status = $1";
+  if (req.query.combinar === "1") {
+    conditions.push("c.is_combinar_entrega = true");
+  }
+
+  // Filtro opcional por loja (conta do Mercado Livre) especifica.
+  if (req.query.sellerId) {
+    params.push(req.query.sellerId);
+    conditions.push(`c.seller_id = $${params.length}`);
+  }
+
+  // Busca livre: nome/apelido do comprador, produto ou numero do pedido.
+  const q = (req.query.q || "").trim();
+  if (q) {
+    params.push(`%${q}%`);
+    const p = `$${params.length}`;
+    conditions.push(
+      `(c.buyer_full_name ILIKE ${p} OR c.buyer_nickname ILIKE ${p} OR c.product_title ILIKE ${p} OR c.order_id ILIKE ${p})`
+    );
+  }
+
+  // Ordenacao: mais recentes primeiro (padrao) ou mais antigas primeiro.
+  const orderDir = req.query.sort === "oldest" ? "ASC" : "DESC";
+  const nullsPos = orderDir === "ASC" ? "NULLS FIRST" : "NULLS LAST";
 
   const { rows } = await db.query(
     `SELECT c.*, a.nickname AS seller_nickname
        FROM conversations c
        JOIN accounts a ON a.id = c.seller_id
-       WHERE ${where}
-       ORDER BY c.last_message_date DESC NULLS LAST, c.updated_at DESC`,
-    [status]
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY c.last_message_date ${orderDir} ${nullsPos}, c.updated_at ${orderDir}`,
+    params
   );
 
   res.json(rows);
@@ -354,6 +379,94 @@ router.get("/debug/probe-shipping", async (req, res) => {
       entry.error = err.message;
     }
     report.push(entry);
+  }
+
+  res.json(report);
+});
+
+// Rota TEMPORARIA de diagnostico: dado um numero de pedido, procura em
+// todas as contas conectadas qual delas e a dona, mostra os dados brutos
+// do pedido (tags, status), se ele aparece na busca dedicada de "combinar
+// entrega" (tags=no_shipping), e tenta buscar as mensagens do pack. Serve
+// pra descobrir exatamente onde a cadeia quebra quando um pedido especifico
+// nao aparece no painel. Uso: abrir no navegador (ja logado no painel)
+// /api/debug/probe-order?orderId=2000018117639410
+router.get("/debug/probe-order", async (req, res) => {
+  const orderId = req.query.orderId;
+  if (!orderId) return res.status(400).json({ error: "Informe ?orderId=..." });
+
+  const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts");
+  const report = { orderId, contasChecadas: [] };
+
+  for (const acc of accounts) {
+    const sellerId = acc.id;
+    const entry = { sellerId, nickname: acc.nickname };
+    try {
+      const accessToken = await getValidAccessToken(sellerId);
+
+      let order;
+      try {
+        order = await fetchOrderById(accessToken, orderId);
+      } catch (err) {
+        entry.pedidoEncontradoNestaConta = false;
+        entry.erroBuscarPedido = { status: err.status, body: err.body || err.message };
+        report.contasChecadas.push(entry);
+        continue;
+      }
+
+      entry.pedidoEncontradoNestaConta = true;
+      entry.tags = order?.tags || null;
+      entry.status = order?.status || null;
+      entry.packIdDoPedido = order?.pack_id || null;
+      entry.buyer = order?.buyer
+        ? { id: order.buyer.id, nickname: order.buyer.nickname, first_name: order.buyer.first_name, last_name: order.buyer.last_name }
+        : null;
+      entry.totalAmount = order?.total_amount ?? null;
+      entry.dateCreated = order?.date_created || null;
+
+      // Confere se esse pedido aparece na busca dedicada por tags=no_shipping
+      // (a que corrige o problema de pedidos saindo da janela dos mais
+      // recentes) — se nao aparecer aqui mesmo sendo no_shipping, o
+      // problema esta na busca da API, nao no processamento do painel.
+      try {
+        const noShippingSearch = await fetchRecentOrders(accessToken, sellerId, {
+          limit: 50,
+          tags: "no_shipping",
+        });
+        const found = (noShippingSearch?.results || []).some((o) => String(o.id) === String(orderId));
+        entry.apareceNaBuscaTagsNoShipping = found;
+        entry.totalPedidosNaBuscaTagsNoShipping = noShippingSearch?.paging?.total ?? null;
+      } catch (err) {
+        entry.erroBuscaTagsNoShipping = { status: err.status, body: err.body || err.message };
+      }
+
+      // Tenta buscar as mensagens do pack (pack_id do pedido, ou o proprio
+      // order_id quando nao ha pack_id — regra ja usada no resto do painel).
+      const packId = order?.pack_id || order?.id;
+      try {
+        const packData = await fetchPackMessages(accessToken, packId, sellerId);
+        entry.packIdUsado = packId;
+        entry.mensagensEncontradas = Array.isArray(packData?.messages) ? packData.messages.length : null;
+        entry.ultimasMensagens = (packData?.messages || []).slice(-3).map((m) => ({
+          from: m?.from?.user_id,
+          text: m?.text,
+          data: m?.message_date,
+        }));
+      } catch (err) {
+        entry.erroBuscarMensagens = { status: err.status, body: err.body || err.message };
+      }
+
+      // Confere se ja existe (ou existia) uma conversa gravada no banco
+      // pra esse pedido, e com qual status.
+      const { rows: convRows } = await db.query(
+        "SELECT pack_id, status, blocked_reason, updated_at FROM conversations WHERE order_id = $1",
+        [String(orderId)]
+      );
+      entry.conversaNoBanco = convRows[0] || null;
+    } catch (err) {
+      entry.erro = err.message;
+    }
+    report.contasChecadas.push(entry);
   }
 
   res.json(report);
