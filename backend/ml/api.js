@@ -108,10 +108,16 @@ async function fetchPackMessages(accessToken, packId, sellerId) {
 // reflita isso tambem — uma mensagem nova chegou), mesmo que o pedido em
 // si nao esteja entre os mais recentes por data de criacao (ver uso em
 // sync.js).
+// "dateCreatedFrom"/"dateCreatedTo" (opcional) filtram por
+// order.date_created — usado pra varrer o historico MES A MES (ver
+// runBackfillStep em sync.js): em vez de tentar achar pedidos antigos
+// "adivinhando" por atividade recente, isso deixa varrer sistematicamente
+// um mes inteiro de cada vez, garantindo que todo pedido daquele mes seja
+// checado pelo menos uma vez, nao importa o quao antigo.
 async function fetchRecentOrders(
   accessToken,
   sellerId,
-  { limit = 50, offset = 0, tags, dateLastUpdatedFrom, dateLastUpdatedTo } = {}
+  { limit = 50, offset = 0, tags, dateLastUpdatedFrom, dateLastUpdatedTo, dateCreatedFrom, dateCreatedTo } = {}
 ) {
   const params = new URLSearchParams({
     seller: sellerId,
@@ -122,6 +128,8 @@ async function fetchRecentOrders(
   if (tags) params.set("tags", tags);
   if (dateLastUpdatedFrom) params.set("order.date_last_updated.from", dateLastUpdatedFrom);
   if (dateLastUpdatedTo) params.set("order.date_last_updated.to", dateLastUpdatedTo);
+  if (dateCreatedFrom) params.set("order.date_created.from", dateCreatedFrom);
+  if (dateCreatedTo) params.set("order.date_created.to", dateCreatedTo);
   return mlFetch(`/orders/search?${params.toString()}`, accessToken);
 }
 
