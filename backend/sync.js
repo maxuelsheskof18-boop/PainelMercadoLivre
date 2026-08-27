@@ -310,11 +310,28 @@ async function reconcileAccount(sellerId) {
 
   let comMensagens = 0;
   let semContato = 0;
+  let cancelados = 0;
   for (const order of list) {
     // Pedidos que nao fazem parte de um envio combinado nao tem pack_id
     // (vem null) — nesse caso o proprio order_id funciona no lugar.
     const packId = order?.pack_id || order?.id;
     if (!packId) continue;
+
+    // Pedido cancelado (normalmente porque foi reembolsado) nao tem mais
+    // entrega nenhuma pra combinar — o usuario pediu pra parar de trazer
+    // esses pro painel. Se ja existia uma conversa gravada desse pedido (de
+    // antes dessa checagem existir), ela e marcada como 'cancelled' pra
+    // sumir das abas Pendentes/Respondidas/Sem contato, sem apagar o
+    // historico do banco.
+    if (order?.status === "cancelled") {
+      cancelados++;
+      try {
+        await markConversationCancelled(packId);
+      } catch (err) {
+        console.warn(`[reconcile] falha ao marcar pedido cancelado ${order?.id} (pack ${packId}):`, err.message);
+      }
+      continue;
+    }
 
     try {
       const packData = await fetchPackMessages(accessToken, packId, sellerId);
@@ -374,7 +391,19 @@ async function reconcileAccount(sellerId) {
   }
 
   console.log(
-    `[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens, ${semContato} combinar-entrega sem contato ainda.`
+    `[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens, ${semContato} combinar-entrega sem contato ainda, ${cancelados} cancelado(s) ignorado(s).`
+  );
+}
+
+// Marca uma conversa como 'cancelled' se ela ja existir no banco (pedido
+// cancelado/reembolsado) — assim ela some das abas ativas do painel sem
+// perder o historico. Se a conversa nunca foi gravada, nao faz nada (nao
+// tem motivo pra criar uma conversa nova so pra marcar como cancelada).
+async function markConversationCancelled(packId) {
+  await db.query(
+    `UPDATE conversations SET status = 'cancelled', updated_at = now()
+     WHERE pack_id = $1 AND status <> 'cancelled'`,
+    [String(packId)]
   );
 }
 
