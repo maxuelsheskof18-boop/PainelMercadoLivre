@@ -30,6 +30,15 @@ router.post("/webhooks/mercadolivre", express.json(), (req, res) => {
   const { topic, resource, user_id } = req.body || {};
   console.log("[webhook] recebido:", { topic, resource, user_id });
 
+  // Grava TODA notificacao (de qualquer topico) pra diagnostico — ver
+  // comentario da tabela webhook_events em db.js. Isso roda mesmo pra
+  // topicos que a gente ignora, de proposito: e a unica forma de responder
+  // "o Mercado Livre chegou a mandar ALGUMA notificacao pra essa conta?".
+  db.query(
+    `INSERT INTO webhook_events (topic, seller_id, resource) VALUES ($1, $2, $3)`,
+    [topic || null, String(user_id || "") || null, resource || null]
+  ).catch((err) => console.error("[webhook] falha ao gravar webhook_events:", err.message));
+
   if (!isMessageTopic(topic)) return;
 
   const parsed = parsePackResource(resource);

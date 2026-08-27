@@ -443,6 +443,19 @@ router.get("/debug/probe-order", async (req, res) => {
       entry.totalAmount = order?.total_amount ?? null;
       entry.dateCreated = order?.date_created || null;
 
+      // Confere se esse pedido aparece na busca geral dos 50 mais recentes
+      // (sem nenhum filtro) — se NAO aparecer aqui, e um pedido antigo o
+      // suficiente pra ter saido da janela padrao de reconciliacao (a busca
+      // geral ordena por data do pedido, nao por data da ultima mensagem).
+      try {
+        const generalSearch = await fetchRecentOrders(accessToken, sellerId, { limit: 50 });
+        const found = (generalSearch?.results || []).some((o) => String(o.id) === String(orderId));
+        entry.apareceNos50MaisRecentesGeral = found;
+        entry.totalPedidosDaConta = generalSearch?.paging?.total ?? null;
+      } catch (err) {
+        entry.erroBusca50MaisRecentes = { status: err.status, body: err.body || err.message };
+      }
+
       // Confere se esse pedido aparece na busca dedicada por tags=no_shipping
       // (a que corrige o problema de pedidos saindo da janela dos mais
       // recentes) — se nao aparecer aqui mesmo sendo no_shipping, o
@@ -457,6 +470,35 @@ router.get("/debug/probe-order", async (req, res) => {
         entry.totalPedidosNaBuscaTagsNoShipping = noShippingSearch?.paging?.total ?? null;
       } catch (err) {
         entry.erroBuscaTagsNoShipping = { status: err.status, body: err.body || err.message };
+      }
+
+      // Confere se esse pedido aparece na busca dedicada por
+      // date_last_updated dos ultimos 3 dias (a nova rede de seguranca pra
+      // pedidos antigos com atividade recente) — se a mensagem chegou ha
+      // pouco (como no relato do usuario) mas o pedido NAO aparecer aqui,
+      // e sinal de que esse campo do Mercado Livre nao e atualizado so por
+      // causa de mensagem nova, e o caminho que precisa funcionar e o
+      // webhook em tempo real, nao essa busca.
+      try {
+        const to = new Date();
+        const from = new Date(to.getTime() - 3 * 24 * 60 * 60 * 1000);
+        const pad = (n) => String(n).padStart(2, "0");
+        const toMlDate = (d) => {
+          const s = new Date(d.getTime() - 3 * 60 * 60 * 1000);
+          return `${s.getUTCFullYear()}-${pad(s.getUTCMonth() + 1)}-${pad(s.getUTCDate())}T${pad(
+            s.getUTCHours()
+          )}:${pad(s.getUTCMinutes())}:${pad(s.getUTCSeconds())}.000-03:00`;
+        };
+        const recentlyUpdatedSearch = await fetchRecentOrders(accessToken, sellerId, {
+          limit: 50,
+          dateLastUpdatedFrom: toMlDate(from),
+          dateLastUpdatedTo: toMlDate(to),
+        });
+        const found = (recentlyUpdatedSearch?.results || []).some((o) => String(o.id) === String(orderId));
+        entry.apareceNaBuscaAtividadeRecente = found;
+        entry.totalPedidosNaBuscaAtividadeRecente = recentlyUpdatedSearch?.paging?.total ?? null;
+      } catch (err) {
+        entry.erroBuscaAtividadeRecente = { status: err.status, body: err.body || err.message };
       }
 
       // Tenta buscar as mensagens do pack (pack_id do pedido, ou o proprio
@@ -489,6 +531,50 @@ router.get("/debug/probe-order", async (req, res) => {
   }
 
   res.json(report);
+});
+
+// Rota TEMPORARIA de diagnostico: mostra as ultimas notificacoes (webhooks)
+// que o Mercado Livre mandou pra essa aplicacao, por conta — inclusive de
+// topicos que a gente ignora. Serve pra responder se o problema de
+// mensagens "sumidas" de uma conta especifica (ex: Vesco Suprimentos) e
+// porque o Mercado Livre nunca chega a notificar essa conta (nesse caso,
+// nao vai aparecer NADA aqui pra ela, mesmo com mensagem nova chegando de
+// verdade) — o que indicaria um problema na configuracao do webhook
+// (URL de callback e topico "messages" cadastrados no app do Mercado
+// Livre), e nao no processamento feito por este painel. Uso: abrir no
+// navegador (ja logado no painel) /api/debug/webhook-events, ou
+// /api/debug/webhook-events?sellerId=... pra filtrar so uma conta.
+router.get("/debug/webhook-events", async (req, res) => {
+  const conditions = [];
+  const params = [];
+  if (req.query.sellerId) {
+    params.push(req.query.sellerId);
+    conditions.push(`w.seller_id = $${params.length}`);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const { rows } = await db.query(
+    `SELECT w.id, w.topic, w.seller_id, a.nickname AS seller_nickname, w.resource, w.received_at
+       FROM webhook_events w
+       LEFT JOIN accounts a ON a.id = w.seller_id
+       ${where}
+       ORDER BY w.received_at DESC
+       LIMIT 100`,
+    params
+  );
+
+  const { rows: porConta } = await db.query(
+    `SELECT a.id AS seller_id, a.nickname,
+            COUNT(w.id)::int AS total_notificacoes,
+            COUNT(w.id) FILTER (WHERE w.topic ILIKE '%message%')::int AS total_notificacoes_mensagem,
+            MAX(w.received_at) AS ultima_notificacao_em
+       FROM accounts a
+       LEFT JOIN webhook_events w ON w.seller_id = a.id
+      GROUP BY a.id, a.nickname
+      ORDER BY a.nickname`
+  );
+
+  res.json({ resumoPorConta: porConta, ultimasNotificacoes: rows });
 });
 
 module.exports = router;
