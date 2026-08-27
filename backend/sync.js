@@ -56,6 +56,57 @@ async function fetchAllNoShippingOrders(accessToken, sellerId) {
   return all;
 }
 
+// Segunda rede de seguranca dedicada, pelo mesmo motivo da de "combinar
+// entrega" acima: o usuario relatou pedidos JA ENTREGUES (nao so combinar
+// entrega — pedidos normais de Flex/Agencia tambem) recebendo mensagem nova
+// (pedido de nota fiscal, duvida) muito tempo depois de terem sido criados
+// — numa conta de alto volume, um pedido assim ja saiu ha muito da janela
+// dos RECENT_ORDERS_LIMIT mais recentes (que ordena por data do pedido, nao
+// da mensagem). Como o Mercado Livre nao tem uma busca por "tem mensagem
+// nova", usamos o filtro por order.date_last_updated (documentado
+// separadamente de date_created) pra pegar pedidos que tiveram QUALQUER
+// atividade recente, mesmo antigos. Isso e complementar ao webhook em tempo
+// real (que deveria ser o caminho principal pra esse caso) — nao um
+// substituto: nao ha garantia de que o Mercado Livre atualiza esse campo so
+// por causa de uma mensagem nova, so quando o status/envio muda. Por isso a
+// importancia de tambem confirmar se o webhook de "messages" esta mesmo
+// configurado e chegando pra essa conta.
+const RECENTLY_UPDATED_WINDOW_DAYS = 3;
+const RECENTLY_UPDATED_PAGE_SIZE = 50;
+const RECENTLY_UPDATED_MAX_PAGES = 6;
+
+// Formata uma data no formato que a API do Mercado Livre espera
+// (ISO 8601 com o offset de Brasilia, -03:00 — o Brasil nao tem mais
+// horario de verao desde 2019, entao o offset e fixo).
+function toMlDateParam(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const shifted = new Date(date.getTime() - 3 * 60 * 60 * 1000);
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}T${pad(
+    shifted.getUTCHours()
+  )}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}.000-03:00`;
+}
+
+async function fetchAllRecentlyUpdatedOrders(accessToken, sellerId) {
+  const to = new Date();
+  const from = new Date(to.getTime() - RECENTLY_UPDATED_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const all = [];
+  let offset = 0;
+  for (let page = 0; page < RECENTLY_UPDATED_MAX_PAGES; page++) {
+    const data = await fetchRecentOrders(accessToken, sellerId, {
+      limit: RECENTLY_UPDATED_PAGE_SIZE,
+      offset,
+      dateLastUpdatedFrom: toMlDateParam(from),
+      dateLastUpdatedTo: toMlDateParam(to),
+    });
+    const results = Array.isArray(data?.results) ? data.results : [];
+    all.push(...results);
+    offset += results.length;
+    const total = data?.paging?.total ?? offset;
+    if (results.length === 0 || offset >= total) break;
+  }
+  return all;
+}
+
 function messageDate(msg) {
   return (
     msg?.message_date?.received ||
@@ -303,11 +354,27 @@ async function reconcileAccount(sellerId) {
     );
   }
 
-  // Junta as duas listas removendo duplicados (um pedido de combinar
-  // entrega recente o suficiente pode aparecer nas duas buscas).
+  // Terceira busca dedicada: pedidos com QUALQUER atividade recente (campo
+  // date_last_updated), independente de quando foram criados — cobre o
+  // caso de um pedido antigo (ja entregue ha tempos, por exemplo) que
+  // recebeu uma mensagem nova agora. Ver comentario acima de
+  // fetchAllRecentlyUpdatedOrders pra entender os limites dessa abordagem.
+  let recentlyUpdatedList = [];
+  try {
+    recentlyUpdatedList = await fetchAllRecentlyUpdatedOrders(accessToken, sellerId);
+  } catch (err) {
+    console.warn(
+      `[reconcile] falha ao buscar pedidos com atividade recente (date_last_updated) da conta ${sellerId}:`,
+      err.status,
+      err.body || err.message
+    );
+  }
+
+  // Junta as tres listas removendo duplicados (um mesmo pedido pode
+  // aparecer em mais de uma busca).
   const seenIds = new Set(recentList.map((o) => o?.id));
   const list = [...recentList];
-  for (const order of noShippingList) {
+  for (const order of [...noShippingList, ...recentlyUpdatedList]) {
     if (order?.id != null && !seenIds.has(order.id)) {
       seenIds.add(order.id);
       list.push(order);
@@ -317,7 +384,7 @@ async function reconcileAccount(sellerId) {
   console.log(
     `[reconcile] conta ${sellerId}: ${recentList.length} pedido(s) recente(s) (de um total de ${
       orders?.paging?.total ?? "?"
-    }) + ${noShippingList.length} de combinar entrega dedicados = ${list.length} pedido(s) a verificar.`
+    }) + ${noShippingList.length} de combinar entrega dedicados + ${recentlyUpdatedList.length} com atividade recente dedicados = ${list.length} pedido(s) a verificar.`
   );
 
   let comMensagens = 0;

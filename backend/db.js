@@ -70,6 +70,24 @@ async function init() {
     CREATE INDEX IF NOT EXISTS idx_messages_pack ON messages(pack_id);
     CREATE INDEX IF NOT EXISTS idx_conversations_status ON conversations(status);
 
+    -- Registro TEMPORARIO de diagnostico: toda notificacao (webhook) que o
+    -- Mercado Livre manda pra essa aplicacao, de QUALQUER topico — nao so
+    -- "messages". Serve pra responder uma pergunta que nao da pra saber so
+    -- olhando o codigo: o Mercado Livre esta mesmo mandando notificacao pra
+    -- essa conta especifica, ou o problema e antes disso (webhook nao
+    -- configurado/nao chegando)? Sem isso, um pack sem notificacao nenhuma
+    -- e indistinguivel de uma falha no processamento daqui. Pode ser
+    -- removida (junto com a rota /api/debug/webhook-events) quando esse
+    -- tipo de investigacao nao for mais necessario.
+    CREATE TABLE IF NOT EXISTS webhook_events (
+      id SERIAL PRIMARY KEY,
+      topic TEXT,
+      seller_id TEXT,
+      resource TEXT,
+      received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_webhook_events_seller ON webhook_events(seller_id);
+
     -- So existe UMA conta do Melhor Envio pro painel inteiro (diferente das
     -- contas do Mercado Livre, que podem ser varias) — por isso id fixo
     -- 'main' em vez de guardar o id de uma conta de verdade. access_token e
