@@ -55,6 +55,20 @@
         </button>
       </div>
       <div class="filter-bar">
+        <input
+          type="search"
+          id="filter-search"
+          class="filter-search"
+          placeholder="Buscar por comprador, produto ou nº do pedido..."
+        />
+        <div class="filter-row">
+          <select id="filter-seller" class="filter-select" title="Filtrar por loja">
+            <option value="">Todas as lojas</option>
+          </select>
+          <button type="button" id="filter-sort-btn" class="btn btn-ghost btn-sm" title="Alternar ordem por data">
+            <span id="filter-sort-icon">⬇</span> <span id="filter-sort-label">Mais recentes</span>
+          </button>
+        </div>
         <label class="filter-toggle">
           <input type="checkbox" id="filter-combinar" />
           <span>Só "combinar entrega"</span>

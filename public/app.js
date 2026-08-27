@@ -3,6 +3,9 @@ const state = {
   selectedPackId: null,
   pollTimer: null,
   onlyCombinar: false,
+  searchQuery: "",
+  sellerId: "",
+  sort: "recent", // "recent" | "oldest"
   lastPendingCount: null, // usado pra saber se aumentou (tocar som) sem tocar no primeiro carregamento
   melhorEnvio: { connected: false, originPostalCode: null },
 };
@@ -25,6 +28,11 @@ const threadMessages = document.getElementById("thread-messages");
 const replyForm = document.getElementById("reply-form");
 const replyText = document.getElementById("reply-text");
 const filterCombinar = document.getElementById("filter-combinar");
+const filterSearch = document.getElementById("filter-search");
+const filterSeller = document.getElementById("filter-seller");
+const filterSortBtn = document.getElementById("filter-sort-btn");
+const filterSortIcon = document.getElementById("filter-sort-icon");
+const filterSortLabel = document.getElementById("filter-sort-label");
 const threadBackBtn = document.getElementById("thread-back");
 
 const freightAccountBtn = document.getElementById("freight-account-btn");
@@ -199,8 +207,10 @@ function statusLabel(status) {
 
 async function loadConversations() {
   listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
-  const params = new URLSearchParams({ status: state.status });
+  const params = new URLSearchParams({ status: state.status, sort: state.sort });
   if (state.onlyCombinar) params.set("combinar", "1");
+  if (state.sellerId) params.set("sellerId", state.sellerId);
+  if (state.searchQuery) params.set("q", state.searchQuery);
 
   const res = await fetch(`/api/conversations?${params.toString()}`);
   if (handleSessionExpired(res)) return;
@@ -368,6 +378,17 @@ async function loadAccounts() {
       )
       .join("");
   }
+
+  // Popula o filtro de "loja" na lista de conversas, preservando a opcao
+  // ja selecionada (se ainda existir depois de recarregar).
+  const previousSelection = filterSeller.value;
+  filterSeller.innerHTML =
+    '<option value="">Todas as lojas</option>' +
+    accounts.map((a) => `<option value="${a.id}">${a.nickname || a.id}</option>`).join("");
+  if (accounts.some((a) => String(a.id) === previousSelection)) {
+    filterSeller.value = previousSelection;
+  }
+
   return accounts;
 }
 
@@ -659,6 +680,34 @@ document.querySelectorAll(".tab").forEach((tab) => {
 
 filterCombinar.addEventListener("change", () => {
   state.onlyCombinar = filterCombinar.checked;
+  loadConversations();
+});
+
+// Busca livre: espera o usuario parar de digitar (300ms) antes de recarregar
+// a lista, pra nao mandar uma requisicao a cada letra.
+let searchDebounceTimer = null;
+filterSearch.addEventListener("input", () => {
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(() => {
+    state.searchQuery = filterSearch.value.trim();
+    loadConversations();
+  }, 300);
+});
+
+filterSeller.addEventListener("change", () => {
+  state.sellerId = filterSeller.value;
+  loadConversations();
+});
+
+filterSortBtn.addEventListener("click", () => {
+  state.sort = state.sort === "recent" ? "oldest" : "recent";
+  if (state.sort === "oldest") {
+    filterSortIcon.textContent = "⬆";
+    filterSortLabel.textContent = "Mais antigas";
+  } else {
+    filterSortIcon.textContent = "⬇";
+    filterSortLabel.textContent = "Mais recentes";
+  }
   loadConversations();
 });
 
