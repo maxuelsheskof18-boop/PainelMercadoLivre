@@ -109,6 +109,49 @@ async function init() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
+    -- Reclamacoes abertas pelo comprador (Central de Resolucoes/mediacao do
+    -- Mercado Livre) — sistema SEPARADO das mensagens pos-venda de cima
+    -- (tabela conversations). Guardamos os dados principais devolvidos pela
+    -- API de reclamacoes (post-purchase/v1/claims) pra listar no painel sem
+    -- precisar buscar tudo de novo toda hora.
+    CREATE TABLE IF NOT EXISTS claims (
+      claim_id TEXT PRIMARY KEY,
+      seller_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      order_id TEXT,
+      resource TEXT,                            -- 'order' | 'payment' | 'shipment' | 'purchase'
+      resource_id TEXT,
+      type TEXT,                                -- 'mediations' | 'cancel_purchase' | 'return' | 'cancel_sale'
+      stage TEXT,                               -- 'claim' | 'dispute' | 'recontact' | 'none'
+      ml_status TEXT,                           -- 'opened' | 'closed' (status da propria reclamacao no ML)
+      reason_id TEXT,
+      buyer_id TEXT,
+      buyer_nickname TEXT,
+      buyer_full_name TEXT,
+      product_title TEXT,
+      order_total NUMERIC(12,2),
+      last_message_text TEXT,
+      last_message_date TEXT,
+      local_status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'answered' | 'closed' — calculado por
+                                                     -- este painel (ver claimsSync.js), separado do
+                                                     -- ml_status: usado pra decidir a aba/badge.
+      due_date TIMESTAMPTZ,                     -- prazo da proxima acao obrigatoria, quando houver
+      mandatory_action BOOLEAN,                 -- true = ha uma acao com prazo que o vendedor precisa tomar
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_claims_local_status ON claims(local_status);
+
+    CREATE TABLE IF NOT EXISTS claim_messages (
+      id SERIAL PRIMARY KEY,
+      claim_id TEXT NOT NULL,
+      sender_role TEXT,                         -- 'complainant' | 'respondent' | 'mediator'
+      receiver_role TEXT,
+      message TEXT,
+      attachments JSONB,
+      sent_date TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_claim_messages_claim ON claim_messages(claim_id);
+
     -- So existe UMA conta do Melhor Envio pro painel inteiro (diferente das
     -- contas do Mercado Livre, que podem ser varias) — por isso id fixo
     -- 'main' em vez de guardar o id de uma conta de verdade. access_token e

@@ -14,8 +14,10 @@ const sessionRoutes = require("./routes/session");
 const accountsRoutes = require("./routes/accounts");
 const webhooksRoutes = require("./routes/webhooks");
 const conversationsRoutes = require("./routes/conversations");
+const claimsRoutes = require("./routes/claims");
 const melhorenvioRoutes = require("./routes/melhorenvio");
 const { reconcileAllAccounts } = require("./sync");
+const { reconcileAllClaims } = require("./claimsSync");
 
 for (const key of ["DATABASE_URL", "ML_CLIENT_ID", "ML_CLIENT_SECRET", "ML_REDIRECT_URI", "DASHBOARD_PASSWORD", "SESSION_SECRET"]) {
   if (!process.env[key]) {
@@ -51,6 +53,10 @@ app.use(melhorenvioRoutes);
 // Dados de conversas/pendencias (tudo aqui vive sob /api/...)
 app.use("/api", conversationsRoutes);
 
+// Reclamacoes (Central de Resolucoes/mediacao) — sistema separado das
+// mensagens pos-venda acima, tambem sob /api/...
+app.use("/api", claimsRoutes);
+
 // Pagina principal exige login. IMPORTANTE: isso precisa vir ANTES do
 // express.static abaixo — senao, como "index.html" e um arquivo real
 // dentro de public/, o proprio express.static serviria ele direto pra
@@ -81,6 +87,9 @@ db.init()
     setInterval(() => {
       reconcileAllAccounts().catch((err) =>
         console.error("[reconcile-loop] erro:", err.message)
+      );
+      reconcileAllClaims().catch((err) =>
+        console.error("[reconcile-loop] erro (reclamacoes):", err.message)
       );
     }, RECONCILE_INTERVAL_MS);
   })
