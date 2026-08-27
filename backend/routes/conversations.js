@@ -9,6 +9,7 @@ const {
   fetchPackMessages,
   fetchOrderById,
   fetchShipment,
+  fetchPendingRead,
 } = require("../ml/api");
 const { reconcileAllAccounts, extractOrderInfo } = require("../sync");
 
@@ -575,6 +576,48 @@ router.get("/debug/webhook-events", async (req, res) => {
   );
 
   res.json({ resumoPorConta: porConta, ultimasNotificacoes: rows });
+});
+
+// Rota TEMPORARIA de diagnostico: tenta os 3 caminhos conhecidos de "listar
+// mensagens pendentes/nao lidas" (fetchPendingRead, ja escrito ha tempos
+// mas nunca usado de verdade porque nenhum tinha sido confirmado
+// funcionando) pra cada conta conectada. Motivo: as buscas dedicadas feitas
+// hoje (tags=no_shipping, tags=delivered, date_last_updated) sao todas
+// baseadas na lista de PEDIDOS, ordenada por data de criacao/fechamento do
+// pedido — nunca por "tem mensagem nova". Numa conta de altissimo volume
+// como a Vesco Suprimentos, um pedido bem antigo (fechado ha muito tempo)
+// que recebe mensagem nova pode ficar fora de QUALQUER janela baseada em
+// pedido, por maior que seja. Se algum desses 3 caminhos realmente
+// funcionar, ele resolveria isso de vez (lista direto por mensagem, nao por
+// pedido) em vez de continuar so alargando janelas de busca. Uso: abrir no
+// navegador (ja logado no painel) /api/debug/probe-pending-read
+router.get("/debug/probe-pending-read", async (req, res) => {
+  const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts");
+  const report = [];
+
+  for (const acc of accounts) {
+    const sellerId = acc.id;
+    const entry = { sellerId, nickname: acc.nickname };
+    try {
+      const accessToken = await getValidAccessToken(sellerId);
+      try {
+        const data = await fetchPendingRead(accessToken);
+        entry.sucesso = true;
+        entry.resultadoResumido = Array.isArray(data?.results)
+          ? { totalResultados: data.results.length, paging: data.paging, amostra: data.results.slice(0, 5) }
+          : data;
+      } catch (err) {
+        entry.sucesso = false;
+        entry.erro = err.message;
+        entry.tentativas = err.attempts || null;
+      }
+    } catch (err) {
+      entry.erro = err.message;
+    }
+    report.push(entry);
+  }
+
+  res.json(report);
 });
 
 module.exports = router;
