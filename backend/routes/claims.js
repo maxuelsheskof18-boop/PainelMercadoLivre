@@ -114,6 +114,7 @@ router.post("/claims/:claimId/reply", express.json(), (req, res) => {
     const claimId = req.params.claimId;
     const text = (req.body?.text || "").trim();
     if (!text) return res.status(400).json({ error: "Mensagem vazia" });
+    const operator = String(req.body?.operatorName || "").trim().slice(0, 60) || null;
 
     const { rows } = await db.query("SELECT * FROM claims WHERE claim_id = $1", [claimId]);
     const claim = rows[0];
@@ -156,9 +157,9 @@ router.post("/claims/:claimId/reply", express.json(), (req, res) => {
 
       const nowIso = new Date().toISOString();
       await db.query(
-        `INSERT INTO claim_messages (claim_id, sender_role, receiver_role, message, sent_date)
-         VALUES ($1, 'respondent', $2, $3, $4)`,
-        [claimId, receiverRole, text, nowIso]
+        `INSERT INTO claim_messages (claim_id, sender_role, receiver_role, message, sent_date, operator_name)
+         VALUES ($1, 'respondent', $2, $3, $4, $5)`,
+        [claimId, receiverRole, text, nowIso, operator]
       );
       await db.query(
         `UPDATE claims SET local_status = 'answered', last_message_text = $1, last_message_date = $2, updated_at = now()
@@ -214,12 +215,13 @@ router.post("/claims/:claimId/evidence", express.json(), async (req, res) => {
     for (const f of requiredFields) payload[f] = req.body[f];
     await sendShippingEvidence(accessToken, claimId, payload);
 
+    const operator = String(req.body?.operatorName || "").trim().slice(0, 60) || null;
     const nowIso = new Date().toISOString();
     const resumo = `Comprovante de envio registrado (${shipping_method}).`;
     await db.query(
-      `INSERT INTO claim_messages (claim_id, sender_role, receiver_role, message, sent_date)
-       VALUES ($1, 'respondent', 'complainant', $2, $3)`,
-      [claimId, resumo, nowIso]
+      `INSERT INTO claim_messages (claim_id, sender_role, receiver_role, message, sent_date, operator_name)
+       VALUES ($1, 'respondent', 'complainant', $2, $3, $4)`,
+      [claimId, resumo, nowIso, operator]
     );
     await db.query(
       `UPDATE claims SET last_message_text = $1, last_message_date = $2, updated_at = now() WHERE claim_id = $3`,

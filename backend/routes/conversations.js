@@ -214,11 +214,22 @@ const BLOCK_REASON_LABELS = {
   blocked_by_time: "prazo para responder encerrado",
 };
 
+// Nome de quem esta operando o painel (varios atendentes podem usar o mesmo
+// login/senha compartilhado) — o front manda isso em toda resposta enviada,
+// pra registrar quem respondeu cada pedido e quando (ver tela "Histórico").
+// Sem exigencia nenhuma alem de nao vir vazio: e so uma identificacao, nao
+// uma autenticacao de verdade.
+function sanitizeOperatorName(raw) {
+  const name = String(raw || "").trim().slice(0, 60);
+  return name || null;
+}
+
 router.post("/conversations/:packId/reply", express.json(), async (req, res) => {
-  const { text } = req.body || {};
+  const { text, operatorName } = req.body || {};
   if (!text || !text.trim()) {
     return res.status(400).json({ error: "Mensagem vazia" });
   }
+  const operator = sanitizeOperatorName(operatorName);
 
   const { rows } = await db.query(
     "SELECT * FROM conversations WHERE pack_id = $1",
@@ -250,9 +261,9 @@ router.post("/conversations/:packId/reply", express.json(), async (req, res) => 
     const nowIso = new Date().toISOString();
 
     await db.query(
-      `INSERT INTO messages (pack_id, direction, author_user_id, text, sent_date)
-       VALUES ($1, 'out', $2, $3, $4)`,
-      [conv.pack_id, conv.seller_id, text.trim(), nowIso]
+      `INSERT INTO messages (pack_id, direction, author_user_id, text, sent_date, operator_name)
+       VALUES ($1, 'out', $2, $3, $4, $5)`,
+      [conv.pack_id, conv.seller_id, text.trim(), nowIso, operator]
     );
 
     await db.query(
@@ -667,6 +678,79 @@ router.get("/debug/probe-pending-read", async (req, res) => {
   }
 
   res.json(report);
+});
+
+// Lista de nomes de operador ja usados (mensagens + reclamacoes), pra
+// preencher o filtro da tela de Histórico sem o vendedor ter que digitar de
+// cabeça quem ja respondeu por ali.
+router.get("/operators", async (req, res) => {
+  const { rows } = await db.query(`
+    SELECT DISTINCT operator_name FROM (
+      SELECT operator_name FROM messages WHERE operator_name IS NOT NULL
+      UNION
+      SELECT operator_name FROM claim_messages WHERE operator_name IS NOT NULL
+    ) t
+    ORDER BY operator_name ASC
+  `);
+  res.json(rows.map((r) => r.operator_name));
+});
+
+// Histórico de respostas: junta as mensagens (pos-venda) e as respostas de
+// reclamacao enviadas por aqui, numa unica lista — cada linha e "quem
+// respondeu, o pedido, quando". So entram respostas que passaram por este
+// painel depois que essa coluna foi criada (envios antigos ficam de fora,
+// ja que nao tem como saber quem os enviou).
+router.get("/operator-log", async (req, res) => {
+  const conditions = ["operator_name IS NOT NULL"];
+  const params = [];
+
+  const operator = (req.query.operator || "").trim();
+  if (operator) {
+    params.push(operator);
+    conditions.push(`operator_name = $${params.length}`);
+  }
+  const from = (req.query.from || "").trim();
+  if (from) {
+    params.push(`${from}T00:00:00.000Z`);
+    conditions.push(`sent_date >= $${params.length}`);
+  }
+  const to = (req.query.to || "").trim();
+  if (to) {
+    params.push(`${to}T23:59:59.999Z`);
+    conditions.push(`sent_date <= $${params.length}`);
+  }
+  const where = conditions.join(" AND ");
+
+  // As duas metades da UNION precisam da mesma lista de parametros
+  // (mesma ordem de $1, $2...), entao usamos os MESMOS params pras duas.
+  const { rows } = await db.query(
+    `
+    (
+      SELECT 'message' AS type, m.operator_name, c.pack_id AS ref_id, c.order_id,
+             c.buyer_full_name AS buyer_name, c.product_title, m.text, m.sent_date,
+             a.nickname AS seller_nickname
+        FROM messages m
+        JOIN conversations c ON c.pack_id = m.pack_id
+        JOIN accounts a ON a.id = c.seller_id
+       WHERE m.direction = 'out' AND ${where.replace(/operator_name/g, "m.operator_name").replace(/sent_date/g, "m.sent_date")}
+    )
+    UNION ALL
+    (
+      SELECT 'claim' AS type, cm.operator_name, cl.claim_id AS ref_id, cl.order_id,
+             cl.buyer_full_name AS buyer_name, cl.product_title, cm.message AS text, cm.sent_date,
+             a.nickname AS seller_nickname
+        FROM claim_messages cm
+        JOIN claims cl ON cl.claim_id = cm.claim_id
+        JOIN accounts a ON a.id = cl.seller_id
+       WHERE cm.sender_role = 'respondent' AND ${where.replace(/operator_name/g, "cm.operator_name").replace(/sent_date/g, "cm.sent_date")}
+    )
+    ORDER BY sent_date DESC
+    LIMIT 500
+    `,
+    params
+  );
+
+  res.json({ rows, truncated: rows.length === 500 });
 });
 
 module.exports = router;
