@@ -410,6 +410,11 @@ body {
   color: #92650a;
   border: 1px solid #f5d98a;
 }
+.tag-delivered {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
 
 /* ---------- Thread ---------- */
 .thread-pane { display: flex; flex-direction: column; background: var(--bg); }

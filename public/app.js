@@ -14,6 +14,7 @@ const listEl = document.getElementById("conversation-list");
 const bellCount = document.getElementById("bell-count");
 const tabCountPending = document.getElementById("tab-count-pending");
 const tabCountNoContact = document.getElementById("tab-count-nocontact");
+const tabCountDelivered = document.getElementById("tab-count-delivered");
 const threadEmpty = document.getElementById("thread-empty");
 const threadEl = document.getElementById("thread");
 const threadBuyer = document.getElementById("thread-buyer");
@@ -24,6 +25,7 @@ const orderCardProduct = document.getElementById("order-card-product");
 const orderCardMeta = document.getElementById("order-card-meta");
 const orderCardLink = document.getElementById("order-card-link");
 const threadDeliveryTag = document.getElementById("thread-delivery-tag");
+const threadDeliveredTag = document.getElementById("thread-delivered-tag");
 const threadMessages = document.getElementById("thread-messages");
 const replyForm = document.getElementById("reply-form");
 const replyText = document.getElementById("reply-text");
@@ -172,12 +174,9 @@ async function loadPendingCount() {
   const data = await res.json();
 
   if (data.pending > 0) {
-    bellCount.textContent = data.pending;
-    bellCount.classList.remove("hidden");
     tabCountPending.textContent = data.pending;
     tabCountPending.classList.remove("hidden");
   } else {
-    bellCount.classList.add("hidden");
     tabCountPending.classList.add("hidden");
   }
 
@@ -188,20 +187,39 @@ async function loadPendingCount() {
     tabCountNoContact.classList.add("hidden");
   }
 
+  if (data.delivered > 0) {
+    tabCountDelivered.textContent = data.delivered;
+    tabCountDelivered.classList.remove("hidden");
+  } else {
+    tabCountDelivered.classList.add("hidden");
+  }
+
+  // O sino conta tudo que ainda precisa de resposta do vendedor — inclui as
+  // mensagens de pedidos ja entregues (aba "Entregues"), que tambem sao
+  // coisa pendente de responder, so que numa categoria separada.
+  const totalPending = data.pending + data.delivered;
+  if (totalPending > 0) {
+    bellCount.textContent = totalPending;
+    bellCount.classList.remove("hidden");
+  } else {
+    bellCount.classList.add("hidden");
+  }
+
   // Toca o som so quando o numero de pendencias SOBE em relacao a ultima
   // vez que checamos (ou seja, chegou mensagem nova) — nunca no primeiro
   // carregamento da pagina (lastPendingCount ainda null) nem quando o
   // numero cai (conversa foi respondida).
-  if (state.lastPendingCount !== null && data.pending > state.lastPendingCount) {
+  if (state.lastPendingCount !== null && totalPending > state.lastPendingCount) {
     playNotificationSound();
   }
-  state.lastPendingCount = data.pending;
+  state.lastPendingCount = totalPending;
 }
 
 // Rotulo do status em portugues, usado na mensagem de "lista vazia".
 function statusLabel(status) {
   if (status === "no_contact") return "sem contato ainda";
   if (status === "answered") return "respondida";
+  if (status === "delivered") return "de pedido já entregue";
   return "pendente";
 }
 
@@ -254,7 +272,7 @@ async function loadConversations() {
         <div class="ci-preview">${preview}</div>
         <div class="ci-bottom">
           <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · #${conv.order_id}` : ""}${fmtMoney(conv.order_total) ? ` · ${fmtMoney(conv.order_total)}` : ""}</span>
-          ${conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
+          ${conv.is_delivered ? '<span class="tag tag-delivered">Pedido já entregue</span>' : conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
         </div>
       </div>
     `;
@@ -285,6 +303,7 @@ function renderThreadInfo(conv) {
   if (conv.order_id) accountBits.push(`Pedido #${conv.order_id}`);
   threadAccount.textContent = accountBits.join(" · ");
   threadDeliveryTag.classList.toggle("hidden", !conv.is_combinar_entrega);
+  threadDeliveredTag.classList.toggle("hidden", !conv.is_delivered);
   // O atalho da mensagem padrao de "combinar entrega" so faz sentido pra
   // pedidos classificados assim — nos outros, fica escondido.
   quickTemplates.classList.toggle("hidden", !conv.is_combinar_entrega);
