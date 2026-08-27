@@ -641,6 +641,21 @@ async function reconcileAccount(sellerId) {
   console.log(
     `[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens, ${semContato} combinar-entrega sem contato ainda, ${cancelados} cancelado(s) ignorado(s), ${resolvidosSemContato} ja entregue(s)/concluido(s) sem contato ignorado(s), ${emObservacao} entregue(s) em observacao (sem mensagem ainda), ${watchRows.length} em observacao reverificado(s) (${promovidos} ganharam mensagem agora).`
   );
+
+  // Varredura automatica do historico, mes a mes, um pedacinho por vez (ver
+  // runBackfillStep) — e o que garante, com o tempo e sem nenhuma acao
+  // manual, que TODO pedido entregue ou de combinar entrega da conta (nao
+  // so os recentes) acaba sendo checado pelo menos uma vez.
+  try {
+    const backfillResult = await runBackfillStep(sellerId, accessToken);
+    if (backfillResult) {
+      console.log(
+        `[backfill] conta ${sellerId}: mes ${backfillResult.mes} (fase ${backfillResult.fase}) — ${backfillResult.processados} pedido(s) checado(s), ${backfillResult.comMensagens} com mensagem.`
+      );
+    }
+  } catch (err) {
+    console.warn(`[backfill] falha na varredura automatica da conta ${sellerId}:`, err.message);
+  }
 }
 
 // Uma venda "combinar entrega" que ja foi entregue/concluida sozinha (sem
@@ -678,6 +693,201 @@ async function markConversationResolved(packId) {
   );
 }
 
+// ---------------------------------------------------------------------
+// Varredura automatica do historico, mes a mes (backfill)
+// ---------------------------------------------------------------------
+// As buscas dedicadas acima (no_shipping, atividade recente, delivered) sao
+// todas baseadas em JANELAS (os N mais recentes de algum jeito) — em contas
+// de baixo/medio volume isso basta, mas numa conta gigante (chegamos a ver
+// uma com mais de 168 mil pedidos no total) qualquer janela, por maior que
+// seja, um dia deixa pedidos antigos de fora pra sempre. O usuario pediu
+// uma forma automatica (sem precisar copiar numero de pedido do Mercado
+// Livre pra cá manualmente) de cobrir isso — a solucao e varrer o historico
+// de forma SISTEMATICA, mes a mes, em vez de tentar "adivinhar" quais
+// pedidos antigos podem ter atividade nova.
+//
+// Cada chamada de reconcileAccount avanca esse processo em um pedacinho so
+// (uma pagina de ate BACKFILL_PAGE_SIZE pedidos) — nunca varre um mes
+// inteiro de uma vez, pra nao pesar demais numa unica sincronizacao. O
+// progresso fica salvo na tabela backfill_progress, entao a proxima
+// sincronizacao continua exatamente de onde parou.
+//
+// So faz sentido varrer os pedidos com tag "delivered" (pra achar mensagem
+// de pos-entrega) e "no_shipping" (pra combinar entrega) — os outros tipos
+// de pedido (ainda em transporte, por exemplo) nao sao o problema que essa
+// varredura resolve.
+//
+// Uma vez que um pedido e visto aqui (mesmo sem mensagem ainda), ele fica
+// registrado (upsertDeliveredWatchOrder ou upsertNoContactOrder) e passa a
+// ser reverificado diretamente pelo pack_id daqui pra frente (ver o passo
+// logo apos o loop principal de reconcileAccount) — ou seja, a varredura
+// mes a mes so precisa "descobrir" cada pedido UMA VEZ; depois disso, o
+// mecanismo de observacao cuida do resto pra sempre, sem precisar varrer o
+// mesmo mes de novo.
+//
+// Depois de cobrir BACKFILL_LOOKBACK_MONTHS meses pra tras, o ciclo volta
+// pro mes atual e recomeca — uma varredura continua, nao uma tarefa "unica".
+const BACKFILL_PAGE_SIZE = 50;
+const BACKFILL_LOOKBACK_MONTHS = 36; // ~3 anos de historico
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+// Formata o primeiro instante de um mes (00:00 no horario de Brasilia) no
+// formato que a API do Mercado Livre espera.
+function monthStartParam(year, monthIndex) {
+  return `${year}-${pad2(monthIndex + 1)}-01T00:00:00.000-03:00`;
+}
+
+// Soma (ou subtrai, com delta negativo) meses a um ano/mes, cuidando da
+// virada de ano.
+function shiftMonth(year, monthIndex, delta) {
+  const total = monthIndex + delta;
+  const y = year + Math.floor(total / 12);
+  const m = ((total % 12) + 12) % 12;
+  return { year: y, monthIndex: m };
+}
+
+async function loadBackfillProgress(sellerId) {
+  const { rows } = await db.query(
+    "SELECT cursor_month, cursor_phase, cursor_offset FROM backfill_progress WHERE seller_id = $1",
+    [sellerId]
+  );
+  if (rows[0]) return rows[0];
+
+  // Primeira vez que essa conta e varrida: comeca no mes atual, fase
+  // "delivered", do zero.
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  await db.query(
+    `INSERT INTO backfill_progress (seller_id, cursor_month, cursor_phase, cursor_offset)
+     VALUES ($1, $2, 'delivered', 0)
+     ON CONFLICT (seller_id) DO NOTHING`,
+    [sellerId, start]
+  );
+  return { cursor_month: start, cursor_phase: "delivered", cursor_offset: 0 };
+}
+
+async function saveBackfillProgress(sellerId, cursorMonth, cursorPhase, cursorOffset) {
+  await db.query(
+    `INSERT INTO backfill_progress (seller_id, cursor_month, cursor_phase, cursor_offset, updated_at)
+     VALUES ($1, $2, $3, $4, now())
+     ON CONFLICT (seller_id) DO UPDATE SET
+       cursor_month = EXCLUDED.cursor_month,
+       cursor_phase = EXCLUDED.cursor_phase,
+       cursor_offset = EXCLUDED.cursor_offset,
+       updated_at = now()`,
+    [sellerId, cursorMonth, cursorPhase, cursorOffset]
+  );
+}
+
+async function runBackfillStep(sellerId, accessToken) {
+  const progress = await loadBackfillProgress(sellerId);
+  const monthUsed = progress.cursor_month;
+  const phaseUsed = progress.cursor_phase;
+  const offsetUsed = progress.cursor_offset;
+
+  const year = monthUsed.getUTCFullYear();
+  const monthIndex = monthUsed.getUTCMonth();
+  const from = monthStartParam(year, monthIndex);
+  const nextMonth = shiftMonth(year, monthIndex, 1);
+  const to = monthStartParam(nextMonth.year, nextMonth.monthIndex);
+
+  let data;
+  try {
+    data = await fetchRecentOrders(accessToken, sellerId, {
+      limit: BACKFILL_PAGE_SIZE,
+      offset: offsetUsed,
+      tags: phaseUsed,
+      dateCreatedFrom: from,
+      dateCreatedTo: to,
+    });
+  } catch (err) {
+    console.warn(
+      `[backfill] falha ao buscar (fase ${phaseUsed}, mes ${year}-${pad2(monthIndex + 1)}) da conta ${sellerId}:`,
+      err.status,
+      err.body || err.message
+    );
+    return null;
+  }
+
+  const results = Array.isArray(data?.results) ? data.results : [];
+  const total = data?.paging?.total ?? offsetUsed + results.length;
+
+  let processados = 0;
+  let comMensagens = 0;
+  for (const order of results) {
+    const packId = order?.pack_id || order?.id;
+    if (!packId || order?.status === "cancelled") continue;
+    processados++;
+    try {
+      const packData = await fetchPackMessages(accessToken, packId, sellerId);
+      if (Array.isArray(packData?.messages) && packData.messages.length > 0) {
+        comMensagens++;
+        let orderInfo = null;
+        try {
+          const fullOrder = await fetchOrderById(accessToken, order?.id);
+          orderInfo = extractOrderInfo(fullOrder);
+        } catch (err) {
+          // Segue sem os detalhes extras — a mensagem em si ja vale a pena gravar.
+        }
+        await upsertConversationFromPack(sellerId, packId, packData, order?.id, orderInfo);
+      } else {
+        const orderInfo = extractOrderInfo(order);
+        if (phaseUsed === "no_shipping" && orderInfo?.isCombinarEntrega) {
+          if (isAlreadyResolved(order)) {
+            await markConversationResolved(packId);
+          } else {
+            await upsertNoContactOrder(sellerId, packId, order, orderInfo);
+          }
+        } else if (phaseUsed === "delivered" && orderInfo?.isDelivered && !orderInfo?.isCombinarEntrega) {
+          await upsertDeliveredWatchOrder(sellerId, packId, order, orderInfo);
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[backfill] falha ao checar pedido ${order?.id} (pack ${packId}):`,
+        err.status,
+        err.body || err.message
+      );
+    }
+  }
+
+  // Decide o proximo passo: continua a mesma pagina/fase/mes, ou avanca.
+  let nextCursorMonth = monthUsed;
+  let nextCursorPhase = phaseUsed;
+  let nextCursorOffset = offsetUsed + results.length;
+
+  if (results.length === 0 || nextCursorOffset >= total) {
+    if (phaseUsed === "delivered") {
+      // Termina a fase "delivered" desse mes, comeca "no_shipping" do
+      // mesmo mes.
+      nextCursorPhase = "no_shipping";
+      nextCursorOffset = 0;
+    } else {
+      // Terminou as duas fases desse mes — vai pro mes anterior.
+      const prevMonth = shiftMonth(year, monthIndex, -1);
+      const now = new Date();
+      const monthsBack =
+        (now.getUTCFullYear() - prevMonth.year) * 12 + (now.getUTCMonth() - prevMonth.monthIndex);
+      if (monthsBack > BACKFILL_LOOKBACK_MONTHS) {
+        // Chegou no limite do historico — volta pro mes atual (ciclo
+        // continuo, nunca "termina" de vez).
+        nextCursorMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      } else {
+        nextCursorMonth = new Date(Date.UTC(prevMonth.year, prevMonth.monthIndex, 1));
+      }
+      nextCursorPhase = "delivered";
+      nextCursorOffset = 0;
+    }
+  }
+
+  await saveBackfillProgress(sellerId, nextCursorMonth, nextCursorPhase, nextCursorOffset);
+
+  return { processados, comMensagens, mes: `${year}-${pad2(monthIndex + 1)}`, fase: phaseUsed };
+}
+
 async function reconcileAllAccounts() {
   const { rows: accounts } = await db.query("SELECT id FROM accounts");
   console.log(
@@ -700,4 +910,5 @@ module.exports = {
   upsertConversationFromPack,
   upsertNoContactOrder,
   extractOrderInfo,
+  runBackfillStep,
 };

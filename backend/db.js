@@ -88,6 +88,22 @@ async function init() {
     );
     CREATE INDEX IF NOT EXISTS idx_webhook_events_seller ON webhook_events(seller_id);
 
+    -- Progresso da varredura automatica "mes a mes" (ver runBackfillStep em
+    -- sync.js): pra contas de altissimo volume, nenhuma busca "pedidos
+    -- recentes" cobre o historico inteiro — entao, alem das buscas em tempo
+    -- real, o painel tambem varre sozinho, aos poucos (um pedacinho a cada
+    -- sincronizacao), TODO o historico de pedidos entregues e de combinar
+    -- entrega, mes a mes, ate cobrir tudo. Essa tabela so guarda em qual
+    -- mes/fase/pagina cada conta parou, pra continuar de onde parou na
+    -- proxima vez em vez de recomecar do zero.
+    CREATE TABLE IF NOT EXISTS backfill_progress (
+      seller_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+      cursor_month DATE NOT NULL,
+      cursor_phase TEXT NOT NULL DEFAULT 'delivered', -- 'delivered' | 'no_shipping'
+      cursor_offset INT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
     -- So existe UMA conta do Melhor Envio pro painel inteiro (diferente das
     -- contas do Mercado Livre, que podem ser varias) — por isso id fixo
     -- 'main' em vez de guardar o id de uma conta de verdade. access_token e
