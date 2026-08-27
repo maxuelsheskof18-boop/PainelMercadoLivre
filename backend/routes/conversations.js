@@ -11,7 +11,7 @@ const {
   fetchShipment,
   fetchPendingRead,
 } = require("../ml/api");
-const { reconcileAllAccounts, extractOrderInfo } = require("../sync");
+const { reconcileAllAccounts, extractOrderInfo, upsertConversationFromPack } = require("../sync");
 
 const router = express.Router();
 
@@ -504,6 +504,12 @@ router.get("/debug/probe-order", async (req, res) => {
 
       // Tenta buscar as mensagens do pack (pack_id do pedido, ou o proprio
       // order_id quando nao ha pack_id — regra ja usada no resto do painel).
+      // Se encontrar mensagem, ja aproveita e GRAVA a conversa de verdade no
+      // banco (mesma funcao usada pela reconciliacao normal) — assim essa
+      // rota nao serve so pra diagnosticar, serve tambem pra "destravar" na
+      // hora um pedido especifico que as buscas automaticas ainda nao
+      // alcancaram (por exemplo, um pedido antigo demais pra caber na
+      // janela das buscas dedicadas).
       const packId = order?.pack_id || order?.id;
       try {
         const packData = await fetchPackMessages(accessToken, packId, sellerId);
@@ -514,6 +520,15 @@ router.get("/debug/probe-order", async (req, res) => {
           text: m?.text,
           data: m?.message_date,
         }));
+
+        if (entry.mensagensEncontradas > 0) {
+          try {
+            await upsertConversationFromPack(sellerId, packId, packData, orderId, extractOrderInfo(order));
+            entry.gravadoNoPainel = true;
+          } catch (err) {
+            entry.erroGravarNoPainel = err.message;
+          }
+        }
       } catch (err) {
         entry.erroBuscarMensagens = { status: err.status, body: err.body || err.message };
       }
