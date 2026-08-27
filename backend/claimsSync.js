@@ -8,7 +8,7 @@
 const db = require("./db");
 const { getValidAccessToken } = require("./ml/tokens");
 const { fetchOrderById } = require("./ml/api");
-const { extractOrderInfo } = require("./sync");
+const { extractOrderInfo, fetchShippingType } = require("./sync");
 const {
   fetchClaims,
   fetchClaimById,
@@ -105,11 +105,12 @@ async function upsertClaim(sellerId, claim, messages, orderInfo) {
   const buyerFullName = orderInfo?.buyerFullName ?? null;
   const productTitle = orderInfo?.productTitle ?? null;
   const orderTotal = orderInfo && typeof orderInfo.orderTotal === "number" ? orderInfo.orderTotal : null;
+  const shippingType = orderInfo?.shippingType ?? null;
 
   await db.query(
     `INSERT INTO claims
-       (claim_id, seller_id, order_id, resource, resource_id, type, stage, ml_status, reason_id, buyer_id, buyer_full_name, product_title, order_total, last_message_text, last_message_date, local_status, due_date, mandatory_action, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now())
+       (claim_id, seller_id, order_id, resource, resource_id, type, stage, ml_status, reason_id, buyer_id, buyer_full_name, product_title, order_total, last_message_text, last_message_date, local_status, due_date, mandatory_action, shipping_type, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
      ON CONFLICT (claim_id) DO UPDATE SET
        order_id = COALESCE(EXCLUDED.order_id, claims.order_id),
        resource = EXCLUDED.resource,
@@ -127,6 +128,7 @@ async function upsertClaim(sellerId, claim, messages, orderInfo) {
        local_status = EXCLUDED.local_status,
        due_date = EXCLUDED.due_date,
        mandatory_action = EXCLUDED.mandatory_action,
+       shipping_type = COALESCE(EXCLUDED.shipping_type, claims.shipping_type),
        updated_at = now()`,
     [
       claimId,
@@ -147,6 +149,7 @@ async function upsertClaim(sellerId, claim, messages, orderInfo) {
       localStatus,
       info.dueDate,
       info.mandatoryAction,
+      shippingType,
     ]
   );
 
@@ -174,7 +177,10 @@ async function fetchOrderInfoForClaim(accessToken, info) {
   if (info.resource !== "order" || !info.resourceId) return null;
   try {
     const order = await fetchOrderById(accessToken, info.resourceId);
-    return extractOrderInfo(order);
+    // O tipo de envio (Flex/Agência/etc.) vem do mesmo pedido, do mesmo jeito
+    // que ja e feito pras conversas de mensagens (ver fetchShippingType).
+    const shippingType = await fetchShippingType(accessToken, order);
+    return { ...extractOrderInfo(order), shippingType };
   } catch (err) {
     console.warn(
       `[claims] nao consegui buscar detalhes do pedido ${info.resourceId} da reclamacao:`,

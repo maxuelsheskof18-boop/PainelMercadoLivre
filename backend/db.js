@@ -139,6 +139,9 @@ async function init() {
                                                      -- ml_status: usado pra decidir a aba/badge.
       due_date TIMESTAMPTZ,                     -- prazo da proxima acao obrigatoria, quando houver
       mandatory_action BOOLEAN,                 -- true = ha uma acao com prazo que o vendedor precisa tomar
+      shipping_type TEXT,                       -- mesmo rotulo usado nas conversas (Flex/Agência/Coleta/
+                                                 -- Correios/Full) — buscado junto com os dados do pedido,
+                                                 -- so quando resource='order'.
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_claims_local_status ON claims(local_status);
@@ -189,6 +192,7 @@ async function init() {
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS shipping_type TEXT;
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS operator_name TEXT;
     ALTER TABLE claim_messages ADD COLUMN IF NOT EXISTS operator_name TEXT;
+    ALTER TABLE claims ADD COLUMN IF NOT EXISTS shipping_type TEXT;
   `);
 }
 
