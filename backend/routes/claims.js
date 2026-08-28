@@ -18,6 +18,11 @@ const { fetchClaims, fetchClaimMessages } = require("../ml/claimsApi");
 const router = express.Router();
 router.use(requireLogin);
 
+// Limite de caracteres por mensagem imposto pelo proprio Mercado Livre (a
+// API de reclamacoes recusa qualquer texto acima disso) — mesma trava usada
+// em routes/conversations.js, aqui pras reclamacoes.
+const MAX_MESSAGE_LENGTH = 350;
+
 // Mesmo limite documentado pela API do Mercado Livre pra anexos de
 // reclamacao: ate 5MB, em JPG/PNG/PDF/TXT.
 const ALLOWED_MIME = ["image/jpeg", "image/png", "application/pdf", "text/plain"];
@@ -169,6 +174,11 @@ router.post("/claims/:claimId/reply", express.json(), (req, res) => {
     const claimId = req.params.claimId;
     const text = (req.body?.text || "").trim();
     if (!text) return res.status(400).json({ error: "Mensagem vazia" });
+    if (text.length > MAX_MESSAGE_LENGTH) {
+      return res.status(400).json({
+        error: `Mensagem muito longa (${text.length} caracteres). O Mercado Livre só aceita até ${MAX_MESSAGE_LENGTH} caracteres por mensagem — divida em mais de uma mensagem.`,
+      });
+    }
     const operator = String(req.body?.operatorName || "").trim().slice(0, 60) || null;
 
     const { rows } = await db.query("SELECT * FROM claims WHERE claim_id = $1", [claimId]);

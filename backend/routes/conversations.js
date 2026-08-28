@@ -29,6 +29,12 @@ const router = express.Router();
 // paginas publicas como /login.html.
 router.use(requireLogin);
 
+// Limite de caracteres por mensagem imposto pelo proprio Mercado Livre (a
+// API de mensagens pos-venda recusa qualquer texto acima disso) — trava
+// aqui tambem (alem do maxlength no campo, so pra UX) pra nunca depender
+// so do front-end, ja que a rota pode ser chamada de outro jeito.
+const MAX_MESSAGE_LENGTH = 350;
+
 // Mesmo limite documentado pela API de mensagens pos-venda do Mercado Livre
 // pra anexos: ate 25MB, em JPG/PNG/PDF/TXT (maior que o limite de 5MB das
 // reclamacoes — sao endpoints/documentacoes separados).
@@ -280,6 +286,11 @@ router.post("/conversations/:packId/reply", express.json(), (req, res) => {
     const text = (req.body?.text || "").trim();
     if (!text) {
       return res.status(400).json({ error: "Mensagem vazia" });
+    }
+    if (text.length > MAX_MESSAGE_LENGTH) {
+      return res.status(400).json({
+        error: `Mensagem muito longa (${text.length} caracteres). O Mercado Livre só aceita até ${MAX_MESSAGE_LENGTH} caracteres por mensagem — divida em mais de uma mensagem.`,
+      });
     }
     const operator = sanitizeOperatorName(req.body?.operatorName);
 
