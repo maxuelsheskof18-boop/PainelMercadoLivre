@@ -62,32 +62,48 @@ async function fetchClaimById(accessToken, claimId) {
   return claimsFetch(`/post-purchase/v1/claims/${claimId}`, accessToken);
 }
 
-// Busca todas as mensagens trocadas numa reclamacao.
+// Busca todas as mensagens trocadas numa reclamacao. Endpoint em
+// marketplace/v2 (o antigo post-purchase/v1/claims/.../messages ainda
+// devolve leitura, mas o envio nesse antigo caminho parou de aceitar POST —
+// ver sendClaimMessage abaixo — entao migramos a leitura tambem pra v2 pra
+// usar sempre a versao atual e evitar formatos divergentes).
 async function fetchClaimMessages(accessToken, claimId) {
-  return claimsFetch(`/post-purchase/v1/claims/${claimId}/messages`, accessToken);
+  return claimsFetch(`/marketplace/v2/claims/${claimId}/messages`, accessToken);
 }
 
-// Envia uma mensagem de TEXTO (sem anexo) numa reclamacao. "receiverRole" e
-// 'complainant' (comprador, so funciona antes de virar mediacao) ou
-// 'mediator' (Mercado Livre, depois que a reclamacao vira disputa/mediacao —
-// ver decideReceiverRole em claimsSync.js).
-async function sendClaimMessage(accessToken, claimId, receiverRole, text) {
-  return claimsFetch(`/post-purchase/v1/claims/${claimId}/messages`, accessToken, {
+// Envia uma mensagem numa reclamacao — com ou sem anexo, tanto faz (o
+// endpoint e o mesmo, "attachments" so vem vazio quando nao ha anexo).
+// "receiverRole" e 'complainant' (comprador, so funciona antes de virar
+// mediacao) ou 'mediator' (Mercado Livre, depois que a reclamacao vira
+// disputa/mediacao — ver decideReceiverRole em claimsSync.js).
+//
+// Endpoint corrigido (agosto/2026): o Mercado Livre desativou o POST no
+// antigo /post-purchase/v1/claims/{id}/messages (passou a devolver "Request
+// method 'POST' is not supported") e no /post-purchase/v1/claims/{id}/
+// actions/message — o envio de mensagem (com ou sem anexo) agora e so por
+// aqui: POST /marketplace/v2/claims/{id}/actions/send-message.
+async function sendClaimMessage(accessToken, claimId, receiverRole, text, attachmentIds = []) {
+  return claimsFetch(`/marketplace/v2/claims/${claimId}/actions/send-message`, accessToken, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ receiver_role: receiverRole, message: text }),
+    body: JSON.stringify({
+      receiver_role: receiverRole,
+      message: text,
+      attachments: attachmentIds,
+    }),
   });
 }
 
 // Envia um ANEXO (foto, nota fiscal, comprovante — ate 5MB, JPG/PNG/PDF/TXT)
 // pra reclamacao. Devolve um identificador (nome de arquivo com hash) que
-// precisa ser referenciado em sendClaimMessageWithAttachments logo depois —
-// o upload em si NAO manda a mensagem, so guarda o arquivo.
+// precisa ser referenciado em sendClaimMessage logo depois — o upload em si
+// NAO manda a mensagem, so guarda o arquivo. Mesma migracao de endpoint que
+// sendClaimMessage acima (post-purchase/v1 -> marketplace/v2).
 async function uploadClaimAttachment(accessToken, claimId, buffer, filename, mimetype) {
   const form = new FormData();
   form.set("file", new Blob([buffer], { type: mimetype || "application/octet-stream" }), filename);
 
-  const url = new URL(`${API_BASE}/post-purchase/v1/claims/${claimId}/attachments`);
+  const url = new URL(`${API_BASE}/marketplace/v2/claims/${claimId}/attachments`);
   url.searchParams.set("access_token", accessToken);
 
   const res = await fetch(url.toString(), {
@@ -113,21 +129,10 @@ async function uploadClaimAttachment(accessToken, claimId, buffer, filename, mim
   return data;
 }
 
-// Envia uma mensagem JUNTO com um ou mais anexos ja enviados por
-// uploadClaimAttachment (usa os identificadores devolvidos por ele).
-async function sendClaimMessageWithAttachments(accessToken, claimId, receiverRole, text, attachmentIds, applicationId) {
-  const params = new URLSearchParams();
-  if (applicationId) params.set("application_id", applicationId);
-  const query = params.toString() ? `?${params.toString()}` : "";
-  return claimsFetch(`/post-purchase/v1/claims/${claimId}/actions/message${query}`, accessToken, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      receiver_role: receiverRole,
-      message: text,
-      attachments: attachmentIds,
-    }),
-  });
+// Mantido so pra nao quebrar quem ainda chama pelo nome antigo — repassa
+// direto pra sendClaimMessage (o endpoint novo e o mesmo, com ou sem anexo).
+async function sendClaimMessageWithAttachments(accessToken, claimId, receiverRole, text, attachmentIds) {
+  return sendClaimMessage(accessToken, claimId, receiverRole, text, attachmentIds);
 }
 
 // Envia o comprovante de envio pra uma reclamacao do tipo "produto nao
