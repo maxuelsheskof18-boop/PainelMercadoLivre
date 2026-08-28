@@ -190,6 +190,15 @@ function fmtMoney(value) {
   return `R$ ${n.toFixed(2).replace(".", ",")}`;
 }
 
+// Rotulo da quantidade de itens do pedido (soma de order_items[].quantity),
+// ex: "1 unidade" / "4 unidades" — igual aparece na tela do pedido no
+// Mercado Livre. Devolve "" quando ainda nao temos essa informacao.
+function fmtQuantity(value) {
+  const n = Number(value);
+  if (value == null || !Number.isFinite(n) || n <= 0) return "";
+  return `${n} unidade${n === 1 ? "" : "s"}`;
+}
+
 // ---------- Avatares (gerados, sem precisar de imagem) ----------
 const AVATAR_COLORS = ["#2563eb", "#7c3aed", "#db2777", "#d97706", "#059669", "#0891b2", "#dc2626", "#4f46e5"];
 function avatarColor(seed) {
@@ -547,7 +556,7 @@ async function loadConversations() {
         ${conv.product_title ? `<div class="ci-product">${conv.product_title}</div>` : ""}
         <div class="ci-preview">${preview}</div>
         <div class="ci-bottom">
-          <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · #${conv.order_id}` : ""}${fmtMoney(conv.order_total) ? ` · ${fmtMoney(conv.order_total)}` : ""}</span>
+          <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · #${conv.order_id}` : ""}${fmtMoney(conv.order_total) ? ` · ${fmtMoney(conv.order_total)}` : ""}${fmtQuantity(conv.order_quantity) ? ` · ${fmtQuantity(conv.order_quantity)}` : ""}</span>
           ${conv.is_delivered ? '<span class="tag tag-delivered">Pedido já entregue</span>' : conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
           ${conv.shipping_type ? `<span class="tag tag-shipping">${conv.shipping_type}</span>` : ""}
         </div>
@@ -684,6 +693,7 @@ function renderClaimThreadInfo(claim) {
   // fechou pelo motivo normal (Mercado Livre/comprador), nem mostra o
   // banner.
   claimResolveBtn.dataset.claimId = claim.claim_id;
+  delete claimResolveBtn.dataset.packId;
   if (claim.local_status === "closed") {
     if (claim.resolved_by_operator_at) {
       claimResolveInfo.textContent = `✓ Marcada como resolvida manualmente${
@@ -707,6 +717,8 @@ function renderClaimThreadInfo(claim) {
   if (claim.order_id) metaBits.push(`Pedido #${claim.order_id}`);
   const totalLabel = fmtMoney(claim.order_total);
   if (totalLabel) metaBits.push(totalLabel);
+  const claimQtyLabel = fmtQuantity(claim.order_quantity);
+  if (claimQtyLabel) metaBits.push(claimQtyLabel);
   claimInfoMeta.textContent = metaBits.join(" · ");
   if (claim.order_id) {
     claimInfoLink.href = `https://www.mercadolivre.com.br/vendas/${claim.order_id}/detalhe`;
@@ -816,20 +828,28 @@ claimInfoCopyBtn.addEventListener("click", () => {
   if (claimInfoCopyBtn.dataset.orderId) copyTextToClipboard(claimInfoCopyBtn.dataset.orderId, claimInfoCopyBtn);
 });
 
-// "Marcar como resolvido" (pedido do usuario) — pra reclamacoes antigas que
-// ja foram tratadas por fora do painel e que, por isso, nunca vao fechar
-// sozinhas. Confirma antes (acao nao tem volta facil pela UI) e manda pro
-// servidor, que marca local_status='closed' e guarda quem/quando (ver
-// POST /claims/:claimId/mark-resolved em routes/claims.js).
+// "Marcar como resolvido" (pedido do usuario, estendido tambem pras
+// mensagens normais: "quero em tudo") — pra reclamacoes/conversas antigas
+// que ja foram tratadas por fora do painel e que, por isso, nunca vao
+// fechar/mudar de status sozinhas. Confirma antes (acao nao tem volta facil
+// pela UI) e manda pro endpoint certo dependendo do modo da thread aberta
+// (ver POST /claims/:claimId/mark-resolved em routes/claims.js e
+// POST /conversations/:packId/mark-resolved em routes/conversations.js).
 claimResolveBtn.addEventListener("click", async () => {
-  const claimId = claimResolveBtn.dataset.claimId;
-  if (!claimId) return;
-  if (!confirm("Marcar esta reclamação como resolvida? Ela vai sair de Pendentes/Respondidas e ir para Fechadas.")) {
-    return;
-  }
+  const isClaim = replyForm.dataset.mode === "claim";
+  const id = isClaim ? claimResolveBtn.dataset.claimId : claimResolveBtn.dataset.packId;
+  if (!id) return;
+  const confirmMsg = isClaim
+    ? "Marcar esta reclamação como resolvida? Ela vai sair de Pendentes/Respondidas e ir para Fechadas."
+    : "Marcar esta conversa como resolvida? Ela vai sair de Pendentes/Respondidas/Entregues.";
+  if (!confirm(confirmMsg)) return;
+
   claimResolveBtn.disabled = true;
   try {
-    const res = await fetch(`/api/claims/${encodeURIComponent(claimId)}/mark-resolved`, {
+    const endpoint = isClaim
+      ? `/api/claims/${encodeURIComponent(id)}/mark-resolved`
+      : `/api/conversations/${encodeURIComponent(id)}/mark-resolved`;
+    const res = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ operatorName: getOperatorName() }),
@@ -840,10 +860,13 @@ claimResolveBtn.addEventListener("click", async () => {
       alert(data.error || "Falha ao marcar como resolvida.");
       return;
     }
-    if (claimId === state.selectedClaimId) {
-      await loadClaimMessages(claimId);
+    if (isClaim) {
+      if (id === state.selectedClaimId) await loadClaimMessages(id);
+      await Promise.all([loadClaims(), loadPendingCount()]);
+    } else {
+      if (id === state.selectedPackId) await loadThreadMessages(id);
+      await Promise.all([loadConversations(), loadPendingCount()]);
     }
-    await Promise.all([loadClaims(), loadPendingCount()]);
   } finally {
     claimResolveBtn.disabled = false;
   }
@@ -995,9 +1018,32 @@ function renderThreadInfo(conv) {
   // sempre escondidos numa conversa de mensagens normal.
   threadClaimStageTag.classList.add("hidden");
   claimDueBanner.classList.add("hidden");
-  claimResolveBanner.classList.add("hidden");
   claimInfoCard.classList.add("hidden");
   evidenceBox.classList.add("hidden");
+
+  // Botao "marcar como resolvido" (pedido do usuario: "quero em tudo", ou
+  // seja tambem nas mensagens normais, nao so nas reclamacoes) — mesmo
+  // banner/botao compartilhado com renderClaimThreadInfo, ja que uma thread
+  // nunca e as duas coisas ao mesmo tempo. So faz sentido oferecer enquanto
+  // a conversa ainda esta pendente/respondida; se ja foi marcada
+  // manualmente mostra so a informacao (sem botao); pros outros status
+  // (bloqueada/cancelada/sem contato/resolvida automaticamente por
+  // combinar-entrega entregue) nem mostra o banner.
+  claimResolveBtn.dataset.packId = conv.pack_id;
+  delete claimResolveBtn.dataset.claimId;
+  if (conv.status === "resolved_by_operator") {
+    claimResolveInfo.textContent = `✓ Marcada como resolvida manualmente${
+      conv.resolved_by_operator ? ` por ${conv.resolved_by_operator}` : ""
+    } em ${fmtDate(conv.resolved_by_operator_at)}.`;
+    claimResolveBanner.classList.remove("hidden");
+    claimResolveBtn.classList.add("hidden");
+  } else if (conv.status === "pending" || conv.status === "answered") {
+    claimResolveInfo.textContent = "Já resolveu isso por fora do painel?";
+    claimResolveBanner.classList.remove("hidden");
+    claimResolveBtn.classList.remove("hidden");
+  } else {
+    claimResolveBanner.classList.add("hidden");
+  }
 
   // Anexar arquivo tambem e permitido numa mensagem normal (pedido do
   // usuario) — o botao e compartilhado com a tela de reclamacoes, so limpa
@@ -1014,6 +1060,8 @@ function renderThreadInfo(conv) {
     if (conv.order_id) orderMetaBits.push(`Pedido #${conv.order_id}`);
     const orderTotalLabel = fmtMoney(conv.order_total);
     if (orderTotalLabel) orderMetaBits.push(orderTotalLabel);
+    const orderQtyLabel = fmtQuantity(conv.order_quantity);
+    if (orderQtyLabel) orderMetaBits.push(orderQtyLabel);
     orderCardMeta.textContent = orderMetaBits.join(" · ");
     if (conv.order_id) {
       orderCardLink.href = `https://www.mercadolivre.com.br/vendas/${conv.order_id}/detalhe`;
