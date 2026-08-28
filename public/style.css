@@ -784,6 +784,38 @@ body {
   flex-shrink: 0;
 }
 .order-card-link:hover { text-decoration: underline; }
+.order-card-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.order-card-copy-btn {
+  font-size: 13px;
+  color: var(--text-soft);
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  line-height: 1;
+  cursor: pointer;
+}
+.order-card-copy-btn:hover { background: var(--bg); }
+.order-card-copy-btn.copied { color: var(--accent-dark); border-color: var(--accent-dark); }
+
+/* ---------- Link detectado dentro de uma mensagem ---------- */
+.msg-link { display: inline-flex; align-items: center; gap: 4px; }
+.msg-link a { color: inherit; text-decoration: underline; word-break: break-all; }
+.msg-out .msg-link a { color: white; }
+.msg-link-copy {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.msg-out .msg-link-copy { background: rgba(255, 255, 255, 0.22); }
+.msg-link-copy.copied { background: rgba(0, 150, 90, 0.25); }
 
 /* ---------- Calculadora de frete (Melhor Envio) ---------- */
 .freight-box { margin: 10px 20px 0; }

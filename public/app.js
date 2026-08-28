@@ -38,6 +38,7 @@ const orderCard = document.getElementById("thread-order-card");
 const orderCardProduct = document.getElementById("order-card-product");
 const orderCardMeta = document.getElementById("order-card-meta");
 const orderCardLink = document.getElementById("order-card-link");
+const orderCardCopyBtn = document.getElementById("order-card-copy-btn");
 const threadDeliveryTag = document.getElementById("thread-delivery-tag");
 const threadDeliveredTag = document.getElementById("thread-delivered-tag");
 const threadShippingTag = document.getElementById("thread-shipping-tag");
@@ -47,6 +48,7 @@ const claimInfoCard = document.getElementById("claim-info-card");
 const claimInfoTitle = document.getElementById("claim-info-title");
 const claimInfoMeta = document.getElementById("claim-info-meta");
 const claimInfoLink = document.getElementById("claim-info-link");
+const claimInfoCopyBtn = document.getElementById("claim-info-copy-btn");
 const threadMessages = document.getElementById("thread-messages");
 const replyForm = document.getElementById("reply-form");
 const replyText = document.getElementById("reply-text");
@@ -214,6 +216,93 @@ function fmtDateShort(d) {
     return new Date(d).toLocaleDateString("pt-BR");
   } catch {
     return d;
+  }
+}
+
+// ---------- Copiar pra area de transferencia ----------
+// Usado tanto pelo botao "copiar numero do pedido" quanto pelo botao de
+// copiar que aparece do lado de links detectados dentro das mensagens.
+// navigator.clipboard exige contexto seguro (https) — o painel roda em
+// https no Render, mas caimos num fallback via textarea+execCommand pra
+// nao quebrar em nenhum navegador mais antigo.
+async function copyTextToClipboard(text, btnEl) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    if (btnEl) {
+      const original = btnEl.textContent;
+      btnEl.textContent = "✓";
+      btnEl.classList.add("copied");
+      setTimeout(() => {
+        btnEl.textContent = original;
+        btnEl.classList.remove("copied");
+      }, 1200);
+    }
+  } catch (e) {
+    console.warn("Falha ao copiar pra área de transferência:", e);
+    if (btnEl) alert("Não consegui copiar automaticamente. Texto: " + text);
+  }
+}
+
+// ---------- Detectar link dentro do texto de uma mensagem ----------
+// Pedido do usuario: quando uma mensagem tiver um link no meio do texto
+// (ex: link de rastreio colado pelo comprador ou pelo vendedor), ele deve
+// aparecer clicavel (abre em outra aba) e com um botaozinho de copiar do
+// lado, em vez de aparecer como texto solto e sem nenhuma acao.
+const MESSAGE_URL_REGEX = /(https?:\/\/[^\s]+)/g;
+
+function renderMessageTextWithLinks(container, text) {
+  container.innerHTML = "";
+  const str = text || "";
+  let lastIndex = 0;
+  let match;
+  MESSAGE_URL_REGEX.lastIndex = 0;
+  while ((match = MESSAGE_URL_REGEX.exec(str)) !== null) {
+    if (match.index > lastIndex) {
+      container.appendChild(document.createTextNode(str.slice(lastIndex, match.index)));
+    }
+    // Tira pontuacao de final de frase (. , ; : ! ? ) etc.) que grudou no
+    // fim do link sem ser parte da URL de verdade.
+    let url = match[0];
+    while (url.length > 0 && /[.,;:!?)\]}'"]$/.test(url)) {
+      url = url.slice(0, -1);
+    }
+
+    const linkSpan = document.createElement("span");
+    linkSpan.className = "msg-link";
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = url;
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "msg-link-copy";
+    copyBtn.title = "Copiar link";
+    copyBtn.textContent = "📋";
+    copyBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      copyTextToClipboard(url, copyBtn);
+    });
+    linkSpan.appendChild(a);
+    linkSpan.appendChild(copyBtn);
+    container.appendChild(linkSpan);
+
+    lastIndex = match.index + url.length;
+  }
+  if (lastIndex < str.length) {
+    container.appendChild(document.createTextNode(str.slice(lastIndex)));
   }
 }
 
@@ -550,8 +639,11 @@ function renderClaimThreadInfo(claim) {
   if (claim.order_id) {
     claimInfoLink.href = `https://www.mercadolivre.com.br/vendas/${claim.order_id}/detalhe`;
     claimInfoLink.classList.remove("hidden");
+    claimInfoCopyBtn.dataset.orderId = claim.order_id;
+    claimInfoCopyBtn.classList.remove("hidden");
   } else {
     claimInfoLink.classList.add("hidden");
+    claimInfoCopyBtn.classList.add("hidden");
   }
 
   evidenceBox.classList.remove("hidden");
@@ -578,7 +670,7 @@ function renderClaimMessages(messages) {
     const roleLabel =
       m.sender_role === "respondent" ? "Você" : m.sender_role === "mediator" ? "Mercado Livre" : "Comprador";
     div.innerHTML = `<div class="msg-text"></div><div class="msg-date">${roleLabel} · ${fmtDate(m.sent_date)}</div>`;
-    div.querySelector(".msg-text").textContent = m.message || "";
+    renderMessageTextWithLinks(div.querySelector(".msg-text"), m.message);
     threadMessages.appendChild(div);
   }
   threadMessages.scrollTop = threadMessages.scrollHeight;
@@ -614,6 +706,16 @@ async function openClaimThread(claim) {
   await loadClaimMessages(claim.claim_id);
   await loadClaims();
 }
+
+// Copiar o numero do pedido (pedido do usuario) — funciona igual nos dois
+// cards (mensagens e reclamacoes), o numero fica guardado no data-order-id
+// de cada botao (ver renderThreadInfo/renderClaimThreadInfo).
+orderCardCopyBtn.addEventListener("click", () => {
+  if (orderCardCopyBtn.dataset.orderId) copyTextToClipboard(orderCardCopyBtn.dataset.orderId, orderCardCopyBtn);
+});
+claimInfoCopyBtn.addEventListener("click", () => {
+  if (claimInfoCopyBtn.dataset.orderId) copyTextToClipboard(claimInfoCopyBtn.dataset.orderId, claimInfoCopyBtn);
+});
 
 replyAttachBtn.addEventListener("click", () => replyAttachmentInput.click());
 replyAttachmentInput.addEventListener("change", () => {
@@ -783,8 +885,11 @@ function renderThreadInfo(conv) {
     if (conv.order_id) {
       orderCardLink.href = `https://www.mercadolivre.com.br/vendas/${conv.order_id}/detalhe`;
       orderCardLink.classList.remove("hidden");
+      orderCardCopyBtn.dataset.orderId = conv.order_id;
+      orderCardCopyBtn.classList.remove("hidden");
     } else {
       orderCardLink.classList.add("hidden");
+      orderCardCopyBtn.classList.add("hidden");
     }
   } else {
     orderCard.classList.add("hidden");
@@ -1057,7 +1162,7 @@ function renderMessages(messages) {
     div.innerHTML = `<div class="msg-text"></div>${
       m.attachment_name ? '<div class="msg-attachment"></div>' : ""
     }<div class="msg-date">${fmtDate(m.sent_date)}</div>`;
-    div.querySelector(".msg-text").textContent = m.text || "";
+    renderMessageTextWithLinks(div.querySelector(".msg-text"), m.text);
     if (m.attachment_name) {
       div.querySelector(".msg-attachment").textContent = `📎 ${m.attachment_name}`;
     }
