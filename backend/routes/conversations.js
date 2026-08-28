@@ -217,6 +217,15 @@ router.get("/conversations/:packId/messages", async (req, res) => {
 // prazo de resposta esgotado), nao adianta o vendedor tentar de novo — a
 // API sempre vai recusar. Detecta esses casos ("blocked_by_...") em
 // qualquer lugar que a mensagem de erro do Mercado Livre venha.
+//
+// Alem dos codigos "blocked_by_..." (que vem com HTTP 403), existe outro
+// jeito da mesma coisa acontecer na pratica: quando o prazo pra responder
+// vence, o Mercado Livre manda uma mensagem automatica avisando que
+// "considera a conversa encerrada" — e a PARTIR DAI, tentar responder por
+// aqui volta com "The conversation ID is invalid" (nao com um codigo
+// "blocked_by_time", e nem sempre com status 403). Sem essa deteccao, a
+// conversa ficava pra sempre em Pendentes, o vendedor tentava responder de
+// novo, e sempre tomava o mesmo erro em ingles sem explicacao nenhuma.
 function extractBlockReason(body) {
   if (!body || typeof body !== "object") return null;
   const candidates = [];
@@ -229,7 +238,10 @@ function extractBlockReason(body) {
       else if (c && typeof c.code === "string") candidates.push(c.code);
     }
   }
-  return candidates.find((c) => /^blocked_by_/i.test(c)) || null;
+  const blockedByCode = candidates.find((c) => /^blocked_by_/i.test(c));
+  if (blockedByCode) return blockedByCode;
+  if (candidates.some((c) => /conversation id is invalid/i.test(c))) return "invalid_conversation_id";
+  return null;
 }
 
 const BLOCK_REASON_LABELS = {
@@ -237,6 +249,7 @@ const BLOCK_REASON_LABELS = {
   blocked_by_mediation: "mediação/reclamação encerrada",
   blocked_by_fulfillment: "pedido enviado por Full",
   blocked_by_time: "prazo para responder encerrado",
+  invalid_conversation_id: "conversa encerrada pelo Mercado Livre (prazo de resposta esgotado)",
 };
 
 // Nome de quem esta operando o painel (varios atendentes podem usar o mesmo
@@ -338,7 +351,12 @@ router.post("/conversations/:packId/reply", express.json(), (req, res) => {
         err.body?.cause?.[0]?.message ||
         (typeof err.body === "string" ? err.body : null);
 
-      const blockReason = err.status === 403 ? extractBlockReason(err.body) : null;
+      // Antes so verificava esse bloqueio quando o status era 403 — mas o
+      // caso "invalid_conversation_id" (ver extractBlockReason acima) pode
+      // vir com outro status, entao agora checamos sempre; a funcao so
+      // retorna algo quando reconhece um dos padroes conhecidos, entao nao
+      // tem risco de marcar bloqueio por engano num erro qualquer.
+      const blockReason = extractBlockReason(err.body);
       if (blockReason) {
         // Bloqueio permanente: essa conversa nunca mais vai aceitar uma
         // resposta enviada por aqui. Marcamos como "blocked" pra ela sair
