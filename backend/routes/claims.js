@@ -10,6 +10,7 @@ const {
   uploadClaimAttachment,
   sendClaimMessageWithAttachments,
   sendShippingEvidence,
+  fetchClaimAttachmentFile,
 } = require("../ml/claimsApi");
 const { decideReceiverRole, reconcileAllClaims, extractClaimInfo } = require("../claimsSync");
 const { fetchClaims, fetchClaimMessages } = require("../ml/claimsApi");
@@ -105,6 +106,53 @@ router.get("/claims/:claimId/messages", async (req, res) => {
   );
 
   res.json({ claim: claimRows[0] || null, messages });
+});
+
+// Baixa o arquivo de um anexo enviado pelo comprador (ou pelo vendedor,
+// antes desse painel existir) dentro de uma reclamacao — o comprador
+// costuma mandar fotos/video como evidencia, e ate agora nao tinha jeito de
+// ver isso por aqui (so o texto da mensagem). O id do anexo vem do campo
+// "attachments" de cada mensagem (ver GET /claims/:claimId/messages acima).
+router.get("/claims/:claimId/attachments/:attachmentId/download", async (req, res) => {
+  const { claimId, attachmentId } = req.params;
+  const { rows } = await db.query("SELECT seller_id FROM claims WHERE claim_id = $1", [claimId]);
+  const claim = rows[0];
+  if (!claim) return res.status(404).json({ error: "Reclamacao nao encontrada" });
+
+  try {
+    const accessToken = await getValidAccessToken(claim.seller_id);
+    const file = await fetchClaimAttachmentFile(accessToken, claimId, attachmentId);
+    res.set("Content-Type", file.contentType);
+    res.send(file.buffer);
+  } catch (err) {
+    console.error("[claims/attachment-download]", err.status, err.body || err.message);
+    res.status(502).json({ error: "Falha ao baixar o anexo do Mercado Livre." });
+  }
+});
+
+// Pra reclamacoes antigas que ja foram resolvidas por fora do painel (ex:
+// por telefone com o comprador) e que, por isso, nao vao fechar sozinhas
+// nem no Mercado Livre nem aqui — o vendedor pode marcar manualmente como
+// resolvida, e ela sai de Pendentes/Respondidas pra Fechadas. Isso fica
+// guardado em resolved_by_operator(_at) na tabela claims, que sobrevive as
+// proximas sincronizacoes (ver upsertClaim em claimsSync.js) — a nao ser
+// que chegue uma mensagem nova depois da marcacao, o que reabre sozinho.
+router.post("/claims/:claimId/mark-resolved", express.json(), async (req, res) => {
+  const claimId = req.params.claimId;
+  const operator = String(req.body?.operatorName || "").trim().slice(0, 60) || null;
+
+  const { rows } = await db.query("SELECT * FROM claims WHERE claim_id = $1", [claimId]);
+  const claim = rows[0];
+  if (!claim) return res.status(404).json({ error: "Reclamacao nao encontrada" });
+
+  await db.query(
+    `UPDATE claims
+     SET local_status = 'closed', resolved_by_operator_at = now(), resolved_by_operator = $1, updated_at = now()
+     WHERE claim_id = $2`,
+    [operator, claimId]
+  );
+
+  res.json({ ok: true });
 });
 
 // A mensagem pode chegar de duas formas: so texto (JSON, sem anexo) ou
