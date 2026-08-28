@@ -675,6 +675,49 @@ body {
   background: var(--card);
 }
 .history-list { flex: 1; overflow-y: auto; padding: 4px 20px 20px; }
+
+/* Cada operador vira uma secao que abre/fecha (pedido do usuario, pra nao
+   ficar uma lista unica enorme rolando a tela). */
+.history-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin: 10px 0;
+  background: var(--card);
+  overflow: hidden;
+}
+.history-group-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+  background: var(--bg);
+  user-select: none;
+}
+.history-group-summary::-webkit-details-marker { display: none; }
+.history-group-summary::marker { content: ""; }
+.history-group-summary::before {
+  content: "▸";
+  margin-right: 8px;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+.history-group[open] > .history-group-summary::before { transform: rotate(90deg); }
+.history-operator-name { flex: 1; }
+.history-group-count {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-soft);
+  background: var(--border);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+.history-group-rows { padding: 0 14px; }
 .history-row {
   padding: 12px 0;
   border-bottom: 1px solid var(--border);
@@ -856,6 +899,7 @@ body {
 .msg-out { align-self: flex-end; background: var(--accent); color: white; border-bottom-right-radius: 4px; }
 .msg-out .msg-date { color: rgba(255,255,255,0.75); }
 .msg-text { white-space: pre-wrap; font-size: 14px; line-height: 1.45; }
+.msg-attachment { font-size: 12px; margin-top: 4px; opacity: 0.85; word-break: break-word; }
 .msg-date { font-size: 10.5px; margin-top: 4px; color: var(--muted); }
 
 .quick-templates {

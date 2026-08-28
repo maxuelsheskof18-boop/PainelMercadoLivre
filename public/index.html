@@ -133,6 +133,10 @@
           <input type="checkbox" id="filter-combinar" />
           <span>Só "combinar entrega"</span>
         </label>
+        <label class="filter-toggle">
+          <input type="checkbox" id="filter-only-pending" />
+          <span>Só pendentes (a responder)</span>
+        </label>
       </div>
       <div id="conversation-list" class="conversation-list">
         <p class="muted empty-msg">Carregando...</p>
@@ -234,7 +238,7 @@
         </div>
         <form id="reply-form" class="reply-form">
           <input type="file" id="reply-attachment" class="hidden" accept=".jpg,.jpeg,.png,.pdf,.txt" />
-          <button type="button" id="reply-attach-btn" class="btn btn-ghost btn-icon-only hidden" title="Anexar arquivo (JPG, PNG, PDF ou TXT, até 5MB)">📎</button>
+          <button type="button" id="reply-attach-btn" class="btn btn-ghost btn-icon-only hidden" title="Anexar arquivo (JPG, PNG, PDF ou TXT)">📎</button>
           <textarea id="reply-text" placeholder="Escreva sua resposta..." required></textarea>
           <button type="submit" class="btn btn-primary">Enviar</button>
         </form>

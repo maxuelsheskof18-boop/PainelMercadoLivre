@@ -6,6 +6,7 @@ const state = {
   selectedClaimId: null, // reclamacao aberta no momento (mutuamente exclusivo com selectedPackId)
   pollTimer: null,
   onlyCombinar: false,
+  onlyPending: false, // "Só pendentes (a responder)" — vale pras duas telas (mensagens e reclamacoes)
   searchQuery: "",
   sellerId: "",
   sort: "recent", // "recent" | "oldest"
@@ -53,6 +54,7 @@ const replyAttachBtn = document.getElementById("reply-attach-btn");
 const replyAttachmentInput = document.getElementById("reply-attachment");
 const replyAttachmentNameEl = document.getElementById("reply-attachment-name");
 const filterCombinar = document.getElementById("filter-combinar");
+const filterOnlyPending = document.getElementById("filter-only-pending");
 const filterSearch = document.getElementById("filter-search");
 const filterSeller = document.getElementById("filter-seller");
 const filterSortBtn = document.getElementById("filter-sort-btn");
@@ -362,6 +364,7 @@ async function loadConversations() {
   listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
   const params = new URLSearchParams({ status: state.status, sort: state.sort });
   if (state.onlyCombinar) params.set("combinar", "1");
+  if (state.onlyPending) params.set("onlyPending", "1");
   if (state.sellerId) params.set("sellerId", state.sellerId);
   if (state.searchQuery) params.set("q", state.searchQuery);
 
@@ -374,7 +377,7 @@ async function loadConversations() {
   const items = await res.json();
 
   if (items.length === 0) {
-    const label = statusLabel(state.status);
+    const label = state.onlyPending ? "a responder" : statusLabel(state.status);
     const msg = state.onlyCombinar
       ? `Nenhuma conversa de "combinar entrega" ${label}.`
       : `Nenhuma conversa ${label}.`;
@@ -448,6 +451,7 @@ function loadList() {
 async function loadClaims() {
   listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
   const params = new URLSearchParams({ status: state.claimStatus });
+  if (state.onlyPending) params.set("onlyPending", "1");
   if (state.sellerId) params.set("sellerId", state.sellerId);
   if (state.searchQuery) params.set("q", state.searchQuery);
 
@@ -460,8 +464,13 @@ async function loadClaims() {
   const items = await res.json();
 
   if (items.length === 0) {
-    const label =
-      state.claimStatus === "closed" ? "fechada" : state.claimStatus === "answered" ? "respondida" : "pendente";
+    const label = state.onlyPending
+      ? "a responder"
+      : state.claimStatus === "closed"
+      ? "fechada"
+      : state.claimStatus === "answered"
+      ? "respondida"
+      : "pendente";
     listEl.innerHTML = `<p class="muted empty-msg">Nenhuma reclamação ${label}.</p>`;
     return;
   }
@@ -551,6 +560,7 @@ function renderClaimThreadInfo(claim) {
   evidenceResults.innerHTML = "";
 
   replyAttachBtn.classList.remove("hidden");
+  replyAttachBtn.title = "Anexar arquivo (JPG, PNG, PDF ou TXT, até 5MB)";
   replyAttachmentInput.value = "";
   replyAttachmentNameEl.classList.add("hidden");
 }
@@ -753,7 +763,12 @@ function renderThreadInfo(conv) {
   claimDueBanner.classList.add("hidden");
   claimInfoCard.classList.add("hidden");
   evidenceBox.classList.add("hidden");
-  replyAttachBtn.classList.add("hidden");
+
+  // Anexar arquivo tambem e permitido numa mensagem normal (pedido do
+  // usuario) — o botao e compartilhado com a tela de reclamacoes, so limpa
+  // a selecao anterior ao trocar de conversa.
+  replyAttachBtn.classList.remove("hidden");
+  replyAttachBtn.title = "Anexar arquivo (JPG, PNG, PDF ou TXT, até 25MB)";
   replyAttachmentInput.value = "";
   replyAttachmentNameEl.classList.add("hidden");
 
@@ -1039,8 +1054,13 @@ function renderMessages(messages) {
   for (const m of messages) {
     const div = document.createElement("div");
     div.className = "msg " + (m.direction === "out" ? "msg-out" : "msg-in");
-    div.innerHTML = `<div class="msg-text"></div><div class="msg-date">${fmtDate(m.sent_date)}</div>`;
+    div.innerHTML = `<div class="msg-text"></div>${
+      m.attachment_name ? '<div class="msg-attachment"></div>' : ""
+    }<div class="msg-date">${fmtDate(m.sent_date)}</div>`;
     div.querySelector(".msg-text").textContent = m.text || "";
+    if (m.attachment_name) {
+      div.querySelector(".msg-attachment").textContent = `📎 ${m.attachment_name}`;
+    }
     threadMessages.appendChild(div);
   }
   threadMessages.scrollTop = threadMessages.scrollHeight;
@@ -1105,10 +1125,15 @@ replyForm.addEventListener("submit", async (e) => {
   const btn = replyForm.querySelector('button[type="submit"]');
   btn.disabled = true;
   try {
+    const formData = new FormData();
+    formData.set("text", text);
+    formData.set("operatorName", getOperatorName());
+    if (replyAttachmentInput.files[0]) {
+      formData.set("file", replyAttachmentInput.files[0]);
+    }
     const res = await fetch(`/api/conversations/${encodeURIComponent(packId)}/reply`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, operatorName: getOperatorName() }),
+      body: formData,
     });
     if (handleSessionExpired(res)) return;
     const data = await res.json();
@@ -1135,6 +1160,8 @@ replyForm.addEventListener("submit", async (e) => {
       return;
     }
     replyText.value = "";
+    replyAttachmentInput.value = "";
+    replyAttachmentNameEl.classList.add("hidden");
     // Continua na mesma conversa (igual um chat de verdade), so atualizando
     // as mensagens e a lista ao lado — nao fecha nem volta pra tela inicial.
     if (packId === state.selectedPackId) {
@@ -1183,39 +1210,78 @@ moduleNavItems.forEach((btn) => {
 // ---------- Histórico de respostas ----------
 const HISTORY_TYPE_LABELS = { message: "Mensagem", claim: "Reclamação" };
 
+// Agrupa a lista de respostas por operador — em vez de uma lista unica
+// enorme rolando a tela (reclamacao do usuario), cada operador vira uma
+// secao que abre/fecha, com o total de respostas dele no cabecalho. A ordem
+// dos grupos segue a ordem de chegada das linhas (que ja vem mais recentes
+// primeiro do servidor), entao quem respondeu mais recentemente aparece
+// primeiro.
+function groupHistoryByOperator(rows) {
+  const groups = new Map();
+  for (const r of rows) {
+    const key = r.operator_name || "-";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  return groups;
+}
+
 function renderHistory(rows) {
   if (!rows.length) {
     historyList.innerHTML =
       '<p class="muted empty-msg">Nenhuma resposta registrada ainda com esses filtros.</p>';
     return;
   }
-  historyList.innerHTML = rows
-    .map(
-      (r) => `
-    <div class="history-row">
-      <div class="history-row-main">
-        <strong class="history-operator"></strong>
-        <span class="tag ${r.type === "claim" ? "tag-claim" : "tag-shipping"}">${
-        HISTORY_TYPE_LABELS[r.type] || r.type
-      }</span>
-      </div>
-      <div class="history-row-meta muted small">
-        ${r.order_id ? `Pedido #${r.order_id} · ` : ""}${r.buyer_name || "Comprador"}${
-        r.seller_nickname ? ` · ${r.seller_nickname}` : ""
-      } · ${fmtDate(r.sent_date)}
-      </div>
-      <div class="history-row-text"></div>
-    </div>
-  `
-    )
+
+  const groups = groupHistoryByOperator(rows);
+  // Um unico grupo (ex: filtro de operador ja aplicado) comeca aberto —
+  // varios grupos comecam fechados, pra ver so a lista de nomes e quantos
+  // cada um respondeu antes de entrar nos detalhes.
+  const singleGroup = groups.size === 1;
+
+  historyList.innerHTML = Array.from(groups.entries())
+    .map(([operator, groupRows], gi) => {
+      const rowsHtml = groupRows
+        .map(
+          (r) => `
+        <div class="history-row">
+          <div class="history-row-main">
+            <span class="tag ${r.type === "claim" ? "tag-claim" : "tag-shipping"}">${
+            HISTORY_TYPE_LABELS[r.type] || r.type
+          }</span>
+          </div>
+          <div class="history-row-meta muted small">
+            ${r.order_id ? `Pedido #${r.order_id} · ` : ""}${r.buyer_name || "Comprador"}${
+            r.seller_nickname ? ` · ${r.seller_nickname}` : ""
+          } · ${fmtDate(r.sent_date)}
+          </div>
+          <div class="history-row-text"></div>
+        </div>
+      `
+        )
+        .join("");
+      return `
+      <details class="history-group"${singleGroup ? " open" : ""} data-group-index="${gi}">
+        <summary class="history-group-summary">
+          <span class="history-operator-name"></span>
+          <span class="history-group-count">${groupRows.length}</span>
+        </summary>
+        <div class="history-group-rows">${rowsHtml}</div>
+      </details>
+    `;
+    })
     .join("");
 
-  // Nome do operador e texto da mensagem sao preenchidos via textContent
-  // (nao interpolados no HTML acima) porque vem de digitacao livre.
-  const rowEls = historyList.querySelectorAll(".history-row");
-  rows.forEach((r, i) => {
-    rowEls[i].querySelector(".history-operator").textContent = r.operator_name || "-";
-    rowEls[i].querySelector(".history-row-text").textContent = r.text || "";
+  // Nome do operador (no cabecalho de cada grupo) e texto de cada mensagem
+  // sao preenchidos via textContent (nao interpolados no HTML acima) porque
+  // vem de digitacao livre.
+  const groupEls = historyList.querySelectorAll(".history-group");
+  Array.from(groups.entries()).forEach(([operator, groupRows], gi) => {
+    groupEls[gi].querySelector(".history-operator-name").textContent = operator;
+    const rowEls = groupEls[gi].querySelectorAll(".history-row-text");
+    groupRows.forEach((r, i) => {
+      rowEls[i].textContent = r.text || "";
+    });
   });
 }
 
@@ -1322,6 +1388,13 @@ filterCombinar.addEventListener("change", () => {
   state.onlyCombinar = filterCombinar.checked;
   loadList();
 });
+
+if (filterOnlyPending) {
+  filterOnlyPending.addEventListener("change", () => {
+    state.onlyPending = filterOnlyPending.checked;
+    loadList();
+  });
+}
 
 // Busca livre: espera o usuario parar de digitar (300ms) antes de recarregar
 // a lista, pra nao mandar uma requisicao a cada letra.
