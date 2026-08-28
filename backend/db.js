@@ -72,6 +72,8 @@ async function init() {
       operator_name TEXT,        -- nome de quem respondeu pelo painel (so em mensagens
                                   -- direction='out' enviadas por aqui); null nas recebidas
                                   -- do comprador e em envios antigos, de antes dessa coluna.
+      attachment_name TEXT,      -- nome do arquivo anexado na resposta (quando teve), so pra
+                                  -- exibir no painel; null quando a resposta nao teve anexo.
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
@@ -191,6 +193,7 @@ async function init() {
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_delivered BOOLEAN;
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS shipping_type TEXT;
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS operator_name TEXT;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name TEXT;
     ALTER TABLE claim_messages ADD COLUMN IF NOT EXISTS operator_name TEXT;
     ALTER TABLE claims ADD COLUMN IF NOT EXISTS shipping_type TEXT;
   `);
