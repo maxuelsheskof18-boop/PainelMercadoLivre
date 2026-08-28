@@ -166,6 +166,7 @@ router.get("/conversations/:packId/messages", async (req, res) => {
     conversation.order_id &&
     (conversation.product_title == null ||
       conversation.order_total == null ||
+      conversation.order_quantity == null ||
       (conversation.shipping_type == null && conversation.is_combinar_entrega !== true))
   ) {
     try {
@@ -186,15 +187,17 @@ router.get("/conversations/:packId/messages", async (req, res) => {
                 product_title = COALESCE($2, product_title),
                 is_combinar_entrega = COALESCE($3, is_combinar_entrega),
                 order_total = COALESCE($4, order_total),
-                shipping_type = COALESCE($5, shipping_type),
+                order_quantity = COALESCE($5, order_quantity),
+                shipping_type = COALESCE($6, shipping_type),
                 updated_at = now()
-          WHERE pack_id = $6
+          WHERE pack_id = $7
           RETURNING *`,
         [
           orderInfo?.buyerFullName ?? null,
           orderInfo?.productTitle ?? null,
           orderInfo?.isCombinarEntrega ?? null,
           orderInfo?.orderTotal ?? null,
+          orderInfo?.orderQuantity ?? null,
           shippingType,
           packId,
         ]
@@ -378,6 +381,33 @@ router.post("/conversations/:packId/reply", express.json(), (req, res) => {
       });
     }
   });
+});
+
+// Pra conversas antigas que ja foram resolvidas por fora do painel (ex: por
+// telefone/whatsapp com o comprador) e que, por isso, nao vao mudar de
+// status sozinhas — o vendedor pode marcar manualmente como resolvida, e
+// ela sai de Pendentes/Respondidas/Entregues. Usa o status
+// 'resolved_by_operator' (DIFERENTE do 'resolved' automatico, que e so pra
+// combinar-entrega entregue sem nenhuma mensagem — ver markConversationResolved
+// em sync.js). Fica guardado em resolved_by_operator(_at), que sobrevive as
+// proximas sincronizacoes (ver upsertConversationFromPack em sync.js) — a
+// nao ser que chegue mensagem nova depois da marcacao, o que reabre sozinho.
+router.post("/conversations/:packId/mark-resolved", express.json(), async (req, res) => {
+  const packId = req.params.packId;
+  const operator = String(req.body?.operatorName || "").trim().slice(0, 60) || null;
+
+  const { rows } = await db.query("SELECT * FROM conversations WHERE pack_id = $1", [packId]);
+  const conv = rows[0];
+  if (!conv) return res.status(404).json({ error: "Conversa nao encontrada" });
+
+  await db.query(
+    `UPDATE conversations
+     SET status = 'resolved_by_operator', resolved_by_operator_at = now(), resolved_by_operator = $1, updated_at = now()
+     WHERE pack_id = $2`,
+    [operator, packId]
+  );
+
+  res.json({ ok: true });
 });
 
 // Botao "Atualizar agora" no painel: forca uma reconciliacao manual, sem
