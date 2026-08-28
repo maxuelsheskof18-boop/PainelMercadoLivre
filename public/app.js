@@ -58,6 +58,7 @@ const replyText = document.getElementById("reply-text");
 const replyAttachBtn = document.getElementById("reply-attach-btn");
 const replyAttachmentInput = document.getElementById("reply-attachment");
 const replyAttachmentNameEl = document.getElementById("reply-attachment-name");
+const replyCharCounter = document.getElementById("reply-char-counter");
 const filterCombinar = document.getElementById("filter-combinar");
 const filterOnlyPending = document.getElementById("filter-only-pending");
 const filterSearch = document.getElementById("filter-search");
@@ -189,6 +190,21 @@ function fmtMoney(value) {
   if (value == null || Number.isNaN(n)) return "";
   return `R$ ${n.toFixed(2).replace(".", ",")}`;
 }
+
+// O Mercado Livre so aceita mensagens de ate 350 caracteres (tanto nas
+// mensagens pos-venda quanto nas reclamacoes) — o campo ja tem maxlength no
+// HTML pra travar a digitacao, isso aqui so atualiza o contadorzinho visual.
+const MAX_MESSAGE_LENGTH = 350;
+function updateReplyCharCounter() {
+  const len = replyText.value.length;
+  replyCharCounter.textContent = `${len}/${MAX_MESSAGE_LENGTH}`;
+  replyCharCounter.classList.toggle("reply-char-counter-max", len >= MAX_MESSAGE_LENGTH);
+  replyCharCounter.classList.toggle(
+    "reply-char-counter-warn",
+    len >= MAX_MESSAGE_LENGTH * 0.9 && len < MAX_MESSAGE_LENGTH
+  );
+}
+replyText.addEventListener("input", updateReplyCharCounter);
 
 // Rotulo da quantidade de itens do pedido (soma de order_items[].quantity),
 // ex: "1 unidade" / "4 unidades" — igual aparece na tela do pedido no
@@ -887,6 +903,10 @@ async function submitClaimReply() {
   const claimId = replyForm.dataset.claimId;
   const text = replyText.value.trim();
   if (!claimId || !text) return;
+  if (text.length > MAX_MESSAGE_LENGTH) {
+    alert(`Mensagem muito longa (${text.length} caracteres). O Mercado Livre só aceita até ${MAX_MESSAGE_LENGTH} caracteres — divida em mais de uma mensagem.`);
+    return;
+  }
 
   const btn = replyForm.querySelector('button[type="submit"]');
   btn.disabled = true;
@@ -909,6 +929,7 @@ async function submitClaimReply() {
       return;
     }
     replyText.value = "";
+    updateReplyCharCounter();
     replyAttachmentInput.value = "";
     replyAttachmentNameEl.classList.add("hidden");
     if (claimId === state.selectedClaimId) {
@@ -1294,6 +1315,7 @@ freightResults.addEventListener("click", (e) => {
     deliveryTime: optionEl.dataset.delivery,
     finalPrice,
   });
+  updateReplyCharCounter();
   replyText.focus();
 
   // Fecha a calculadora: o espaco todo volta pra conversa, que e o que o
@@ -1327,6 +1349,7 @@ templateCombinarBtn.addEventListener("click", () => {
     return;
   }
   replyText.value = COMBINAR_ENTREGA_TEMPLATE;
+  updateReplyCharCounter();
   replyText.focus();
 });
 
@@ -1407,6 +1430,10 @@ replyForm.addEventListener("submit", async (e) => {
   const packId = replyForm.dataset.packId;
   const text = replyText.value.trim();
   if (!packId || !text) return;
+  if (text.length > MAX_MESSAGE_LENGTH) {
+    alert(`Mensagem muito longa (${text.length} caracteres). O Mercado Livre só aceita até ${MAX_MESSAGE_LENGTH} caracteres — divida em mais de uma mensagem.`);
+    return;
+  }
 
   const btn = replyForm.querySelector('button[type="submit"]');
   btn.disabled = true;
@@ -1446,6 +1473,7 @@ replyForm.addEventListener("submit", async (e) => {
       return;
     }
     replyText.value = "";
+    updateReplyCharCounter();
     replyAttachmentInput.value = "";
     replyAttachmentNameEl.classList.add("hidden");
     // Continua na mesma conversa (igual um chat de verdade), so atualizando

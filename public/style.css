@@ -989,7 +989,17 @@ body {
 }
 .reply-form textarea:focus { border-color: var(--accent); }
 .reply-form button { align-self: flex-end; }
-#reply-attachment-name { padding: 0 20px 10px; }
+.reply-form-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px 10px;
+  gap: 10px;
+}
+#reply-attachment-name { padding: 0; }
+.reply-char-counter { margin-left: auto; white-space: nowrap; }
+.reply-char-counter.reply-char-counter-warn { color: var(--warning, #b45309); }
+.reply-char-counter.reply-char-counter-max { color: var(--danger, #dc2626); font-weight: 600; }
 
 /* ---------- Responsivo (tablet e celular) ---------- */
 @media (max-width: 900px) {

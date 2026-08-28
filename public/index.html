@@ -249,10 +249,13 @@
         <form id="reply-form" class="reply-form">
           <input type="file" id="reply-attachment" class="hidden" accept=".jpg,.jpeg,.png,.pdf,.txt" />
           <button type="button" id="reply-attach-btn" class="btn btn-ghost btn-icon-only hidden" title="Anexar arquivo (JPG, PNG, PDF ou TXT)">📎</button>
-          <textarea id="reply-text" placeholder="Escreva sua resposta..." required></textarea>
+          <textarea id="reply-text" placeholder="Escreva sua resposta..." maxlength="350" required></textarea>
           <button type="submit" class="btn btn-primary">Enviar</button>
         </form>
-        <div id="reply-attachment-name" class="muted small hidden"></div>
+        <div class="reply-form-footer">
+          <div id="reply-attachment-name" class="muted small hidden"></div>
+          <span id="reply-char-counter" class="reply-char-counter muted small">0/350</span>
+        </div>
       </div>
     </section>
 
