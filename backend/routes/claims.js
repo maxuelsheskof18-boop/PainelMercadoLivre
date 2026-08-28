@@ -63,6 +63,13 @@ router.get("/claims", async (req, res) => {
     conditions.push(`c.seller_id = $${params.length}`);
   }
 
+  // Filtro opcional "so pendentes (a responder)" — mesma ideia da tela de
+  // mensagens: nao precisar caçar as que faltam responder dentro de uma aba
+  // que mistura status (aqui, a "open" junta pending + answered).
+  if (req.query.onlyPending === "1") {
+    conditions.push("c.local_status = 'pending'");
+  }
+
   const q = (req.query.q || "").trim();
   if (q) {
     params.push(`%${q}%`);

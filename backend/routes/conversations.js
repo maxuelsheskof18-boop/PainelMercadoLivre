@@ -1,9 +1,11 @@
 const express = require("express");
+const multer = require("multer");
 const db = require("../db");
 const { requireLogin } = require("../authMiddleware");
 const { getValidAccessToken } = require("../ml/tokens");
 const {
   sendMessage,
+  uploadMessageAttachment,
   fetchMe,
   fetchRecentOrders,
   fetchPackMessages,
@@ -26,6 +28,21 @@ const router = express.Router();
 // que ele so intercepta pedidos que ja comecam com /api/..., sem afetar
 // paginas publicas como /login.html.
 router.use(requireLogin);
+
+// Mesmo limite documentado pela API de mensagens pos-venda do Mercado Livre
+// pra anexos: ate 25MB, em JPG/PNG/PDF/TXT (maior que o limite de 5MB das
+// reclamacoes — sao endpoints/documentacoes separados).
+const ALLOWED_MESSAGE_ATTACHMENT_MIME = ["image/jpeg", "image/png", "application/pdf", "text/plain"];
+const uploadMessageFile = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!ALLOWED_MESSAGE_ATTACHMENT_MIME.includes(file.mimetype)) {
+      return cb(new Error("Formato nao suportado. Envie JPG, PNG, PDF ou TXT."));
+    }
+    cb(null, true);
+  },
+});
 
 router.get("/pending-count", async (req, res) => {
   const { rows } = await db.query(
@@ -81,6 +98,14 @@ router.get("/conversations", async (req, res) => {
   // deixar o filtro ligado tambem.
   if (req.query.combinar === "1") {
     conditions.push("c.is_combinar_entrega = true");
+  }
+
+  // Filtro opcional "so pendentes (a responder)": pedido do usuario pra nao
+  // precisar caçar as pendentes dentro de abas que misturam status, como a
+  // "Entregues" (que junta pending + answered). Nas abas que ja sao so
+  // pending isso nao muda nada.
+  if (req.query.onlyPending === "1") {
+    conditions.push("c.status = 'pending'");
   }
 
   // Filtro opcional por loja (conta do Mercado Livre) especifica.
@@ -224,87 +249,117 @@ function sanitizeOperatorName(raw) {
   return name || null;
 }
 
-router.post("/conversations/:packId/reply", express.json(), async (req, res) => {
-  const { text, operatorName } = req.body || {};
-  if (!text || !text.trim()) {
-    return res.status(400).json({ error: "Mensagem vazia" });
-  }
-  const operator = sanitizeOperatorName(operatorName);
-
-  const { rows } = await db.query(
-    "SELECT * FROM conversations WHERE pack_id = $1",
-    [req.params.packId]
-  );
-  const conv = rows[0];
-
-  if (!conv) return res.status(404).json({ error: "Conversa nao encontrada" });
-  if (!conv.buyer_id) {
-    return res.status(409).json({
-      error:
-        "Nao sei quem e o comprador desta conversa ainda (aguarde a proxima sincronizacao ou clique em Atualizar).",
-    });
-  }
-
-  try {
-    const accessToken = await getValidAccessToken(conv.seller_id);
-    const me = await fetchMe(accessToken);
-
-    await sendMessage({
-      accessToken,
-      packId: conv.pack_id,
-      sellerId: conv.seller_id,
-      buyerId: conv.buyer_id,
-      sellerEmail: me?.email,
-      text: text.trim(),
-    });
-
-    const nowIso = new Date().toISOString();
-
-    await db.query(
-      `INSERT INTO messages (pack_id, direction, author_user_id, text, sent_date, operator_name)
-       VALUES ($1, 'out', $2, $3, $4, $5)`,
-      [conv.pack_id, conv.seller_id, text.trim(), nowIso, operator]
-    );
-
-    await db.query(
-      `UPDATE conversations
-       SET status = 'answered', last_message_text = $1, last_message_date = $2, updated_at = now()
-       WHERE pack_id = $3`,
-      [text.trim(), nowIso, conv.pack_id]
-    );
-
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("[reply]", err.status, err.body || err.message);
-    // err.body normalmente vem da API do Mercado Livre como um objeto tipo
-    // {message: "...", error: "...", cause: [...]}. Extraimos uma frase
-    // legivel pra mostrar na tela, em vez de so "[object Object]".
-    const mlMessage =
-      err.body?.message ||
-      err.body?.cause?.[0]?.message ||
-      (typeof err.body === "string" ? err.body : null);
-
-    const blockReason = err.status === 403 ? extractBlockReason(err.body) : null;
-    if (blockReason) {
-      // Bloqueio permanente: essa conversa nunca mais vai aceitar uma
-      // resposta enviada por aqui. Marcamos como "blocked" pra ela sair
-      // sozinha das abas "Pendentes" e "Respondidas" (as duas so mostram
-      // status='pending' ou 'answered') — assim ela nao fica poluindo a
-      // lista, como o usuario pediu, sem apagar o historico da conversa.
-      await db.query(
-        `UPDATE conversations SET status = 'blocked', blocked_reason = $1, updated_at = now() WHERE pack_id = $2`,
-        [blockReason, conv.pack_id]
-      );
+// A mensagem pode chegar de duas formas: so texto (JSON, sem anexo) ou
+// multipart/form-data (quando tem arquivo junto). express.json() so age
+// quando o Content-Type e "application/json" (senao so passa adiante sem
+// tocar em nada), e o multer so age quando e "multipart/form-data" — as duas
+// coisas encadeadas cobrem os dois casos sem conflitar uma com a outra
+// (mesmo padrao usado em routes/claims.js).
+router.post("/conversations/:packId/reply", express.json(), (req, res) => {
+  uploadMessageFile.single("file")(req, res, async (uploadErr) => {
+    if (uploadErr) {
+      return res.status(400).json({ error: uploadErr.message || "Falha ao processar o anexo." });
     }
 
-    res.status(502).json({
-      error: "Falha ao enviar a mensagem para o Mercado Livre.",
-      detail: mlMessage || err.message || "Sem detalhes do Mercado Livre.",
-      blocked: !!blockReason,
-      blockReason: blockReason || null,
-      blockReasonLabel: blockReason ? BLOCK_REASON_LABELS[blockReason.toLowerCase()] || null : null,
-    });
-  }
+    const text = (req.body?.text || "").trim();
+    if (!text) {
+      return res.status(400).json({ error: "Mensagem vazia" });
+    }
+    const operator = sanitizeOperatorName(req.body?.operatorName);
+
+    const { rows } = await db.query(
+      "SELECT * FROM conversations WHERE pack_id = $1",
+      [req.params.packId]
+    );
+    const conv = rows[0];
+
+    if (!conv) return res.status(404).json({ error: "Conversa nao encontrada" });
+    if (!conv.buyer_id) {
+      return res.status(409).json({
+        error:
+          "Nao sei quem e o comprador desta conversa ainda (aguarde a proxima sincronizacao ou clique em Atualizar).",
+      });
+    }
+
+    try {
+      const accessToken = await getValidAccessToken(conv.seller_id);
+      const me = await fetchMe(accessToken);
+
+      let attachmentIds;
+      if (req.file) {
+        const uploadResult = await uploadMessageAttachment(
+          accessToken,
+          req.file.buffer,
+          req.file.originalname,
+          req.file.mimetype
+        );
+        const attachmentId = uploadResult?.id || uploadResult?.filename || uploadResult?.attachment_id;
+        if (!attachmentId) {
+          throw Object.assign(new Error("Nao recebi um identificador de anexo do Mercado Livre."), {
+            body: uploadResult,
+          });
+        }
+        attachmentIds = [attachmentId];
+      }
+
+      await sendMessage({
+        accessToken,
+        packId: conv.pack_id,
+        sellerId: conv.seller_id,
+        buyerId: conv.buyer_id,
+        sellerEmail: me?.email,
+        text,
+        attachmentIds,
+      });
+
+      const nowIso = new Date().toISOString();
+
+      await db.query(
+        `INSERT INTO messages (pack_id, direction, author_user_id, text, sent_date, operator_name, attachment_name)
+         VALUES ($1, 'out', $2, $3, $4, $5, $6)`,
+        [conv.pack_id, conv.seller_id, text, nowIso, operator, req.file ? req.file.originalname : null]
+      );
+
+      await db.query(
+        `UPDATE conversations
+         SET status = 'answered', last_message_text = $1, last_message_date = $2, updated_at = now()
+         WHERE pack_id = $3`,
+        [text, nowIso, conv.pack_id]
+      );
+
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("[reply]", err.status, err.body || err.message);
+      // err.body normalmente vem da API do Mercado Livre como um objeto tipo
+      // {message: "...", error: "...", cause: [...]}. Extraimos uma frase
+      // legivel pra mostrar na tela, em vez de so "[object Object]".
+      const mlMessage =
+        err.body?.message ||
+        err.body?.cause?.[0]?.message ||
+        (typeof err.body === "string" ? err.body : null);
+
+      const blockReason = err.status === 403 ? extractBlockReason(err.body) : null;
+      if (blockReason) {
+        // Bloqueio permanente: essa conversa nunca mais vai aceitar uma
+        // resposta enviada por aqui. Marcamos como "blocked" pra ela sair
+        // sozinha das abas "Pendentes" e "Respondidas" (as duas so mostram
+        // status='pending' ou 'answered') — assim ela nao fica poluindo a
+        // lista, como o usuario pediu, sem apagar o historico da conversa.
+        await db.query(
+          `UPDATE conversations SET status = 'blocked', blocked_reason = $1, updated_at = now() WHERE pack_id = $2`,
+          [blockReason, conv.pack_id]
+        );
+      }
+
+      res.status(502).json({
+        error: "Falha ao enviar a mensagem para o Mercado Livre.",
+        detail: mlMessage || err.message || "Sem detalhes do Mercado Livre.",
+        blocked: !!blockReason,
+        blockReason: blockReason || null,
+        blockReasonLabel: blockReason ? BLOCK_REASON_LABELS[blockReason.toLowerCase()] || null : null,
+      });
+    }
+  });
 });
 
 // Botao "Atualizar agora" no painel: forca uma reconciliacao manual, sem
