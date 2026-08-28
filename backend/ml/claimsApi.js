@@ -142,6 +142,42 @@ async function sendShippingEvidence(accessToken, claimId, payload) {
   });
 }
 
+// Baixa o ARQUIVO de um anexo trocado numa reclamacao (o comprador manda
+// fotos/videos como evidencia, e essas evidencias ficam disponiveis pelo
+// mesmo id/"filename" que aparece no campo "attachments" de cada mensagem —
+// ver upsertClaim em claimsSync.js). Endpoint documentado separado do de
+// upload (que fica em /post-purchase/v1/...): esse de download usa a rota
+// "marketplace/v2". Devolve o arquivo cru (buffer) + o content-type, pra
+// rota do painel repassar pro navegador sem expor o access_token pro
+// front-end.
+async function fetchClaimAttachmentFile(accessToken, claimId, attachmentId) {
+  const url = new URL(`${API_BASE}/marketplace/v2/claims/${claimId}/attachments/${attachmentId}/download`);
+  url.searchParams.set("access_token", accessToken);
+
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!res.ok) {
+    let body;
+    try {
+      body = await res.json();
+    } catch {
+      body = await res.text().catch(() => null);
+    }
+    const err = new Error(`Mercado Livre Claims API ${res.status} ao baixar anexo`);
+    err.status = res.status;
+    err.body = body;
+    throw err;
+  }
+
+  const arrayBuffer = await res.arrayBuffer();
+  return {
+    buffer: Buffer.from(arrayBuffer),
+    contentType: res.headers.get("content-type") || "application/octet-stream",
+  };
+}
+
 module.exports = {
   fetchClaims,
   fetchClaimById,
@@ -150,4 +186,5 @@ module.exports = {
   uploadClaimAttachment,
   sendClaimMessageWithAttachments,
   sendShippingEvidence,
+  fetchClaimAttachmentFile,
 };
