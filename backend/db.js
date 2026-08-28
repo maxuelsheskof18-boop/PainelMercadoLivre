@@ -45,9 +45,10 @@ async function init() {
       buyer_full_name TEXT,                     -- nome real (order.buyer), quando disponivel
       product_title TEXT,                       -- nome do(s) produto(s) do pedido
       order_total NUMERIC(12,2),                -- valor total da venda (order.total_amount)
+      order_quantity INTEGER,                   -- soma das quantidades dos itens do pedido (order_items[].quantity)
       last_message_text TEXT,
       last_message_date TEXT,
-      status TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'answered' | 'blocked' | 'no_contact' | 'cancelled' | 'resolved' | 'delivered_watch'
+      status TEXT NOT NULL DEFAULT 'pending',   -- 'pending' | 'answered' | 'blocked' | 'no_contact' | 'cancelled' | 'resolved' | 'resolved_by_operator' | 'delivered_watch'
       is_combinar_entrega BOOLEAN,              -- null = ainda nao classificado
       is_delivered BOOLEAN,                     -- true = pedido ja entregue (tag "delivered"); usado pra separar
                                                  -- mensagens de pos-entrega (nota fiscal, duvidas) numa aba propria,
@@ -58,6 +59,14 @@ async function init() {
                                                  -- ainda nao foi buscado (so buscamos quando ja vamos buscar os
                                                  -- detalhes completos do pedido, pra nao gastar chamada de API a toa).
       blocked_reason TEXT,                      -- ex: 'blocked_by_refund', 'blocked_by_mediation'
+      resolved_by_operator_at TIMESTAMPTZ,      -- preenchido quando o vendedor marca manualmente a conversa
+                                                 -- como resolvida (atendimento antigo ja tratado por fora do
+                                                 -- painel); sobrevive as sincronizacoes seguintes, a nao ser
+                                                 -- que chegue mensagem nova depois disso (reabre sozinha —
+                                                 -- ver upsertConversationFromPack em sync.js). Usa o status
+                                                 -- 'resolved_by_operator', DIFERENTE do 'resolved' automatico
+                                                 -- (que e so pra combinar-entrega entregue sem mensagem).
+      resolved_by_operator TEXT,                -- nome de quem marcou como resolvida, so pra exibir.
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
@@ -134,6 +143,7 @@ async function init() {
       buyer_full_name TEXT,
       product_title TEXT,
       order_total NUMERIC(12,2),
+      order_quantity INTEGER,                   -- soma das quantidades dos itens do pedido (order_items[].quantity)
       last_message_text TEXT,
       last_message_date TEXT,
       local_status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'answered' | 'closed' — calculado por
@@ -204,6 +214,10 @@ async function init() {
     ALTER TABLE claims ADD COLUMN IF NOT EXISTS shipping_type TEXT;
     ALTER TABLE claims ADD COLUMN IF NOT EXISTS resolved_by_operator_at TIMESTAMPTZ;
     ALTER TABLE claims ADD COLUMN IF NOT EXISTS resolved_by_operator TEXT;
+    ALTER TABLE claims ADD COLUMN IF NOT EXISTS order_quantity INTEGER;
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS order_quantity INTEGER;
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS resolved_by_operator_at TIMESTAMPTZ;
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS resolved_by_operator TEXT;
   `);
 }
 

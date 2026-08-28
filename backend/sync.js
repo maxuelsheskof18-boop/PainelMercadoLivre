@@ -252,7 +252,16 @@ function extractOrderInfo(order) {
   // numero que aparece como "Total" na tela do pedido no Mercado Livre.
   const orderTotal = typeof order.total_amount === "number" ? order.total_amount : null;
 
-  return { isCombinarEntrega, isDelivered, productTitle, buyerFullName, orderTotal };
+  // Soma das quantidades de cada item do pedido (ex: "4 unidades" que
+  // aparece na tela do pedido no Mercado Livre). Fica null quando o pedido
+  // nao tem itens com quantidade valida.
+  const quantitySum = (order.order_items || []).reduce((acc, oi) => {
+    const q = Number(oi?.quantity);
+    return Number.isFinite(q) ? acc + q : acc;
+  }, 0);
+  const orderQuantity = quantitySum > 0 ? quantitySum : null;
+
+  return { isCombinarEntrega, isDelivered, productTitle, buyerFullName, orderTotal, orderQuantity };
 }
 
 async function upsertConversationFromPack(sellerId, packId, packData, orderId, orderInfo) {
@@ -273,7 +282,26 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
   const sellerIdStr = String(sellerId);
   const lastFromId = String(last?.from?.user_id ?? "");
   const isLastFromSeller = lastFromId === sellerIdStr;
-  const status = isLastFromSeller ? "answered" : "pending";
+  let status = isLastFromSeller ? "answered" : "pending";
+
+  // Se essa conversa foi marcada manualmente como resolvida pelo operador
+  // (atendimento antigo, tratado por fora do painel), preserva isso mesmo
+  // numa resincronizacao — a NAO SER que tenha chegado mensagem nova depois
+  // da marcacao, caso em que reabre sozinha (mesma logica de upsertClaim em
+  // claimsSync.js, so que aqui com o status 'resolved_by_operator', que e
+  // DIFERENTE do 'resolved' automatico usado em markConversationResolved).
+  const { rows: existingResolveRows } = await db.query(
+    "SELECT resolved_by_operator_at, resolved_by_operator FROM conversations WHERE pack_id = $1",
+    [String(packId)]
+  );
+  let resolvedByOperatorAt = existingResolveRows[0]?.resolved_by_operator_at || null;
+  let resolvedByOperator = existingResolveRows[0]?.resolved_by_operator || null;
+  const lastMsgDate = messageDate(last);
+  if (resolvedByOperatorAt && lastMsgDate && new Date(lastMsgDate) > new Date(resolvedByOperatorAt)) {
+    resolvedByOperatorAt = null;
+    resolvedByOperator = null;
+  }
+  if (resolvedByOperatorAt) status = "resolved_by_operator";
 
   // Descobre quem e o comprador: o participante que nao e o vendedor.
   let buyerId = null;
@@ -288,6 +316,7 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
   const productTitle = orderInfo?.productTitle ?? null;
   const buyerFullName = orderInfo?.buyerFullName ?? null;
   const orderTotal = orderInfo && typeof orderInfo.orderTotal === "number" ? orderInfo.orderTotal : null;
+  const orderQuantity = orderInfo && typeof orderInfo.orderQuantity === "number" ? orderInfo.orderQuantity : null;
   // is_combinar_entrega fica null (nao "false") quando ainda nao
   // conseguimos os detalhes do pedido — assim nao classificamos errado por
   // falta de dado, so quando o proprio orderInfo.isCombinarEntrega==false.
@@ -304,8 +333,8 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
 
   await db.query(
     `INSERT INTO conversations
-       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, is_combinar_entrega, is_delivered, shipping_type, last_message_text, last_message_date, status, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
+       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, order_quantity, is_combinar_entrega, is_delivered, shipping_type, last_message_text, last_message_date, status, resolved_by_operator_at, resolved_by_operator, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
      ON CONFLICT (pack_id) DO UPDATE SET
        order_id = EXCLUDED.order_id,
        buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
@@ -313,12 +342,15 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
        buyer_full_name = COALESCE(EXCLUDED.buyer_full_name, conversations.buyer_full_name),
        product_title = COALESCE(EXCLUDED.product_title, conversations.product_title),
        order_total = COALESCE(EXCLUDED.order_total, conversations.order_total),
+       order_quantity = COALESCE(EXCLUDED.order_quantity, conversations.order_quantity),
        is_combinar_entrega = COALESCE(EXCLUDED.is_combinar_entrega, conversations.is_combinar_entrega),
        is_delivered = COALESCE(EXCLUDED.is_delivered, conversations.is_delivered),
        shipping_type = COALESCE(EXCLUDED.shipping_type, conversations.shipping_type),
        last_message_text = EXCLUDED.last_message_text,
        last_message_date = EXCLUDED.last_message_date,
        status = EXCLUDED.status,
+       resolved_by_operator_at = EXCLUDED.resolved_by_operator_at,
+       resolved_by_operator = EXCLUDED.resolved_by_operator,
        updated_at = now()`,
     [
       String(packId),
@@ -329,12 +361,15 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
       buyerFullName,
       productTitle,
       orderTotal,
+      orderQuantity,
       isCombinarEntrega,
       isDelivered,
       shippingType,
       last?.text || null,
       messageDate(last),
       status,
+      resolvedByOperatorAt,
+      resolvedByOperator,
     ]
   );
 
@@ -381,17 +416,19 @@ async function upsertNoContactOrder(sellerId, packId, order, orderInfo) {
   const buyerFullName = orderInfo?.buyerFullName ?? null;
   const productTitle = orderInfo?.productTitle ?? null;
   const orderTotal = orderInfo && typeof orderInfo.orderTotal === "number" ? orderInfo.orderTotal : null;
+  const orderQuantity = orderInfo && typeof orderInfo.orderQuantity === "number" ? orderInfo.orderQuantity : null;
 
   await db.query(
     `INSERT INTO conversations
-       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, is_combinar_entrega, last_message_text, last_message_date, status, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, NULL, NULL, 'no_contact', now())
+       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, order_quantity, is_combinar_entrega, last_message_text, last_message_date, status, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, NULL, NULL, 'no_contact', now())
      ON CONFLICT (pack_id) DO UPDATE SET
        buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
        buyer_nickname = COALESCE(EXCLUDED.buyer_nickname, conversations.buyer_nickname),
        buyer_full_name = COALESCE(EXCLUDED.buyer_full_name, conversations.buyer_full_name),
        product_title = COALESCE(EXCLUDED.product_title, conversations.product_title),
        order_total = COALESCE(EXCLUDED.order_total, conversations.order_total),
+       order_quantity = COALESCE(EXCLUDED.order_quantity, conversations.order_quantity),
        is_combinar_entrega = true,
        updated_at = now()
      WHERE conversations.status = 'no_contact'`,
@@ -404,6 +441,7 @@ async function upsertNoContactOrder(sellerId, packId, order, orderInfo) {
       buyerFullName,
       productTitle,
       orderTotal,
+      orderQuantity,
     ]
   );
 }
@@ -425,17 +463,19 @@ async function upsertDeliveredWatchOrder(sellerId, packId, order, orderInfo) {
   const buyerFullName = orderInfo?.buyerFullName ?? null;
   const productTitle = orderInfo?.productTitle ?? null;
   const orderTotal = orderInfo && typeof orderInfo.orderTotal === "number" ? orderInfo.orderTotal : null;
+  const orderQuantity = orderInfo && typeof orderInfo.orderQuantity === "number" ? orderInfo.orderQuantity : null;
 
   await db.query(
     `INSERT INTO conversations
-       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, is_combinar_entrega, is_delivered, last_message_text, last_message_date, status, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, true, NULL, NULL, 'delivered_watch', now())
+       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, order_quantity, is_combinar_entrega, is_delivered, last_message_text, last_message_date, status, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, true, NULL, NULL, 'delivered_watch', now())
      ON CONFLICT (pack_id) DO UPDATE SET
        buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
        buyer_nickname = COALESCE(EXCLUDED.buyer_nickname, conversations.buyer_nickname),
        buyer_full_name = COALESCE(EXCLUDED.buyer_full_name, conversations.buyer_full_name),
        product_title = COALESCE(EXCLUDED.product_title, conversations.product_title),
        order_total = COALESCE(EXCLUDED.order_total, conversations.order_total),
+       order_quantity = COALESCE(EXCLUDED.order_quantity, conversations.order_quantity),
        is_delivered = true,
        updated_at = now()
      WHERE conversations.status = 'delivered_watch'`,
@@ -448,6 +488,7 @@ async function upsertDeliveredWatchOrder(sellerId, packId, order, orderInfo) {
       buyerFullName,
       productTitle,
       orderTotal,
+      orderQuantity,
     ]
   );
 }

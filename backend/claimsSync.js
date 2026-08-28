@@ -125,12 +125,13 @@ async function upsertClaim(sellerId, claim, messages, orderInfo) {
   const buyerFullName = orderInfo?.buyerFullName ?? null;
   const productTitle = orderInfo?.productTitle ?? null;
   const orderTotal = orderInfo && typeof orderInfo.orderTotal === "number" ? orderInfo.orderTotal : null;
+  const orderQuantity = orderInfo && typeof orderInfo.orderQuantity === "number" ? orderInfo.orderQuantity : null;
   const shippingType = orderInfo?.shippingType ?? null;
 
   await db.query(
     `INSERT INTO claims
-       (claim_id, seller_id, order_id, resource, resource_id, type, stage, ml_status, reason_id, buyer_id, buyer_full_name, product_title, order_total, last_message_text, last_message_date, local_status, due_date, mandatory_action, shipping_type, resolved_by_operator_at, resolved_by_operator, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, now())
+       (claim_id, seller_id, order_id, resource, resource_id, type, stage, ml_status, reason_id, buyer_id, buyer_full_name, product_title, order_total, order_quantity, last_message_text, last_message_date, local_status, due_date, mandatory_action, shipping_type, resolved_by_operator_at, resolved_by_operator, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, now())
      ON CONFLICT (claim_id) DO UPDATE SET
        order_id = COALESCE(EXCLUDED.order_id, claims.order_id),
        resource = EXCLUDED.resource,
@@ -143,6 +144,7 @@ async function upsertClaim(sellerId, claim, messages, orderInfo) {
        buyer_full_name = COALESCE(EXCLUDED.buyer_full_name, claims.buyer_full_name),
        product_title = COALESCE(EXCLUDED.product_title, claims.product_title),
        order_total = COALESCE(EXCLUDED.order_total, claims.order_total),
+       order_quantity = COALESCE(EXCLUDED.order_quantity, claims.order_quantity),
        last_message_text = EXCLUDED.last_message_text,
        last_message_date = EXCLUDED.last_message_date,
        local_status = EXCLUDED.local_status,
@@ -166,6 +168,7 @@ async function upsertClaim(sellerId, claim, messages, orderInfo) {
       buyerFullName,
       productTitle,
       orderTotal,
+      orderQuantity,
       last?.message || null,
       claimMessageDate(last),
       localStatus,
