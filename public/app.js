@@ -49,6 +49,9 @@ const claimInfoTitle = document.getElementById("claim-info-title");
 const claimInfoMeta = document.getElementById("claim-info-meta");
 const claimInfoLink = document.getElementById("claim-info-link");
 const claimInfoCopyBtn = document.getElementById("claim-info-copy-btn");
+const claimResolveBanner = document.getElementById("claim-resolve-banner");
+const claimResolveInfo = document.getElementById("claim-resolve-info");
+const claimResolveBtn = document.getElementById("claim-resolve-btn");
 const threadMessages = document.getElementById("thread-messages");
 const replyForm = document.getElementById("reply-form");
 const replyText = document.getElementById("reply-text");
@@ -261,15 +264,17 @@ async function copyTextToClipboard(text, btnEl) {
 // lado, em vez de aparecer como texto solto e sem nenhuma acao.
 const MESSAGE_URL_REGEX = /(https?:\/\/[^\s]+)/g;
 
-function renderMessageTextWithLinks(container, text) {
-  container.innerHTML = "";
+// Recebe um pedaco de texto PURO (sem tags) e devolve um fragment com texto
+// normal + os links detectados virando clicavel+copiavel.
+function linkifyTextFragment(text) {
+  const fragment = document.createDocumentFragment();
   const str = text || "";
   let lastIndex = 0;
   let match;
   MESSAGE_URL_REGEX.lastIndex = 0;
   while ((match = MESSAGE_URL_REGEX.exec(str)) !== null) {
     if (match.index > lastIndex) {
-      container.appendChild(document.createTextNode(str.slice(lastIndex, match.index)));
+      fragment.appendChild(document.createTextNode(str.slice(lastIndex, match.index)));
     }
     // Tira pontuacao de final de frase (. , ; : ! ? ) etc.) que grudou no
     // fim do link sem ser parte da URL de verdade.
@@ -297,13 +302,57 @@ function renderMessageTextWithLinks(container, text) {
     });
     linkSpan.appendChild(a);
     linkSpan.appendChild(copyBtn);
-    container.appendChild(linkSpan);
+    fragment.appendChild(linkSpan);
 
     lastIndex = match.index + url.length;
   }
   if (lastIndex < str.length) {
-    container.appendChild(document.createTextNode(str.slice(lastIndex)));
+    fragment.appendChild(document.createTextNode(str.slice(lastIndex)));
   }
+  return fragment;
+}
+
+// Algumas mensagens automaticas do Mercado Livre (ex: o "assistente
+// virtual" das reclamacoes) vem com tags HTML simples tipo <strong> no meio
+// do texto puro, em vez de HTML de verdade — o usuario reparou que essas
+// tags apareciam cruas na tela ("esses strong"). Interpretamos so uma lista
+// pequena de tags de formatacao inofensivas; qualquer outra tag e
+// descartada (fica so o texto de dentro dela) — nunca usamos innerHTML com
+// o texto original, sempre reconstruindo elemento por elemento, ja que esse
+// texto vem de terceiros (comprador/Mercado Livre).
+const ALLOWED_MESSAGE_TAGS = new Set(["STRONG", "B", "EM", "I", "BR", "P", "UL", "OL", "LI"]);
+
+function renderMessageTextWithLinks(container, text) {
+  container.innerHTML = "";
+  const str = text || "";
+  if (!/<[a-z][^>]*>/i.test(str)) {
+    container.appendChild(linkifyTextFragment(str));
+    return;
+  }
+  let doc;
+  try {
+    doc = new DOMParser().parseFromString(str, "text/html");
+  } catch (e) {
+    container.appendChild(linkifyTextFragment(str));
+    return;
+  }
+  function walk(sourceNode, targetParent) {
+    sourceNode.childNodes.forEach((child) => {
+      if (child.nodeType === Node.TEXT_NODE) {
+        targetParent.appendChild(linkifyTextFragment(child.textContent));
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        if (ALLOWED_MESSAGE_TAGS.has(child.tagName)) {
+          const el = document.createElement(child.tagName.toLowerCase());
+          walk(child, el);
+          targetParent.appendChild(el);
+        } else {
+          // Tag nao reconhecida: mantem so o conteudo de dentro, sem a tag.
+          walk(child, targetParent);
+        }
+      }
+    });
+  }
+  walk(doc.body, container);
 }
 
 // ---------- Som de notificacao ----------
@@ -628,6 +677,29 @@ function renderClaimThreadInfo(claim) {
     claimDueBanner.classList.add("hidden");
   }
 
+  // Botao "marcar como resolvido" (pedido do usuario, pra reclamacoes
+  // antigas ja tratadas por fora do painel): so faz sentido oferecer
+  // enquanto ela ainda esta pendente/respondida por aqui. Uma vez fechada,
+  // se foi por essa marcacao manual mostra so a informacao (sem botao); se
+  // fechou pelo motivo normal (Mercado Livre/comprador), nem mostra o
+  // banner.
+  claimResolveBtn.dataset.claimId = claim.claim_id;
+  if (claim.local_status === "closed") {
+    if (claim.resolved_by_operator_at) {
+      claimResolveInfo.textContent = `✓ Marcada como resolvida manualmente${
+        claim.resolved_by_operator ? ` por ${claim.resolved_by_operator}` : ""
+      } em ${fmtDate(claim.resolved_by_operator_at)}.`;
+      claimResolveBanner.classList.remove("hidden");
+      claimResolveBtn.classList.add("hidden");
+    } else {
+      claimResolveBanner.classList.add("hidden");
+    }
+  } else {
+    claimResolveInfo.textContent = "Já resolveu isso por fora do painel?";
+    claimResolveBanner.classList.remove("hidden");
+    claimResolveBtn.classList.remove("hidden");
+  }
+
   claimInfoCard.classList.remove("hidden");
   claimInfoTitle.textContent = claim.product_title || claimTypeLabel(claim);
   const metaBits = [claimTypeLabel(claim)];
@@ -657,7 +729,28 @@ function renderClaimThreadInfo(claim) {
   replyAttachmentNameEl.classList.add("hidden");
 }
 
-function renderClaimMessages(messages) {
+// Cada anexo trocado numa reclamacao (foto/video que o comprador manda como
+// evidencia) vem no campo "attachments" da mensagem — um id/"filename" que
+// so serve pra baixar o arquivo pela rota do painel (que repassa a chamada
+// autenticada pro Mercado Livre, ver GET /claims/:claimId/attachments/:id/
+// download em routes/claims.js). Pode vir como string solta ou como objeto
+// com original_filename/filename, dependendo do formato exato devolvido.
+function renderClaimMessageAttachments(container, attachments, claimId) {
+  for (const att of attachments) {
+    const id = typeof att === "string" ? att : att.filename || att.id || att.attachment_id;
+    if (!id) continue;
+    const label = typeof att === "string" ? att : att.original_filename || att.filename || "arquivo anexado";
+    const a = document.createElement("a");
+    a.href = `/api/claims/${encodeURIComponent(claimId)}/attachments/${encodeURIComponent(id)}/download`;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.className = "msg-attachment-link";
+    a.textContent = `📎 ${label}`;
+    container.appendChild(a);
+  }
+}
+
+function renderClaimMessages(messages, claimId) {
   threadMessages.innerHTML = "";
   if (messages.length === 0) {
     threadMessages.innerHTML =
@@ -669,8 +762,14 @@ function renderClaimMessages(messages) {
     div.className = "msg " + (m.sender_role === "respondent" ? "msg-out" : "msg-in");
     const roleLabel =
       m.sender_role === "respondent" ? "Você" : m.sender_role === "mediator" ? "Mercado Livre" : "Comprador";
-    div.innerHTML = `<div class="msg-text"></div><div class="msg-date">${roleLabel} · ${fmtDate(m.sent_date)}</div>`;
+    const hasAttachments = Array.isArray(m.attachments) && m.attachments.length > 0;
+    div.innerHTML = `<div class="msg-text"></div>${
+      hasAttachments ? '<div class="msg-attachments"></div>' : ""
+    }<div class="msg-date">${roleLabel} · ${fmtDate(m.sent_date)}</div>`;
     renderMessageTextWithLinks(div.querySelector(".msg-text"), m.message);
+    if (hasAttachments) {
+      renderClaimMessageAttachments(div.querySelector(".msg-attachments"), m.attachments, claimId);
+    }
     threadMessages.appendChild(div);
   }
   threadMessages.scrollTop = threadMessages.scrollHeight;
@@ -685,7 +784,7 @@ async function loadClaimMessages(claimId) {
   }
   const data = await res.json();
   if (data.claim) renderClaimThreadInfo(data.claim);
-  renderClaimMessages(data.messages || []);
+  renderClaimMessages(data.messages || [], claimId);
   return true;
 }
 
@@ -715,6 +814,39 @@ orderCardCopyBtn.addEventListener("click", () => {
 });
 claimInfoCopyBtn.addEventListener("click", () => {
   if (claimInfoCopyBtn.dataset.orderId) copyTextToClipboard(claimInfoCopyBtn.dataset.orderId, claimInfoCopyBtn);
+});
+
+// "Marcar como resolvido" (pedido do usuario) — pra reclamacoes antigas que
+// ja foram tratadas por fora do painel e que, por isso, nunca vao fechar
+// sozinhas. Confirma antes (acao nao tem volta facil pela UI) e manda pro
+// servidor, que marca local_status='closed' e guarda quem/quando (ver
+// POST /claims/:claimId/mark-resolved em routes/claims.js).
+claimResolveBtn.addEventListener("click", async () => {
+  const claimId = claimResolveBtn.dataset.claimId;
+  if (!claimId) return;
+  if (!confirm("Marcar esta reclamação como resolvida? Ela vai sair de Pendentes/Respondidas e ir para Fechadas.")) {
+    return;
+  }
+  claimResolveBtn.disabled = true;
+  try {
+    const res = await fetch(`/api/claims/${encodeURIComponent(claimId)}/mark-resolved`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operatorName: getOperatorName() }),
+    });
+    if (handleSessionExpired(res)) return;
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || "Falha ao marcar como resolvida.");
+      return;
+    }
+    if (claimId === state.selectedClaimId) {
+      await loadClaimMessages(claimId);
+    }
+    await Promise.all([loadClaims(), loadPendingCount()]);
+  } finally {
+    claimResolveBtn.disabled = false;
+  }
 });
 
 replyAttachBtn.addEventListener("click", () => replyAttachmentInput.click());
@@ -863,6 +995,7 @@ function renderThreadInfo(conv) {
   // sempre escondidos numa conversa de mensagens normal.
   threadClaimStageTag.classList.add("hidden");
   claimDueBanner.classList.add("hidden");
+  claimResolveBanner.classList.add("hidden");
   claimInfoCard.classList.add("hidden");
   evidenceBox.classList.add("hidden");
 
