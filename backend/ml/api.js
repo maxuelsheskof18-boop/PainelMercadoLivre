@@ -181,6 +181,7 @@ async function sendMessage({
   buyerId,
   sellerEmail,
   text,
+  attachmentIds,
 }) {
   const clientId = process.env.ML_CLIENT_ID;
   const params = new URLSearchParams({ tag: "post_sale" });
@@ -189,6 +190,10 @@ async function sendMessage({
 
   console.log(`[sendMessage] chamando POST ${path}`);
 
+  // Importante (documentado pelo Mercado Livre): quando nao ha anexo, a
+  // chave "attachments" precisa ficar TOTALMENTE FORA do JSON — mandar um
+  // array vazio nao e a mesma coisa e pode quebrar o envio. Por isso o
+  // spread condicional abaixo.
   return mlFetch(path, accessToken, {
     method: "POST",
     headers: {
@@ -199,8 +204,45 @@ async function sendMessage({
       from: { user_id: String(sellerId), ...(sellerEmail ? { email: sellerEmail } : {}) },
       to: { user_id: String(buyerId) },
       text,
+      ...(attachmentIds && attachmentIds.length ? { attachments: attachmentIds } : {}),
     }),
   });
+}
+
+// Envia um ANEXO (foto, PDF, etc. — ate 25MB, JPG/PNG/PDF/TXT) pra ser
+// referenciado numa mensagem pos-venda logo em seguida (ver sendMessage
+// acima). Mesmo padrao de backend/ml/claimsApi.js::uploadClaimAttachment,
+// so que num endpoint diferente e com limite de tamanho maior — a API de
+// reclamacoes e a de mensagens pos-venda sao sistemas separados no Mercado
+// Livre, cada uma com seu proprio endpoint de upload.
+async function uploadMessageAttachment(accessToken, buffer, filename, mimetype) {
+  const form = new FormData();
+  form.set("file", new Blob([buffer], { type: mimetype || "application/octet-stream" }), filename);
+
+  const url = new URL(`${API_BASE}/messages/attachments`);
+  url.searchParams.set("access_token", accessToken);
+
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: form,
+  });
+
+  const text = await res.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { raw: text };
+  }
+
+  if (!res.ok) {
+    const err = new Error(`Mercado Livre API ${res.status} ao enviar anexo de mensagem`);
+    err.status = res.status;
+    err.body = data;
+    throw err;
+  }
+  return data;
 }
 
 // Dados basicos do usuario autenticado (usado logo apos o OAuth para
@@ -218,5 +260,6 @@ module.exports = {
   fetchResource,
   parsePackResource,
   sendMessage,
+  uploadMessageAttachment,
   fetchMe,
 };
