@@ -90,7 +90,6 @@ async function upsertClaim(sellerId, claim, messages, orderInfo) {
   const info = extractClaimInfo(claim);
   if (!info) return;
   const claimId = String(claim.id);
-  const localStatus = computeLocalStatus(info.mlStatus, messages);
 
   const msgs = Array.isArray(messages) ? [...messages] : [];
   msgs.sort((a, b) => {
@@ -101,6 +100,27 @@ async function upsertClaim(sellerId, claim, messages, orderInfo) {
   });
   const last = msgs[msgs.length - 1];
 
+  // Se o vendedor marcou essa reclamacao como "resolvida" manualmente (pra
+  // casos antigos ja tratados por fora do painel — ver rota
+  // POST /claims/:claimId/mark-resolved), mantemos ela fechada aqui mesmo
+  // que o Mercado Livre ainda a considere aberta — A NAO SER que tenha
+  // chegado mensagem nova depois da marcacao, o que indica que o assunto
+  // voltou a ficar ativo e precisa reabrir sozinho.
+  const { rows: existingRows } = await db.query(
+    "SELECT resolved_by_operator_at, resolved_by_operator FROM claims WHERE claim_id = $1",
+    [claimId]
+  );
+  let resolvedByOperatorAt = existingRows[0]?.resolved_by_operator_at || null;
+  let resolvedByOperator = existingRows[0]?.resolved_by_operator || null;
+  const lastMessageDate = claimMessageDate(last);
+  if (resolvedByOperatorAt && lastMessageDate && new Date(lastMessageDate) > new Date(resolvedByOperatorAt)) {
+    // Reabre: chegou mensagem depois da marcacao manual.
+    resolvedByOperatorAt = null;
+    resolvedByOperator = null;
+  }
+
+  const localStatus = resolvedByOperatorAt ? "closed" : computeLocalStatus(info.mlStatus, messages);
+
   const orderId = info.resource === "order" ? info.resourceId : null;
   const buyerFullName = orderInfo?.buyerFullName ?? null;
   const productTitle = orderInfo?.productTitle ?? null;
@@ -109,8 +129,8 @@ async function upsertClaim(sellerId, claim, messages, orderInfo) {
 
   await db.query(
     `INSERT INTO claims
-       (claim_id, seller_id, order_id, resource, resource_id, type, stage, ml_status, reason_id, buyer_id, buyer_full_name, product_title, order_total, last_message_text, last_message_date, local_status, due_date, mandatory_action, shipping_type, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
+       (claim_id, seller_id, order_id, resource, resource_id, type, stage, ml_status, reason_id, buyer_id, buyer_full_name, product_title, order_total, last_message_text, last_message_date, local_status, due_date, mandatory_action, shipping_type, resolved_by_operator_at, resolved_by_operator, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, now())
      ON CONFLICT (claim_id) DO UPDATE SET
        order_id = COALESCE(EXCLUDED.order_id, claims.order_id),
        resource = EXCLUDED.resource,
@@ -129,6 +149,8 @@ async function upsertClaim(sellerId, claim, messages, orderInfo) {
        due_date = EXCLUDED.due_date,
        mandatory_action = EXCLUDED.mandatory_action,
        shipping_type = COALESCE(EXCLUDED.shipping_type, claims.shipping_type),
+       resolved_by_operator_at = EXCLUDED.resolved_by_operator_at,
+       resolved_by_operator = EXCLUDED.resolved_by_operator,
        updated_at = now()`,
     [
       claimId,
@@ -150,6 +172,8 @@ async function upsertClaim(sellerId, claim, messages, orderInfo) {
       info.dueDate,
       info.mandatoryAction,
       shippingType,
+      resolvedByOperatorAt,
+      resolvedByOperator,
     ]
   );
 

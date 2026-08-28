@@ -144,6 +144,12 @@ async function init() {
       shipping_type TEXT,                       -- mesmo rotulo usado nas conversas (Flex/Agência/Coleta/
                                                  -- Correios/Full) — buscado junto com os dados do pedido,
                                                  -- so quando resource='order'.
+      resolved_by_operator_at TIMESTAMPTZ,      -- preenchido quando o vendedor marca manualmente como
+                                                 -- resolvida (reclamacoes antigas ja tratadas por fora do
+                                                 -- painel); sobrevive as sincronizacoes seguintes, a nao
+                                                 -- ser que chegue mensagem nova depois disso (reabre sozinha
+                                                 -- — ver upsertClaim em claimsSync.js).
+      resolved_by_operator TEXT,                -- nome de quem marcou como resolvida, so pra exibir.
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_claims_local_status ON claims(local_status);
@@ -196,6 +202,8 @@ async function init() {
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name TEXT;
     ALTER TABLE claim_messages ADD COLUMN IF NOT EXISTS operator_name TEXT;
     ALTER TABLE claims ADD COLUMN IF NOT EXISTS shipping_type TEXT;
+    ALTER TABLE claims ADD COLUMN IF NOT EXISTS resolved_by_operator_at TIMESTAMPTZ;
+    ALTER TABLE claims ADD COLUMN IF NOT EXISTS resolved_by_operator TEXT;
   `);
 }
 
