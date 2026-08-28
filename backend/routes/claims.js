@@ -198,14 +198,7 @@ router.post("/claims/:claimId/reply", express.json(), (req, res) => {
             body: uploadResult,
           });
         }
-        await sendClaimMessageWithAttachments(
-          accessToken,
-          claimId,
-          receiverRole,
-          text,
-          [attachmentId],
-          process.env.ML_CLIENT_ID
-        );
+        await sendClaimMessageWithAttachments(accessToken, claimId, receiverRole, text, [attachmentId]);
       } else {
         await sendClaimMessage(accessToken, claimId, receiverRole, text);
       }
