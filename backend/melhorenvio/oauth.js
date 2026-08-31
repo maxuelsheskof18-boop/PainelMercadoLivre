@@ -32,6 +32,9 @@ function buildAuthorizeUrl({ state }) {
 async function tokenRequest(body) {
   const res = await fetch(`${BASE_URL}/oauth/token`, {
     method: "POST",
+    // Ver o mesmo comentario em backend/ml/api.js (REQUEST_TIMEOUT_MS) —
+    // nenhuma chamada externa deve poder travar pra sempre.
+    signal: AbortSignal.timeout(20_000),
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",

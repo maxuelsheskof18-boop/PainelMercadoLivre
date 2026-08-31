@@ -33,6 +33,9 @@ async function calculateShipping(accessToken, { fromPostalCode, toPostalCode, we
 
   const res = await fetch(`${BASE_URL}/api/v2/me/shipment/calculate`, {
     method: "POST",
+    // Ver o mesmo comentario em backend/ml/api.js (REQUEST_TIMEOUT_MS) —
+    // nenhuma chamada externa deve poder travar pra sempre.
+    signal: AbortSignal.timeout(20_000),
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
