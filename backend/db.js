@@ -179,6 +179,39 @@ async function init() {
     );
     CREATE INDEX IF NOT EXISTS idx_claim_messages_claim ON claim_messages(claim_id);
 
+    -- Perguntas feitas no ANUNCIO, antes da compra (Q&A publica do Mercado
+    -- Livre) — sistema SEPARADO tanto das mensagens pos-venda (conversations)
+    -- quanto das reclamacoes (claims): aqui nao ha pedido nenhum envolvido
+    -- ainda, so um comprador em duvida sobre o produto. Pedido do usuario:
+    -- "Ate perguntas nos anuncio tambem queria que puxasse que sao as duvidas
+    -- antes da compra" — tratado como categoria propria no painel ("Igual
+    -- mensagem mas com nova categoria de duvidas"). Cada pergunta tem no
+    -- maximo UMA resposta (nao e uma conversa de ida-e-volta como as outras
+    -- duas): uma vez respondida, acabou — por isso nao existe uma tabela
+    -- separada de "question_messages", so os dois campos de texto abaixo.
+    CREATE TABLE IF NOT EXISTS questions (
+      question_id TEXT PRIMARY KEY,
+      seller_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      item_id TEXT,
+      item_title TEXT,
+      item_permalink TEXT,
+      buyer_id TEXT,
+      buyer_nickname TEXT,
+      question_text TEXT,
+      question_date TIMESTAMPTZ,
+      ml_status TEXT,                           -- 'unanswered' | 'answered' | 'closed_unanswered' | 'under_review'
+      local_status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'answered' | 'closed' — calculado por
+                                                     -- este painel (ver questionsSync.js), pra decidir a
+                                                     -- aba/badge (igual local_status de claims).
+      answer_text TEXT,
+      answer_date TIMESTAMPTZ,
+      operator_name TEXT,                       -- nome de quem respondeu pelo painel (null quando a
+                                                 -- pergunta ainda nao foi respondida, ou foi respondida
+                                                 -- por fora do painel antes dele existir).
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_questions_local_status ON questions(local_status);
+
     -- So existe UMA conta do Melhor Envio pro painel inteiro (diferente das
     -- contas do Mercado Livre, que podem ser varias) — por isso id fixo
     -- 'main' em vez de guardar o id de uma conta de verdade. access_token e
