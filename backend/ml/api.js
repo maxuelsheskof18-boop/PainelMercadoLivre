@@ -141,6 +141,13 @@ async function fetchShipment(accessToken, shipmentId) {
   return mlFetch(`/shipments/${shipmentId}`, accessToken);
 }
 
+// Busca o detalhe de um ANUNCIO (titulo, link publico) — usado pelas
+// perguntas pre-venda (ver backend/questionsSync.js), ja que a pergunta em
+// si so traz o item_id, sem o titulo do produto.
+async function fetchItemById(accessToken, itemId) {
+  return mlFetch(`/items/${itemId}`, accessToken);
+}
+
 // Segue um link de recurso vindo de um webhook (ex: "/messages/packs/123/sellers/456").
 async function fetchResource(accessToken, resourcePath) {
   return mlFetch(resourcePath, accessToken);
@@ -254,6 +261,7 @@ module.exports = {
   fetchRecentOrders,
   fetchOrderById,
   fetchShipment,
+  fetchItemById,
   fetchResource,
   parsePackResource,
   sendMessage,
