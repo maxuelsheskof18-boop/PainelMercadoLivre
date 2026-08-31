@@ -89,13 +89,19 @@ router.post("/api/melhorenvio/calculate", requireLogin, express.json(), async (r
     return res.status(409).json({ error: "Configure o CEP de origem antes de calcular o frete." });
   }
 
-  const { toPostalCode, weight, height, width, length } = req.body || {};
+  const { toPostalCode, weight, height, width, length, insuranceValue } = req.body || {};
   if (!toPostalCode) {
     return res.status(400).json({ error: "Informe o CEP de destino." });
   }
 
   try {
     const accessToken = await getValidAccessToken();
+    // "insuranceValue" (valor assegurado) e o valor declarado do produto pro
+    // seguro do envio — o Melhor Envio cobra o seguro em cima desse valor,
+    // entao ele muda o preco final do frete (pedido do usuario: o painel ja
+    // preenche isso com o valor da venda, mas o campo aceita ser trocado).
+    // Sem valor nenhum, calculateShipping ja cai pro padrao de R$ 20.
+    const parsedInsurance = Number(insuranceValue);
     const raw = await calculateShipping(accessToken, {
       fromPostalCode: account.origin_postal_code,
       toPostalCode,
@@ -103,6 +109,7 @@ router.post("/api/melhorenvio/calculate", requireLogin, express.json(), async (r
       height,
       width,
       length,
+      insuranceValue: Number.isFinite(parsedInsurance) && parsedInsurance > 0 ? parsedInsurance : undefined,
     });
 
     // A resposta e uma lista com uma entrada por transportadora/servico; as
