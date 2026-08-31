@@ -173,7 +173,7 @@ router.get("/debug/probe-questions", async (req, res) => {
     const entry = { sellerId: acc.id, nickname: acc.nickname };
     try {
       const accessToken = await getValidAccessToken(acc.id);
-      const data = await fetchQuestions(accessToken, acc.id, { status: "UNANSWERED", limit: 5 });
+      const data = await fetchQuestions(accessToken, acc.id, { status: "unanswered", limit: 5 });
       const results = Array.isArray(data?.questions) ? data.questions : Array.isArray(data?.results) ? data.results : [];
       entry.totalPerguntasSemResposta = data?.total ?? data?.paging?.total ?? null;
       entry.amostraBruta = results.slice(0, 2);
