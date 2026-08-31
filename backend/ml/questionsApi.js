@@ -4,12 +4,16 @@
 // "Ate perguntas nos anuncio tambem queria que puxasse que sao as duvidas
 // antes da compra".
 //
-// IMPORTANTE (mesma ressalva que ja valeu, nesse projeto, tanto pra
-// mensagens quanto pra reclamacoes): os nomes de endpoint/campo abaixo
-// seguem a documentacao publica no momento em que este arquivo foi escrito.
-// Assim que a primeira pergunta de verdade passar por aqui, confira a rota
-// /api/debug/probe-questions (ver routes/questions.js) — se algum nome vier
-// diferente, e so ajustar aqui, a estrutura do resto do app nao muda.
+// CORRIGIDO: a primeira versao deste arquivo usava paths "/marketplace/
+// questions/..." (um palpite, por analogia com mensagens/reclamacoes, nunca
+// confirmado contra a documentacao de verdade) — por isso NENHUMA pergunta
+// jamais foi importada (toda chamada falhava, provavelmente com 404,
+// silenciosamente registrada so como aviso no log a cada ciclo). Os paths
+// certos, confirmados na documentacao oficial (developers.mercadolivre.com
+// /en_us/manage-questions-and-answers): "/my/received_questions/search" pra
+// listar, "/questions/{id}" pra buscar uma especifica, "/answers" pra
+// responder. Os valores de status tambem sao documentados em MINUSCULO
+// ('unanswered', 'answered', 'closed_unanswered', 'under_review').
 const API_BASE = "https://api.mercadolibre.com";
 
 // Ver o mesmo comentario em ml/api.js (REQUEST_TIMEOUT_MS) — nenhuma chamada
@@ -52,8 +56,11 @@ async function questionsFetch(path, accessToken, options = {}) {
 }
 
 // Lista as perguntas recebidas pela conta autenticada. "status" (opcional)
-// filtra por 'UNANSWERED' | 'ANSWERED' | 'CLOSED_UNANSWERED' | 'UNDER_REVIEW'
-// (o Mercado Livre documenta esses valores em maiusculo pra esse endpoint).
+// filtra por 'unanswered' | 'answered' | 'closed_unanswered' | 'under_review'
+// (minusculo — documentado assim pra esse endpoint). "api_version=4" pede a
+// estrutura de JSON nova (from.id, answer.text/status/date_created, etc.),
+// que e a que o resto deste modulo (extractQuestionInfo em questionsSync.js)
+// espera.
 async function fetchQuestions(accessToken, sellerId, { status, offset = 0, limit = 50 } = {}) {
   const params = new URLSearchParams({
     seller_id: String(sellerId),
@@ -61,15 +68,16 @@ async function fetchQuestions(accessToken, sellerId, { status, offset = 0, limit
     limit: String(limit),
     sort_fields: "date_created",
     sort_types: "DESC",
+    api_version: "4",
   });
   if (status) params.set("status", status);
-  return questionsFetch(`/marketplace/questions/search?${params.toString()}`, accessToken);
+  return questionsFetch(`/my/received_questions/search?${params.toString()}`, accessToken);
 }
 
 // Busca UMA pergunta especifica pelo id — usado quando o webhook avisa de
-// uma pergunta nova/atualizada pelo resource ("/marketplace/questions/{id}").
+// uma pergunta nova/atualizada pelo resource ("/questions/{id}").
 async function fetchQuestionById(accessToken, questionId) {
-  return questionsFetch(`/marketplace/questions/${questionId}`, accessToken);
+  return questionsFetch(`/questions/${questionId}`, accessToken);
 }
 
 // Responde uma pergunta. Uma vez respondida, o Mercado Livre nao permite
@@ -77,7 +85,7 @@ async function fetchQuestionById(accessToken, questionId) {
 // como mensagens/reclamacoes) — por isso so existe esse envio, sem
 // anexo/mediador/etc.
 async function answerQuestion(accessToken, questionId, text) {
-  return questionsFetch(`/marketplace/answers/`, accessToken, {
+  return questionsFetch(`/answers`, accessToken, {
     method: "POST",
     body: JSON.stringify({
       question_id: Number(questionId) || questionId,
