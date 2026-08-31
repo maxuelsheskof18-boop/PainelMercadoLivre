@@ -48,38 +48,35 @@ async function mlFetch(path, accessToken, options = {}) {
   return data;
 }
 
-// Lista os packs/pedidos com mensagens nao lidas para essa conta.
+// Lista os packs/pedidos com mensagens NAO LIDAS pra essa conta — o mesmo
+// dado que aparece no proprio painel de Vendas do Mercado Livre no filtro
+// "Com mensagens não lidas". Usamos isso como mais uma rede de seguranca na
+// reconciliacao (ver reconcileAccount em sync.js): as outras buscas dedicadas
+// (no_shipping, delivered, atividade recente) sao todas baseadas em JANELAS
+// de pedidos, e um pedido pode cair fora de todas elas numa conta de alto
+// volume mesmo tendo mensagem nao lida esperando resposta — esse endpoint
+// resolve isso porque nao depende de nenhuma janela, e sim exatamente do que
+// o Mercado Livre ja sabe estar pendente de leitura.
 //
-// A documentacao do Mercado Livre sobre esse endpoint esta inconsistente
-// entre si (paginas diferentes, aparentemente de epocas diferentes,
-// descrevem caminhos diferentes). Ja vimos 404 em pelo menos um deles nessa
-// conta. Em vez de apostar em um so, tentamos varios candidatos conhecidos,
-// em ordem, e usamos o primeiro que responder com sucesso — registrando
-// nos logs o resultado de cada tentativa pra sabermos exatamente qual
-// funciona nessa conta.
-const PENDING_READ_CANDIDATES = [
-  "/messages/pending_read?role=seller",
-  "/messages/unread?role=seller",
-  "/messages/packs?tag=post_sale&role=seller",
-];
-
-async function fetchPendingRead(accessToken) {
-  const attempts = [];
-  for (const path of PENDING_READ_CANDIDATES) {
-    try {
-      const data = await mlFetch(path, accessToken);
-      console.log(`[fetchPendingRead] sucesso em ${path}`);
-      return data;
-    } catch (err) {
-      attempts.push(`${path} -> ${err.status || "?"} ${JSON.stringify(err.body || err.message)}`);
-      console.warn(`[fetchPendingRead] falhou em ${path}: ${err.status}`, err.body || err.message);
-    }
-  }
-  const err = new Error(
-    `Nenhum endpoint de mensagens pendentes funcionou. Tentativas: ${attempts.join(" | ")}`
-  );
-  err.attempts = attempts;
-  throw err;
+// Endpoint correto (confirmado via documentacao — as tentativas antigas sem
+// o prefixo "/marketplace" e sem "user_id" devolviam 404/formato errado):
+// GET /marketplace/messages/unread?role=seller&tag=post_sale&user_id=$SELLER_ID
+// Resposta: { results: [ { resource: "/packs/{pack_id}", count: N }, ... ] }
+async function fetchUnreadMessagePacks(accessToken, sellerId) {
+  const params = new URLSearchParams({
+    role: "seller",
+    tag: "post_sale",
+    user_id: String(sellerId),
+  });
+  const data = await mlFetch(`/marketplace/messages/unread?${params.toString()}`, accessToken);
+  const results = Array.isArray(data?.results) ? data.results : [];
+  // "resource" vem como "/packs/{pack_id}" — extrai so o id.
+  return results
+    .map((r) => {
+      const match = /\/packs\/(\w+)/.exec(r?.resource || "");
+      return match ? { packId: match[1], count: r?.count ?? null } : null;
+    })
+    .filter(Boolean);
 }
 
 // Busca a conversa completa de um pedido (pack).
@@ -252,7 +249,7 @@ async function fetchMe(accessToken) {
 }
 
 module.exports = {
-  fetchPendingRead,
+  fetchUnreadMessagePacks,
   fetchPackMessages,
   fetchRecentOrders,
   fetchOrderById,
