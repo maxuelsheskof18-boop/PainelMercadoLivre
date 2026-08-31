@@ -874,7 +874,13 @@ async function loadQuestions() {
   const res = await fetch(`/api/questions?${params.toString()}`);
   if (handleSessionExpired(res)) return;
   if (!res.ok) {
-    listEl.innerHTML = '<p class="muted empty-msg">Erro ao carregar.</p>';
+    // Tenta mostrar o motivo exato do erro (ver routes/questions.js) em vez
+    // de so "Erro ao carregar." — ajuda a diagnosticar sem precisar abrir
+    // nada tecnico (ex: tabela nova que ainda nao foi criada no banco).
+    const detail = await res.json().catch(() => null);
+    listEl.innerHTML = `<p class="muted empty-msg">Erro ao carregar as perguntas.${
+      detail?.detail ? `<br><span class="small">${detail.detail}</span>` : ""
+    }</p>`;
     return;
   }
   const items = await res.json();
