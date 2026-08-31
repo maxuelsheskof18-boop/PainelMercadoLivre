@@ -627,6 +627,11 @@ body {
   color: #b91c1c;
   border: 1px solid #fecaca;
 }
+.tag-question {
+  background: #f5f3ff;
+  color: #6d28d9;
+  border: 1px solid #ddd6fe;
+}
 .claim-due-banner {
   margin: 10px 20px 0;
   padding: 9px 14px;

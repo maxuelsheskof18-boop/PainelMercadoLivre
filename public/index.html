@@ -82,6 +82,13 @@
           <span class="module-nav-label">Reclamações</span>
           <span id="module-badge-claims" class="tab-count module-badge hidden">0</span>
         </button>
+        <button class="module-nav-item" data-module="questions" title="Perguntas">
+          <span class="module-nav-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </span>
+          <span class="module-nav-label">Perguntas</span>
+          <span id="module-badge-questions" class="tab-count module-badge hidden">0</span>
+        </button>
         <button class="module-nav-item" data-module="history" title="Histórico">
           <span class="module-nav-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
@@ -113,6 +120,12 @@
         </button>
         <button class="tab" data-claim-status="answered">Respondidas</button>
         <button class="tab" data-claim-status="closed">Fechadas</button>
+      </div>
+      <div id="tabs-questions" class="tabs hidden">
+        <button class="tab active" data-question-status="pending" title="Perguntas aguardando sua resposta">
+          Pendentes<span id="tab-count-questions-pending" class="tab-count hidden">0</span>
+        </button>
+        <button class="tab" data-question-status="answered">Respondidas</button>
       </div>
       <div class="filter-bar">
         <input

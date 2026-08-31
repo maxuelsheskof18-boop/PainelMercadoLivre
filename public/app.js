@@ -1,9 +1,11 @@
 const state = {
-  module: "messages", // "messages" | "claims" | "history" — qual painel (menu lateral) esta ativo
+  module: "messages", // "messages" | "claims" | "questions" | "history" — qual painel (menu lateral) esta ativo
   status: "pending", // aba dentro do modulo "messages"
   claimStatus: "pending", // aba dentro do modulo "claims": "pending" | "answered" | "closed"
+  questionStatus: "pending", // aba dentro do modulo "questions": "pending" | "answered"
   selectedPackId: null,
   selectedClaimId: null, // reclamacao aberta no momento (mutuamente exclusivo com selectedPackId)
+  selectedQuestionId: null, // pergunta aberta no momento (mutuamente exclusivo com os dois acima)
   pollTimer: null,
   onlyCombinar: false,
   onlyPending: false, // "Só pendentes (a responder)" — vale pras duas telas (mensagens e reclamacoes)
@@ -19,8 +21,10 @@ const bellCount = document.getElementById("bell-count");
 const moduleNavItems = document.querySelectorAll(".module-nav-item");
 const moduleBadgeMessages = document.getElementById("module-badge-messages");
 const moduleBadgeClaims = document.getElementById("module-badge-claims");
+const moduleBadgeQuestions = document.getElementById("module-badge-questions");
 const tabsMessages = document.getElementById("tabs-messages");
 const tabsClaims = document.getElementById("tabs-claims");
+const tabsQuestions = document.getElementById("tabs-questions");
 const layoutEl = document.querySelector(".layout");
 const moduleNav = document.getElementById("module-nav");
 const moduleNavToggle = document.getElementById("module-nav-toggle");
@@ -29,6 +33,7 @@ const tabCountPending = document.getElementById("tab-count-pending");
 const tabCountNoContact = document.getElementById("tab-count-nocontact");
 const tabCountDelivered = document.getElementById("tab-count-delivered");
 const tabCountClaimsPending = document.getElementById("tab-count-claims-pending");
+const tabCountQuestionsPending = document.getElementById("tab-count-questions-pending");
 const threadEmpty = document.getElementById("thread-empty");
 const threadEl = document.getElementById("thread");
 const threadBuyer = document.getElementById("thread-buyer");
@@ -475,9 +480,16 @@ async function loadPendingCount() {
     tabCountClaimsPending.classList.add("hidden");
   }
 
-  // Os badges dos dois itens do menu lateral (modulos) somam tudo que
-  // precisa de acao dentro de cada um, pra dar pra ver de relance qual dos
-  // dois painéis tem coisa pendente sem precisar entrar em nenhum dos dois.
+  if (data.questions > 0) {
+    tabCountQuestionsPending.textContent = data.questions;
+    tabCountQuestionsPending.classList.remove("hidden");
+  } else {
+    tabCountQuestionsPending.classList.add("hidden");
+  }
+
+  // Os badges dos itens do menu lateral (modulos) somam tudo que precisa de
+  // acao dentro de cada um, pra dar pra ver de relance qual dos painéis tem
+  // coisa pendente sem precisar entrar em nenhum deles.
   const messagesPending = data.pending + data.delivered;
   if (messagesPending > 0) {
     moduleBadgeMessages.textContent = messagesPending;
@@ -493,11 +505,18 @@ async function loadPendingCount() {
     moduleBadgeClaims.classList.add("hidden");
   }
 
+  if (data.questions > 0) {
+    moduleBadgeQuestions.textContent = data.questions;
+    moduleBadgeQuestions.classList.remove("hidden");
+  } else {
+    moduleBadgeQuestions.classList.add("hidden");
+  }
+
   // O sino conta tudo que ainda precisa de resposta do vendedor — inclui as
-  // mensagens de pedidos ja entregues (aba "Entregues") e as reclamacoes
-  // aguardando resposta, que tambem sao coisa pendente, so que em categorias
-  // separadas.
-  const totalPending = data.pending + data.delivered + (data.claims || 0);
+  // mensagens de pedidos ja entregues (aba "Entregues"), as reclamacoes e as
+  // perguntas no anuncio aguardando resposta, que tambem sao coisa
+  // pendente, so que em categorias separadas.
+  const totalPending = data.pending + data.delivered + (data.claims || 0) + (data.questions || 0);
   if (totalPending > 0) {
     bellCount.textContent = totalPending;
     bellCount.classList.remove("hidden");
@@ -608,7 +627,9 @@ function claimStageLabel(claim) {
 }
 
 function loadList() {
-  return state.module === "claims" ? loadClaims() : loadConversations();
+  if (state.module === "claims") return loadClaims();
+  if (state.module === "questions") return loadQuestions();
+  return loadConversations();
 }
 
 async function loadClaims() {
@@ -819,6 +840,7 @@ async function loadClaimMessages(claimId) {
 async function openClaimThread(claim) {
   state.selectedClaimId = claim.claim_id;
   state.selectedPackId = null;
+  state.selectedQuestionId = null;
   document.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
 
   threadEmpty.classList.add("hidden");
@@ -832,6 +854,203 @@ async function openClaimThread(claim) {
 
   await loadClaimMessages(claim.claim_id);
   await loadClaims();
+}
+
+// ---------- Perguntas (duvidas no anuncio, antes da compra) ----------
+// Sistema SEPARADO tanto das conversas de mensagens quanto das reclamacoes
+// acima — pedido do usuario ("Ate perguntas nos anuncio tambem queria que
+// puxasse que sao as duvidas antes da compra"), construido "igual mensagem
+// mas com nova categoria de duvidas". Diferenca importante: uma pergunta
+// tem no maximo UMA resposta (nao e uma conversa de ida-e-volta), entao a
+// "thread" dela e sempre so um ou dois balõezinhos (pergunta + resposta).
+async function loadQuestions() {
+  listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
+  const params = new URLSearchParams({ status: state.questionStatus });
+  if (state.onlyPending) params.set("onlyPending", "1");
+  if (state.sellerId) params.set("sellerId", state.sellerId);
+  if (state.searchQuery) params.set("q", state.searchQuery);
+
+  const res = await fetch(`/api/questions?${params.toString()}`);
+  if (handleSessionExpired(res)) return;
+  if (!res.ok) {
+    listEl.innerHTML = '<p class="muted empty-msg">Erro ao carregar.</p>';
+    return;
+  }
+  const items = await res.json();
+
+  if (items.length === 0) {
+    const label = state.onlyPending ? "a responder" : state.questionStatus === "answered" ? "respondida" : "pendente";
+    listEl.innerHTML = `<p class="muted empty-msg">Nenhuma pergunta ${label}.</p>`;
+    return;
+  }
+
+  listEl.innerHTML = "";
+  for (const question of items) {
+    const div = document.createElement("div");
+    const isUnread = question.local_status === "pending";
+    div.className =
+      "conversation-item" +
+      (question.question_id === state.selectedQuestionId ? " selected" : "") +
+      (isUnread ? " unread" : "");
+    const label = question.buyer_nickname || "Comprador #" + (question.buyer_id || "?");
+    const preview = question.question_text || "";
+    div.innerHTML = `
+      ${avatarHtml(label)}
+      <div class="ci-body">
+        <div class="ci-top">
+          <span class="ci-buyer">${label}</span>
+          <span class="ci-store">${question.seller_nickname || ""}</span>
+        </div>
+        ${question.item_title ? `<div class="ci-product">${question.item_title}</div>` : ""}
+        <div class="ci-preview">${preview}</div>
+        <div class="ci-bottom">
+          <span class="ci-date">${fmtDate(question.question_date)}</span>
+          <span class="tag tag-question">Pergunta</span>
+        </div>
+      </div>
+    `;
+    div.addEventListener("click", () => openQuestionThread(question));
+    listEl.appendChild(div);
+  }
+}
+
+function renderQuestionThreadInfo(question) {
+  const label = question.buyer_nickname || "Comprador #" + (question.buyer_id || "?");
+  threadBuyer.textContent = label;
+  threadAvatar.innerHTML = "";
+  threadAvatar.style.background = avatarColor(label);
+  threadAvatar.textContent = avatarInitial(label);
+  const accountBits = [];
+  if (question.seller_nickname) accountBits.push(`Loja: ${question.seller_nickname}`);
+  threadAccount.textContent = accountBits.join(" · ");
+
+  // Elementos que so fazem sentido pras outras duas telas (pedido/entrega,
+  // reclamacao) — sempre escondidos numa pergunta.
+  threadDeliveryTag.classList.add("hidden");
+  threadDeliveredTag.classList.add("hidden");
+  threadShippingTag.classList.add("hidden");
+  threadClaimStageTag.classList.add("hidden");
+  claimDueBanner.classList.add("hidden");
+  claimInfoCard.classList.add("hidden");
+  evidenceBox.classList.add("hidden");
+  quickTemplates.classList.add("hidden");
+  freightBox.classList.add("hidden");
+
+  // Uma pergunta nao tem "resolver depois" — uma vez respondida, acabou (o
+  // Mercado Livre nao permite mais nenhuma interacao nela). Por isso o
+  // banner de "marcar como resolvido" (das outras duas telas) nunca aparece
+  // aqui.
+  claimResolveBanner.classList.add("hidden");
+
+  // Sem anexo em resposta de pergunta (a API do Mercado Livre nao documenta
+  // suporte a isso, diferente de mensagens/reclamacoes).
+  replyAttachBtn.classList.add("hidden");
+  replyAttachmentInput.value = "";
+  replyAttachmentNameEl.classList.add("hidden");
+
+  // Reaproveita o card de "pedido" pra mostrar o anuncio que a pergunta e
+  // sobre — mesma ideia (titulo + link), so que apontando pro anuncio em
+  // vez de pro pedido.
+  if (question.item_title || question.item_id) {
+    orderCard.classList.remove("hidden");
+    orderCardProduct.textContent = question.item_title || "Anúncio não identificado";
+    orderCardMeta.textContent = question.item_id ? `Anúncio ${question.item_id}` : "";
+    if (question.item_permalink) {
+      orderCardLink.href = question.item_permalink;
+      orderCardLink.classList.remove("hidden");
+    } else {
+      orderCardLink.classList.add("hidden");
+    }
+    if (question.item_id) {
+      orderCardCopyBtn.dataset.orderId = question.item_id;
+      orderCardCopyBtn.classList.remove("hidden");
+    } else {
+      orderCardCopyBtn.classList.add("hidden");
+    }
+  } else {
+    orderCard.classList.add("hidden");
+  }
+}
+
+function renderQuestionMessages(messages) {
+  threadMessages.innerHTML = "";
+  if (messages.length === 0) {
+    threadMessages.innerHTML = '<p class="muted centered">Pergunta sem texto.</p>';
+    return;
+  }
+  for (const m of messages) {
+    const div = document.createElement("div");
+    div.className = "msg " + (m.sender_role === "respondent" ? "msg-out" : "msg-in");
+    const roleLabel = m.sender_role === "respondent" ? "Você" : "Comprador";
+    div.innerHTML = `<div class="msg-text"></div><div class="msg-date">${roleLabel} · ${fmtDate(m.sent_date)}</div>`;
+    renderMessageTextWithLinks(div.querySelector(".msg-text"), m.message);
+    threadMessages.appendChild(div);
+  }
+  threadMessages.scrollTop = threadMessages.scrollHeight;
+}
+
+async function loadQuestionMessages(questionId) {
+  const res = await fetch(`/api/questions/${encodeURIComponent(questionId)}`);
+  if (handleSessionExpired(res)) return false;
+  if (!res.ok) {
+    threadMessages.innerHTML = '<p class="muted">Erro ao carregar a pergunta.</p>';
+    return false;
+  }
+  const data = await res.json();
+  if (data.question) renderQuestionThreadInfo(data.question);
+  renderQuestionMessages(data.messages || []);
+  return true;
+}
+
+async function openQuestionThread(question) {
+  state.selectedQuestionId = question.question_id;
+  state.selectedPackId = null;
+  state.selectedClaimId = null;
+  document.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
+
+  threadEmpty.classList.add("hidden");
+  threadEl.classList.remove("hidden");
+  renderQuestionThreadInfo(question);
+  threadMessages.innerHTML = '<p class="muted">Carregando...</p>';
+  replyForm.dataset.mode = "question";
+  replyForm.dataset.questionId = question.question_id;
+  delete replyForm.dataset.packId;
+  delete replyForm.dataset.claimId;
+  openMobileThread();
+
+  await loadQuestionMessages(question.question_id);
+  await loadQuestions();
+}
+
+async function submitQuestionReply() {
+  const questionId = replyForm.dataset.questionId;
+  const text = replyText.value.trim();
+  if (!questionId || !text) return;
+
+  const btn = replyForm.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/questions/${encodeURIComponent(questionId)}/reply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, operatorName: getOperatorName() }),
+    });
+    if (handleSessionExpired(res)) return;
+    const data = await res.json();
+    if (!res.ok) {
+      const detail = typeof data.detail === "string" ? data.detail : "";
+      alert((data.error || "Falha ao enviar a resposta.") + (detail ? `\n\nMotivo: ${detail}` : ""));
+      return;
+    }
+    replyText.value = "";
+    updateReplyCharCounter();
+    if (questionId === state.selectedQuestionId) {
+      await loadQuestionMessages(questionId);
+    }
+    await Promise.all([loadQuestions(), loadPendingCount()]);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // Copiar o numero do pedido (pedido do usuario) — funciona igual nos dois
@@ -1400,6 +1619,7 @@ async function loadThreadMessages(packId) {
 async function openThread(conv) {
   state.selectedPackId = conv.pack_id;
   state.selectedClaimId = null;
+  state.selectedQuestionId = null;
   document.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
 
   threadEmpty.classList.add("hidden");
@@ -1424,6 +1644,10 @@ replyForm.addEventListener("submit", async (e) => {
 
   if (replyForm.dataset.mode === "claim") {
     await submitClaimReply();
+    return;
+  }
+  if (replyForm.dataset.mode === "question") {
+    await submitQuestionReply();
     return;
   }
 
@@ -1501,10 +1725,12 @@ moduleNavItems.forEach((btn) => {
     state.module = btn.dataset.module;
     const isMessages = state.module === "messages";
     const isClaims = state.module === "claims";
+    const isQuestions = state.module === "questions";
     const isHistory = state.module === "history";
 
     tabsMessages.classList.toggle("hidden", !isMessages);
     tabsClaims.classList.toggle("hidden", !isClaims);
+    tabsQuestions.classList.toggle("hidden", !isQuestions);
     filterCombinarToggle.classList.toggle("hidden", !isMessages);
     filterSortBtn.classList.toggle("hidden", !isMessages);
 
@@ -1521,8 +1747,17 @@ moduleNavItems.forEach((btn) => {
   });
 });
 
+document.querySelectorAll("#tabs-questions .tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll("#tabs-questions .tab").forEach((t) => t.classList.remove("active"));
+    tab.classList.add("active");
+    state.questionStatus = tab.dataset.questionStatus;
+    loadList();
+  });
+});
+
 // ---------- Histórico de respostas ----------
-const HISTORY_TYPE_LABELS = { message: "Mensagem", claim: "Reclamação" };
+const HISTORY_TYPE_LABELS = { message: "Mensagem", claim: "Reclamação", question: "Pergunta" };
 
 // Agrupa a lista de respostas por operador — em vez de uma lista unica
 // enorme rolando a tela (reclamacao do usuario), cada operador vira uma
@@ -1560,7 +1795,7 @@ function renderHistory(rows) {
           (r) => `
         <div class="history-row">
           <div class="history-row-main">
-            <span class="tag ${r.type === "claim" ? "tag-claim" : "tag-shipping"}">${
+            <span class="tag ${r.type === "claim" ? "tag-claim" : r.type === "question" ? "tag-question" : "tag-shipping"}">${
             HISTORY_TYPE_LABELS[r.type] || r.type
           }</span>
           </div>
