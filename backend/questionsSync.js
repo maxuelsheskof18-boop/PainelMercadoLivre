@@ -159,7 +159,7 @@ async function reconcileQuestionsForAccount(sellerId) {
   for (let page = 0; page < QUESTIONS_MAX_PAGES; page++) {
     let data;
     try {
-      data = await fetchQuestions(accessToken, sellerId, { status: "UNANSWERED", offset, limit: QUESTIONS_PAGE_SIZE });
+      data = await fetchQuestions(accessToken, sellerId, { status: "unanswered", offset, limit: QUESTIONS_PAGE_SIZE });
     } catch (err) {
       console.warn(`[questions] falha ao buscar perguntas sem resposta da conta ${sellerId}:`, err.status, err.body || err.message);
       break;
@@ -186,7 +186,7 @@ async function reconcileQuestionsForAccount(sellerId) {
 
   // Reverifica perguntas que este painel ainda acha que estao pendentes —
   // se ja foram respondidas/fechadas por fora, essa e a unica forma de
-  // descobrir (a busca por status=UNANSWERED acima nunca mais vai trazer de
+  // descobrir (a busca por status=unanswered acima nunca mais vai trazer de
   // volta uma pergunta ja respondida).
   const { rows: trackedPending } = await db.query(
     `SELECT question_id FROM questions WHERE seller_id = $1 AND local_status = 'pending'`,
