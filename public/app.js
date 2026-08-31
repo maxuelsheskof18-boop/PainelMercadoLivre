@@ -84,6 +84,7 @@ const freightWeight = document.getElementById("freight-weight");
 const freightHeight = document.getElementById("freight-height");
 const freightWidth = document.getElementById("freight-width");
 const freightLength = document.getElementById("freight-length");
+const freightInsurance = document.getElementById("freight-insurance");
 const freightCalcBtn = document.getElementById("freight-calc-btn");
 const freightResults = document.getElementById("freight-results");
 
@@ -1320,12 +1321,17 @@ function renderThreadInfo(conv) {
   // conectado. Toda vez que abre uma conversa (ou troca de conversa), a
   // caixa comeca fechada e limpa — o CEP de destino e sempre digitado na
   // hora, ja que nao vem estruturado do Mercado Livre pra pedidos de
-  // "combinar entrega".
+  // "combinar entrega". O "valor assegurado" ja vem preenchido com o valor
+  // da venda (pedido do usuario: o Melhor Envio cobra o seguro em cima
+  // desse valor, e isso muda o preco do frete) — o vendedor ainda pode
+  // trocar antes de calcular, se quiser.
   freightBox.classList.toggle("hidden", !state.melhorEnvio.connected);
   freightForm.classList.add("hidden");
   freightToggleArrow.textContent = "▾";
   freightResults.innerHTML = "";
   freightCep.value = "";
+  const orderTotalValue = Number(conv.order_total);
+  freightInsurance.value = Number.isFinite(orderTotalValue) && orderTotalValue > 0 ? orderTotalValue.toFixed(2) : "20";
 }
 
 async function loadMelhorEnvioStatus() {
@@ -1458,6 +1464,7 @@ freightCalcBtn.addEventListener("click", async () => {
         height: freightHeight.value,
         width: freightWidth.value,
         length: freightLength.value,
+        insuranceValue: freightInsurance.value,
       }),
     });
     if (handleSessionExpired(res)) return;
