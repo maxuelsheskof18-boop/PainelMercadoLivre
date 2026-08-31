@@ -27,6 +27,33 @@ for (const key of ["DATABASE_URL", "ML_CLIENT_ID", "ML_CLIENT_SECRET", "ML_REDIR
   }
 }
 
+// Rede de seguranca: a maioria das rotas deste painel e "async (req, res) =>
+// {...}" sem try/catch (ver routes/*.js) — se uma consulta ao banco falhar
+// (ex: tabela ainda nao existe por causa de um deploy incompleto/fora de
+// ordem, ou uma queda momentanea de conexao), isso vira uma "unhandled
+// promise rejection", e por padrao o Node (desde a v15) ENCERRA O PROCESSO
+// INTEIRO nesse caso — derrubando o painel inteiro (Mensagens, Reclamações,
+// tudo) por causa de UMA chamada com problema, no meio de um monte de
+// outras chamadas que continuariam funcionando normalmente. Isso foi
+// descoberto na pratica: a contagem de pendentes (chamada a cada 20s por
+// qualquer aba aberta do painel) chegou a derrubar o servidor inteiro
+// quando uma tabela nova (perguntas) ainda nao existia. Esses dois
+// handlers so registram o erro no log e deixam o processo vivo — sem eles,
+// TODO MUNDO usando o painel (nao so quem estava na tela com problema) cai
+// e precisa esperar o Render reiniciar o servico. Com eles, o pior que
+// acontece e aquela chamada especifica ficar "pendurada" sem resposta (o
+// navegador eventualmente desiste sozinho) — chato, mas nao derruba o
+// resto. Ainda assim, o ideal continua sendo cada rota nova ter seu proprio
+// try/catch (ver routes/questions.js) pra devolver um erro de verdade em
+// vez de deixar a chamada pendurada — isso aqui e so a ultima rede de
+// seguranca, nao substitui tratar o erro direito na rota.
+process.on("unhandledRejection", (err) => {
+  console.error("[unhandledRejection] uma chamada assíncrona falhou sem tratamento — o processo NÃO foi encerrado:", err);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException] erro síncrono não tratado — o processo NÃO foi encerrado:", err);
+});
+
 const app = express();
 app.set("trust proxy", 1);
 
