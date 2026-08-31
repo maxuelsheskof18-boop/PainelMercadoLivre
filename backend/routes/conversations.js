@@ -11,7 +11,7 @@ const {
   fetchPackMessages,
   fetchOrderById,
   fetchShipment,
-  fetchPendingRead,
+  fetchUnreadMessagePacks,
 } = require("../ml/api");
 const {
   reconcileAllAccounts,
@@ -752,20 +752,18 @@ router.get("/debug/webhook-events", async (req, res) => {
   res.json({ resumoPorConta: porConta, ultimasNotificacoes: rows });
 });
 
-// Rota TEMPORARIA de diagnostico: tenta os 3 caminhos conhecidos de "listar
-// mensagens pendentes/nao lidas" (fetchPendingRead, ja escrito ha tempos
-// mas nunca usado de verdade porque nenhum tinha sido confirmado
-// funcionando) pra cada conta conectada. Motivo: as buscas dedicadas feitas
-// hoje (tags=no_shipping, tags=delivered, date_last_updated) sao todas
-// baseadas na lista de PEDIDOS, ordenada por data de criacao/fechamento do
-// pedido — nunca por "tem mensagem nova". Numa conta de altissimo volume
-// como a Vesco Suprimentos, um pedido bem antigo (fechado ha muito tempo)
-// que recebe mensagem nova pode ficar fora de QUALQUER janela baseada em
-// pedido, por maior que seja. Se algum desses 3 caminhos realmente
-// funcionar, ele resolveria isso de vez (lista direto por mensagem, nao por
-// pedido) em vez de continuar so alargando janelas de busca. Uso: abrir no
-// navegador (ja logado no painel) /api/debug/probe-pending-read
-router.get("/debug/probe-pending-read", async (req, res) => {
+// Rota de diagnostico: mostra, por conta, os packs com mensagem NAO LIDA
+// que o endpoint dedicado (GET /marketplace/messages/unread — ver
+// fetchUnreadMessagePacks em ml/api.js) devolve agora mesmo. Isso e o mesmo
+// dado que aparece no filtro "Com mensagens não lidas" do proprio painel de
+// Vendas do Mercado Livre; desde que o endpoint foi corrigido (precisava do
+// prefixo "/marketplace" e do parametro "user_id", que as tentativas
+// antigas nao tinham), esse mesmo dado passou a alimentar a reconciliacao
+// de verdade (ver o passo dedicado em reconcileAccount, em sync.js) — essa
+// rota so serve pra conferir manualmente o que essa busca esta encontrando
+// pra uma conta. Uso: abrir no navegador (ja logado no painel)
+// /api/debug/probe-unread-messages
+router.get("/debug/probe-unread-messages", async (req, res) => {
   const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts");
   const report = [];
 
@@ -775,15 +773,15 @@ router.get("/debug/probe-pending-read", async (req, res) => {
     try {
       const accessToken = await getValidAccessToken(sellerId);
       try {
-        const data = await fetchPendingRead(accessToken);
+        const packs = await fetchUnreadMessagePacks(accessToken, sellerId);
         entry.sucesso = true;
-        entry.resultadoResumido = Array.isArray(data?.results)
-          ? { totalResultados: data.results.length, paging: data.paging, amostra: data.results.slice(0, 5) }
-          : data;
+        entry.totalPacksComNaoLida = packs.length;
+        entry.packs = packs;
       } catch (err) {
         entry.sucesso = false;
         entry.erro = err.message;
-        entry.tentativas = err.attempts || null;
+        entry.status = err.status;
+        entry.body = err.body;
       }
     } catch (err) {
       entry.erro = err.message;
