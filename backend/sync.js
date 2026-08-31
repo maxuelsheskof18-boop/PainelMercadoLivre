@@ -2,7 +2,7 @@
 // as tabelas locais (conversations + messages), decidindo se ela fica
 // "pending" (aguardando resposta do vendedor) ou "answered".
 const db = require("./db");
-const { fetchPackMessages, fetchRecentOrders, fetchOrderById, fetchShipment } = require("./ml/api");
+const { fetchPackMessages, fetchRecentOrders, fetchOrderById, fetchShipment, fetchUnreadMessagePacks } = require("./ml/api");
 const { getValidAccessToken } = require("./ml/tokens");
 
 // Rotulo legivel pra cada "logistic_type" que o Mercado Livre usa nos envios
@@ -597,11 +597,17 @@ async function reconcileAccount(sellerId) {
   let cancelados = 0;
   let resolvidosSemContato = 0;
   let emObservacao = 0;
+  // Guarda todo pack_id ja verificado neste ciclo (pela lista de pedidos
+  // acima) — usado logo depois pra saber quais packs da busca dedicada de
+  // "mensagens nao lidas" ja foram cobertos, e quais sao casos que so essa
+  // busca encontrou.
+  const packIdsVerificados = new Set();
   for (const order of list) {
     // Pedidos que nao fazem parte de um envio combinado nao tem pack_id
     // (vem null) — nesse caso o proprio order_id funciona no lugar.
     const packId = order?.pack_id || order?.id;
     if (!packId) continue;
+    packIdsVerificados.add(String(packId));
 
     // Pedido cancelado (normalmente porque foi reembolsado) nao tem mais
     // entrega nenhuma pra combinar — o usuario pediu pra parar de trazer
@@ -695,6 +701,38 @@ async function reconcileAccount(sellerId) {
     }
   }
 
+  // Busca dedicada final: packs com mensagem NAO LIDA, direto do mesmo dado
+  // que alimenta o filtro "Com mensagens não lidas" no painel de Vendas do
+  // Mercado Livre (ver fetchUnreadMessagePacks em ml/api.js). Diferente das
+  // buscas acima (todas baseadas numa JANELA de pedidos por data), essa vem
+  // direto de "tem mensagem esperando resposta" — pega justamente o caso de
+  // um pedido que, por qualquer motivo, ficou fora de todas as janelas mas
+  // ainda assim tem mensagem pendente. So processa de novo os que ainda NAO
+  // foram verificados neste ciclo (os outros ja passaram pelo loop acima).
+  let naoLidasNovas = 0;
+  try {
+    const unreadPacks = await fetchUnreadMessagePacks(accessToken, sellerId);
+    for (const { packId } of unreadPacks) {
+      if (!packId || packIdsVerificados.has(String(packId))) continue;
+      try {
+        await syncPack(sellerId, packId);
+        naoLidasNovas++;
+      } catch (err) {
+        console.warn(
+          `[reconcile] falha ao sincronizar pack com mensagem não lida ${packId} (achado so pela busca dedicada) da conta ${sellerId}:`,
+          err.status,
+          err.body || err.message
+        );
+      }
+    }
+  } catch (err) {
+    console.warn(
+      `[reconcile] falha ao buscar mensagens não lidas (marketplace/messages/unread) da conta ${sellerId}:`,
+      err.status,
+      err.body || err.message
+    );
+  }
+
   // Reverifica os pedidos "em observacao" (ja entregues, sem mensagem da
   // ultima vez que foram vistos) usando o pack_id ja guardado — sem
   // depender de nenhuma busca por lista de pedidos. E esse passo que
@@ -735,7 +773,7 @@ async function reconcileAccount(sellerId) {
   }
 
   console.log(
-    `[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens, ${semContato} combinar-entrega sem contato ainda, ${cancelados} cancelado(s) ignorado(s), ${resolvidosSemContato} ja entregue(s)/concluido(s) sem contato ignorado(s), ${emObservacao} entregue(s) em observacao (sem mensagem ainda), ${watchRows.length} em observacao reverificado(s) (${promovidos} ganharam mensagem agora).`
+    `[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens, ${semContato} combinar-entrega sem contato ainda, ${cancelados} cancelado(s) ignorado(s), ${resolvidosSemContato} ja entregue(s)/concluido(s) sem contato ignorado(s), ${emObservacao} entregue(s) em observacao (sem mensagem ainda), ${watchRows.length} em observacao reverificado(s) (${promovidos} ganharam mensagem agora), ${naoLidasNovas} pack(s) resgatado(s) so pela busca de mensagens não lidas.`
   );
 
   // Varredura automatica do historico, mes a mes, um pedacinho por vez (ver
