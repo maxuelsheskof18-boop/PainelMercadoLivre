@@ -16,9 +16,13 @@ async function calculateShipping(accessToken, { fromPostalCode, toPostalCode, we
       {
         name: "Produto",
         quantity: 1,
-        // "value" e usado so pro seguro do frete (nao afeta a compra em si);
-        // um valor pequeno padrao evita erro caso o vendedor nao informe.
-        value: insuranceValue || 20,
+        // O campo que a API do Melhor Envio realmente usa pra calcular o
+        // custo do seguro e "insurance_value" (nao "value" — esse nome
+        // estava errado antes e fazia a API ignorar silenciosamente o valor
+        // informado, sempre calculando o frete como se o seguro fosse o
+        // minimo, por isso o preco nao mudava ao editar o campo no painel).
+        // Doc: https://docs.melhorenvio.com.br/reference/calculo-de-fretes-por-produtos
+        insurance_value: insuranceValue || 20,
         weight: Number(weight) || 0.3,
         width: Number(width) || 11,
         height: Number(height) || 4,
