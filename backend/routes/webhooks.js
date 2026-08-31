@@ -16,6 +16,7 @@ const db = require("../db");
 const { syncPack } = require("../sync");
 const { parsePackResource } = require("../ml/api");
 const { syncClaim } = require("../claimsSync");
+const { syncQuestion } = require("../questionsSync");
 
 const router = express.Router();
 
@@ -38,6 +39,22 @@ function isClaimTopic(topic) {
 
 function parseClaimResource(resource) {
   const match = /claims\/([^/?]+)/i.exec(resource || "");
+  return match ? match[1] : null;
+}
+
+// Mesmo caso do topico de reclamacoes acima: o nome exato do topico de
+// perguntas nunca foi confirmado com uma notificacao de verdade (a
+// documentacao publica cita "questions" e "marketplace_questions" em
+// lugares diferentes). O filtro aceita qualquer topico que contenha
+// "question", e a tabela webhook_events grava tudo — depois que a primeira
+// pergunta real chegar, da pra conferir ali o nome exato e ajustar aqui se
+// for diferente.
+function isQuestionTopic(topic) {
+  return typeof topic === "string" && topic.toLowerCase().includes("question");
+}
+
+function parseQuestionResource(resource) {
+  const match = /questions\/([^/?]+)/i.exec(resource || "");
   return match ? match[1] : null;
 }
 
@@ -75,6 +92,28 @@ router.post("/webhooks/mercadolivre", express.json(), (req, res) => {
         await syncClaim(claimSellerId, claimId);
       } catch (err) {
         console.error(`[webhook] falha ao sincronizar reclamacao ${claimId}:`, err.message);
+      }
+    })();
+    return;
+  }
+
+  if (isQuestionTopic(topic)) {
+    const questionId = parseQuestionResource(resource);
+    const questionSellerId = String(user_id || "");
+    if (!questionId || !questionSellerId) {
+      console.warn("[webhook] nao consegui identificar pergunta/seller em:", resource);
+      return;
+    }
+    (async () => {
+      try {
+        const { rows } = await db.query("SELECT 1 FROM accounts WHERE id = $1", [questionSellerId]);
+        if (!rows.length) {
+          console.warn(`[webhook] notificacao de pergunta para conta nao conectada: ${questionSellerId}`);
+          return;
+        }
+        await syncQuestion(questionSellerId, questionId);
+      } catch (err) {
+        console.error(`[webhook] falha ao sincronizar pergunta ${questionId}:`, err.message);
       }
     })();
     return;

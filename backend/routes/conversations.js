@@ -20,6 +20,7 @@ const {
   fetchShippingType,
 } = require("../sync");
 const { reconcileAllClaims } = require("../claimsSync");
+const { reconcileAllQuestions } = require("../questionsSync");
 
 const router = express.Router();
 
@@ -61,11 +62,31 @@ router.get("/pending-count", async (req, res) => {
   const { rows: claimRows } = await db.query(
     `SELECT COUNT(*) FILTER (WHERE local_status = 'pending')::int AS pending FROM claims`
   );
+
+  // Essa rota e chamada o tempo todo (a cada 20s, em toda aba aberta do
+  // painel — ver setInterval(loadPendingCount, ...) em app.js), pra
+  // atualizar o sininho/badges. Isolado num try/catch proprio: se por
+  // algum motivo a tabela "questions" nao existir ainda (ex: deploy do
+  // modulo de Perguntas ficou incompleto/fora de ordem), isso NAO pode
+  // derrubar essa chamada inteira — ela e critica demais (roda a cada 20s
+  // em background) pra travar o resto do painel (Mensagens/Reclamações)
+  // por causa so da contagem de Perguntas. Na duvida, conta 0.
+  let questionsPending = 0;
+  try {
+    const { rows: questionRows } = await db.query(
+      `SELECT COUNT(*) FILTER (WHERE local_status = 'pending')::int AS pending FROM questions`
+    );
+    questionsPending = questionRows[0].pending;
+  } catch (err) {
+    console.error("[pending-count] falha ao contar perguntas pendentes (tabela ainda nao existe?):", err.message);
+  }
+
   res.json({
     pending: rows[0].pending,
     noContact: rows[0].no_contact,
     delivered: rows[0].delivered,
     claims: claimRows[0].pending,
+    questions: questionsPending,
   });
 });
 
@@ -436,6 +457,11 @@ router.post("/sync", async (req, res) => {
     } catch (err) {
       console.error("[sync] falha ao sincronizar reclamacoes:", err.message);
     }
+    try {
+      await reconcileAllQuestions();
+    } catch (err) {
+      console.error("[sync] falha ao sincronizar perguntas:", err.message);
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error("[sync]", err.message);
@@ -801,6 +827,8 @@ router.get("/operators", async (req, res) => {
       SELECT operator_name FROM messages WHERE operator_name IS NOT NULL
       UNION
       SELECT operator_name FROM claim_messages WHERE operator_name IS NOT NULL
+      UNION
+      SELECT operator_name FROM questions WHERE operator_name IS NOT NULL
     ) t
     ORDER BY operator_name ASC
   `);
@@ -855,6 +883,15 @@ router.get("/operator-log", async (req, res) => {
         JOIN claims cl ON cl.claim_id = cm.claim_id
         JOIN accounts a ON a.id = cl.seller_id
        WHERE cm.sender_role = 'respondent' AND ${where.replace(/operator_name/g, "cm.operator_name").replace(/sent_date/g, "cm.sent_date")}
+    )
+    UNION ALL
+    (
+      SELECT 'question' AS type, q.operator_name, q.question_id AS ref_id, NULL AS order_id,
+             q.buyer_nickname AS buyer_name, q.item_title AS product_title, q.answer_text AS text, q.answer_date::text AS sent_date,
+             a.nickname AS seller_nickname
+        FROM questions q
+        JOIN accounts a ON a.id = q.seller_id
+       WHERE q.answer_text IS NOT NULL AND ${where.replace(/operator_name/g, "q.operator_name").replace(/sent_date/g, "q.answer_date::text")}
     )
     ORDER BY sent_date DESC
     LIMIT 500
