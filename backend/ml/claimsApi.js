@@ -8,6 +8,10 @@
 // algum campo vier diferente, ajuste so aqui.
 const API_BASE = "https://api.mercadolibre.com";
 
+// Ver o mesmo comentario em ml/api.js (REQUEST_TIMEOUT_MS) — nenhuma chamada
+// externa deve poder travar pra sempre.
+const REQUEST_TIMEOUT_MS = 20_000;
+
 async function claimsFetch(path, accessToken, options = {}) {
   const base = path.startsWith("http") ? path : `${API_BASE}${path}`;
   const url = new URL(base);
@@ -17,6 +21,7 @@ async function claimsFetch(path, accessToken, options = {}) {
 
   const res = await fetch(url.toString(), {
     ...options,
+    signal: options.signal || AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",
@@ -108,6 +113,9 @@ async function uploadClaimAttachment(accessToken, claimId, buffer, filename, mim
 
   const res = await fetch(url.toString(), {
     method: "POST",
+    // Upload pode demorar mais que uma chamada normal — ver comentario
+    // analogo em ml/api.js::uploadMessageAttachment.
+    signal: AbortSignal.timeout(60_000),
     headers: { Authorization: `Bearer ${accessToken}` },
     body: form,
   });
@@ -160,6 +168,8 @@ async function fetchClaimAttachmentFile(accessToken, claimId, attachmentId) {
   url.searchParams.set("access_token", accessToken);
 
   const res = await fetch(url.toString(), {
+    // Download tambem pode demorar mais que uma chamada normal.
+    signal: AbortSignal.timeout(60_000),
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 

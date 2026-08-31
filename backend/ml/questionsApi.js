@@ -12,6 +12,10 @@
 // diferente, e so ajustar aqui, a estrutura do resto do app nao muda.
 const API_BASE = "https://api.mercadolibre.com";
 
+// Ver o mesmo comentario em ml/api.js (REQUEST_TIMEOUT_MS) — nenhuma chamada
+// externa deve poder travar pra sempre.
+const REQUEST_TIMEOUT_MS = 20_000;
+
 async function questionsFetch(path, accessToken, options = {}) {
   const base = path.startsWith("http") ? path : `${API_BASE}${path}`;
   const url = new URL(base);
@@ -21,6 +25,7 @@ async function questionsFetch(path, accessToken, options = {}) {
 
   const res = await fetch(url.toString(), {
     ...options,
+    signal: options.signal || AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",

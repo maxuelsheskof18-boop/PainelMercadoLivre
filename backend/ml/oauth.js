@@ -4,6 +4,13 @@ const crypto = require("crypto");
 
 const TOKEN_URL = "https://api.mercadolibre.com/oauth/token";
 
+// Ver o mesmo comentario em ml/api.js (REQUEST_TIMEOUT_MS): nenhuma chamada
+// externa deve poder travar pra sempre. Essa aqui e ainda mais critica —
+// se renovar o token travasse sem limite, getValidAccessToken() nunca
+// devolveria, e QUALQUER reconciliacao (mensagens/reclamacoes/perguntas)
+// que dependesse dela travaria junto.
+const TOKEN_REQUEST_TIMEOUT_MS = 20_000;
+
 function base64url(buffer) {
   return buffer
     .toString("base64")
@@ -47,6 +54,7 @@ async function exchangeCodeForToken({ code, codeVerifier }) {
 
   const res = await fetch(TOKEN_URL, {
     method: "POST",
+    signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "application/json",
@@ -73,6 +81,7 @@ async function refreshAccessToken(refreshToken) {
 
   const res = await fetch(TOKEN_URL, {
     method: "POST",
+    signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "application/json",

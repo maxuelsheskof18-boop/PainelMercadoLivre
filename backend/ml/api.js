@@ -9,6 +9,16 @@
 
 const API_BASE = "https://api.mercadolibre.com";
 
+// Nenhuma chamada a uma API externa deve poder travar pra sempre — ja
+// aconteceu na pratica de o botao "Atualizar" do painel ficar girando
+// indefinidamente porque uma chamada ao Mercado Livre simplesmente nunca
+// respondia nem dava erro (o fetch nativo do Node nao tem timeout por
+// padrao). Com esse limite, uma chamada travada falha depois de 20s (tempo
+// de sobra pra uma API que normalmente responde em menos de 1s) em vez de
+// travar a reconciliacao inteira — o item falha, fica registrado no log, e
+// o painel segue pro proximo em vez de nunca mais terminar.
+const REQUEST_TIMEOUT_MS = 20_000;
+
 async function mlFetch(path, accessToken, options = {}) {
   const base = path.startsWith("http") ? path : `${API_BASE}${path}`;
 
@@ -24,6 +34,7 @@ async function mlFetch(path, accessToken, options = {}) {
 
   const res = await fetch(url.toString(), {
     ...options,
+    signal: options.signal || AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",
@@ -228,6 +239,10 @@ async function uploadMessageAttachment(accessToken, buffer, filename, mimetype) 
 
   const res = await fetch(url.toString(), {
     method: "POST",
+    // Upload pode legitimamente demorar mais que uma chamada normal (arquivo
+    // ate 25MB) — timeout mais generoso que REQUEST_TIMEOUT_MS, mas ainda
+    // finito, pelo mesmo motivo (nunca travar pra sempre).
+    signal: AbortSignal.timeout(60_000),
     headers: { Authorization: `Bearer ${accessToken}` },
     body: form,
   });
