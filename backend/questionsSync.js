@@ -139,7 +139,11 @@ async function syncQuestion(sellerId, questionId) {
 // Mercado Livre no celular) — sem isso, uma pergunta respondida por fora
 // ficaria "presa" pra sempre na aba de pendentes aqui.
 async function reconcileQuestionsForAccount(sellerId) {
-  const accessToken = await getValidAccessToken(sellerId);
+  // Ver o comentario extenso em reconcileAccount (sync.js) sobre o mesmo
+  // bug: pegar o token UMA VEZ so e reusar por uma funcao inteira que pode
+  // demorar (loop grande) arrisca ele vencer no meio do ciclo. Por isso
+  // "let" (nao "const") e uma reconfirmacao dentro do loop abaixo.
+  let accessToken = await getValidAccessToken(sellerId);
 
   const all = [];
   let offset = 0;
@@ -161,6 +165,9 @@ async function reconcileQuestionsForAccount(sellerId) {
 
   let processadas = 0;
   for (const question of all) {
+    // Reconfirma o token a cada pergunta processada — ver comentario no
+    // topo desta funcao.
+    accessToken = await getValidAccessToken(sellerId);
     try {
       const info = extractQuestionInfo(question);
       const itemInfo = await fetchItemInfoForQuestion(accessToken, info?.itemId);

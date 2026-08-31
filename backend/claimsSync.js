@@ -236,7 +236,11 @@ async function syncClaim(sellerId, claimId) {
 // sem isso uma reclamacao resolvida ficaria "presa" pra sempre na aba
 // errada).
 async function reconcileClaimsForAccount(sellerId) {
-  const accessToken = await getValidAccessToken(sellerId);
+  // Ver o comentario extenso em reconcileAccount (sync.js) sobre o mesmo
+  // bug: pegar o token UMA VEZ so e reusar por uma funcao inteira que pode
+  // demorar (loop grande) arrisca ele vencer no meio do ciclo. Por isso
+  // "let" (nao "const") e uma reconfirmacao dentro do loop abaixo.
+  let accessToken = await getValidAccessToken(sellerId);
 
   const all = [];
   let offset = 0;
@@ -258,6 +262,9 @@ async function reconcileClaimsForAccount(sellerId) {
 
   let processadas = 0;
   for (const claim of all) {
+    // Reconfirma o token a cada reclamacao processada — ver comentario no
+    // topo desta funcao.
+    accessToken = await getValidAccessToken(sellerId);
     try {
       const info = extractClaimInfo(claim);
       const messagesData = await fetchClaimMessages(accessToken, claim.id);

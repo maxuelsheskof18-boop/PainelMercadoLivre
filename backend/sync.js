@@ -526,7 +526,27 @@ async function syncPack(sellerId, packId, orderId) {
 // perca (ou, com o Render gratuito, enquanto o servico esteve "dormindo" e
 // nao recebeu nenhum webhook).
 async function reconcileAccount(sellerId) {
-  const accessToken = await getValidAccessToken(sellerId);
+  // IMPORTANTE (bug real, achado numa conta de altissimo volume): o token
+  // de acesso dura poucas horas, e getValidAccessToken() so verifica/renova
+  // ele no MOMENTO em que e chamado. Antes desta correcao, essa funcao
+  // pegava o token UMA UNICA VEZ aqui em cima e reusava a mesma variavel do
+  // inicio ao fim — inclusive na reverificacao de "entregues em observacao"
+  // (comMensagens) e na varredura mes-a-mes (runBackfillStep), que rodam por
+  // ULTIMO. Numa conta com centenas de pedidos pra verificar, essa
+  // reconciliacao inteira pode levar minutos — tempo suficiente pro token
+  // vencer NO MEIO do proprio ciclo. Resultado visto na pratica (log real do
+  // usuario): uma sequencia de "invalid access token" (401) bem no passo de
+  // reverificacao, exatamente porque o token, valido quando a funcao
+  // comecou, ja tinha expirado quando chegou nesse passo — e TODAS as
+  // chamadas dali pra frente (incluindo a busca de mensagens nao lidas e o
+  // backfill) falhavam caladas, sem nunca reaproveitar o proprio mecanismo
+  // de renovacao automatica que ja existe. A correcao: chamar
+  // getValidAccessToken(sellerId) DE NOVO antes de cada etapa longa/tardia
+  // do ciclo (a variavel agora e "let", nao "const"). Isso e barato quando o
+  // token ainda esta valido (so uma leitura rapida no banco local) e
+  // renova sozinho quando necessario — sem isso, a conta simplesmente para
+  // de sincronizar no meio do ciclo sem nenhum aviso claro pro vendedor.
+  let accessToken = await getValidAccessToken(sellerId);
 
   const orders = await fetchRecentOrders(accessToken, sellerId, {
     limit: RECENT_ORDERS_LIMIT,
@@ -608,6 +628,11 @@ async function reconcileAccount(sellerId) {
     const packId = order?.pack_id || order?.id;
     if (!packId) continue;
     packIdsVerificados.add(String(packId));
+
+    // Reconfirma o token a cada pedido verificado (ver comentario no topo
+    // desta funcao) — numa lista longa (conta de alto volume), isso e o que
+    // evita o token vencer no meio do loop sem ninguem perceber.
+    accessToken = await getValidAccessToken(sellerId);
 
     // Pedido cancelado (normalmente porque foi reembolsado) nao tem mais
     // entrega nenhuma pra combinar — o usuario pediu pra parar de trazer
@@ -711,6 +736,10 @@ async function reconcileAccount(sellerId) {
   // foram verificados neste ciclo (os outros ja passaram pelo loop acima).
   let naoLidasNovas = 0;
   try {
+    // Reconfirma o token de novo antes dessa etapa (ver comentario no topo
+    // desta funcao) — ela roda so DEPOIS do loop longo acima, entao e um dos
+    // pontos onde o token pode ja ter vencido nesse meio tempo.
+    accessToken = await getValidAccessToken(sellerId);
     const unreadPacks = await fetchUnreadMessagePacks(accessToken, sellerId);
     for (const { packId } of unreadPacks) {
       if (!packId || packIdsVerificados.has(String(packId))) continue;
@@ -745,6 +774,10 @@ async function reconcileAccount(sellerId) {
   );
   let promovidos = 0;
   for (const watch of watchRows) {
+    // Reconfirma o token a cada item (ver comentario no topo desta funcao)
+    // — foi EXATAMENTE nesse passo, o mais tardio do ciclo, que o bug real
+    // apareceu em producao (sequencia de "invalid access token").
+    accessToken = await getValidAccessToken(sellerId);
     try {
       const packData = await fetchPackMessages(accessToken, watch.pack_id, sellerId);
       if (Array.isArray(packData?.messages) && packData.messages.length > 0) {
@@ -781,6 +814,9 @@ async function reconcileAccount(sellerId) {
   // manual, que TODO pedido entregue ou de combinar entrega da conta (nao
   // so os recentes) acaba sendo checado pelo menos uma vez.
   try {
+    // Mesma reconfirmacao de token antes desta ultima etapa (a mais tardia
+    // do ciclo inteiro) — ver comentario no topo desta funcao.
+    accessToken = await getValidAccessToken(sellerId);
     const backfillResult = await runBackfillStep(sellerId, accessToken);
     if (backfillResult) {
       console.log(
