@@ -3,7 +3,7 @@
 // "pending" (aguardando resposta do vendedor) ou "answered".
 const db = require("./db");
 const { fetchPackMessages, fetchRecentOrders, fetchOrderById, fetchShipment, fetchUnreadMessagePacks } = require("./ml/api");
-const { getValidAccessToken } = require("./ml/tokens");
+const { getValidAccessToken, withTokenRetry } = require("./ml/tokens");
 
 // Rotulo legivel pra cada "logistic_type" que o Mercado Livre usa nos envios
 // (confirmado na documentacao oficial de Mercado Envios): "self_service" e o
@@ -528,24 +528,27 @@ async function syncPack(sellerId, packId, orderId) {
 async function reconcileAccount(sellerId) {
   // IMPORTANTE (bug real, achado numa conta de altissimo volume): o token
   // de acesso dura poucas horas, e getValidAccessToken() so verifica/renova
-  // ele no MOMENTO em que e chamado. Antes desta correcao, essa funcao
-  // pegava o token UMA UNICA VEZ aqui em cima e reusava a mesma variavel do
-  // inicio ao fim — inclusive na reverificacao de "entregues em observacao"
-  // (comMensagens) e na varredura mes-a-mes (runBackfillStep), que rodam por
-  // ULTIMO. Numa conta com centenas de pedidos pra verificar, essa
-  // reconciliacao inteira pode levar minutos — tempo suficiente pro token
-  // vencer NO MEIO do proprio ciclo. Resultado visto na pratica (log real do
-  // usuario): uma sequencia de "invalid access token" (401) bem no passo de
-  // reverificacao, exatamente porque o token, valido quando a funcao
-  // comecou, ja tinha expirado quando chegou nesse passo — e TODAS as
-  // chamadas dali pra frente (incluindo a busca de mensagens nao lidas e o
-  // backfill) falhavam caladas, sem nunca reaproveitar o proprio mecanismo
-  // de renovacao automatica que ja existe. A correcao: chamar
-  // getValidAccessToken(sellerId) DE NOVO antes de cada etapa longa/tardia
-  // do ciclo (a variavel agora e "let", nao "const"). Isso e barato quando o
-  // token ainda esta valido (so uma leitura rapida no banco local) e
-  // renova sozinho quando necessario — sem isso, a conta simplesmente para
-  // de sincronizar no meio do ciclo sem nenhum aviso claro pro vendedor.
+  // ele no MOMENTO em que e chamado. Esta funcao pegava o token UMA UNICA
+  // VEZ aqui em cima e reusava a mesma variavel do inicio ao fim —
+  // inclusive na reverificacao de "entregues em observacao" e na varredura
+  // mes-a-mes (runBackfillStep), que rodam por ULTIMO. Numa conta com
+  // centenas de pedidos pra verificar, essa reconciliacao inteira pode levar
+  // minutos — tempo suficiente pro token vencer NO MEIO do proprio ciclo.
+  // Resultado visto na pratica (log real do usuario): uma sequencia de
+  // "invalid access token" (401) bem no passo de reverificacao.
+  //
+  // Uma primeira correcao chegou a RECONFIRMAR o token proativamente antes
+  // de cada pedido do loop (uma consulta a mais no banco por item) — mas
+  // isso causou uma regressao pior: numa conta de alto volume, a lista de
+  // "entregues em observacao" (watchRows abaixo) so cresce (um pedido so
+  // sai dela quando finalmente recebe mensagem, o que pra muitos nunca
+  // acontece) e pode chegar a milhares de itens depois de meses de uso —
+  // multiplicar isso por uma consulta extra fez o botao "Atualizar" nunca
+  // mais terminar. A correcao certa: NAO reconfirmar nada proativamente;
+  // em vez disso, cada chamada a API arriscada roda via withTokenRetry (ver
+  // ml/tokens.js), que so renova o token — e refaz a chamada uma vez — se
+  // ela realmente falhar com 401. No caminho normal (token valido, a
+  // grande maioria das vezes) isso nao custa nada a mais.
   let accessToken = await getValidAccessToken(sellerId);
 
   const orders = await fetchRecentOrders(accessToken, sellerId, {
@@ -629,11 +632,6 @@ async function reconcileAccount(sellerId) {
     if (!packId) continue;
     packIdsVerificados.add(String(packId));
 
-    // Reconfirma o token a cada pedido verificado (ver comentario no topo
-    // desta funcao) — numa lista longa (conta de alto volume), isso e o que
-    // evita o token vencer no meio do loop sem ninguem perceber.
-    accessToken = await getValidAccessToken(sellerId);
-
     // Pedido cancelado (normalmente porque foi reembolsado) nao tem mais
     // entrega nenhuma pra combinar — o usuario pediu pra parar de trazer
     // esses pro painel. Se ja existia uma conversa gravada desse pedido (de
@@ -651,7 +649,11 @@ async function reconcileAccount(sellerId) {
     }
 
     try {
-      const packData = await fetchPackMessages(accessToken, packId, sellerId);
+      const packResult = await withTokenRetry(sellerId, accessToken, (token) =>
+        fetchPackMessages(token, packId, sellerId)
+      );
+      const packData = packResult.result;
+      accessToken = packResult.accessToken;
       if (Array.isArray(packData?.messages) && packData.messages.length > 0) {
         comMensagens++;
 
@@ -660,7 +662,9 @@ async function reconcileAccount(sellerId) {
         // de API a toa nos outros ~50 pedidos que nao tem nada pendente.
         let orderInfo = null;
         try {
-          const fullOrder = await fetchOrderById(accessToken, order?.id);
+          const orderResult = await withTokenRetry(sellerId, accessToken, (token) => fetchOrderById(token, order?.id));
+          const fullOrder = orderResult.result;
+          accessToken = orderResult.accessToken;
           orderInfo = extractOrderInfo(fullOrder);
           orderInfo.shippingType = await fetchShippingType(accessToken, fullOrder);
         } catch (err) {
@@ -683,7 +687,9 @@ async function reconcileAccount(sellerId) {
         let orderForInfo = order;
         if (!Array.isArray(order?.tags)) {
           try {
-            orderForInfo = await fetchOrderById(accessToken, order?.id);
+            const orderResult = await withTokenRetry(sellerId, accessToken, (token) => fetchOrderById(token, order?.id));
+            orderForInfo = orderResult.result;
+            accessToken = orderResult.accessToken;
           } catch (err) {
             console.warn(
               `[reconcile] nao consegui buscar detalhes do pedido ${order?.id} (sem tags na listagem):`,
@@ -774,17 +780,28 @@ async function reconcileAccount(sellerId) {
   );
   let promovidos = 0;
   for (const watch of watchRows) {
-    // Reconfirma o token a cada item (ver comentario no topo desta funcao)
-    // — foi EXATAMENTE nesse passo, o mais tardio do ciclo, que o bug real
-    // apareceu em producao (sequencia de "invalid access token").
-    accessToken = await getValidAccessToken(sellerId);
+    // IMPORTANTE: esta lista (watchRows) so cresce com o tempo — um pedido
+    // so sai dela quando finalmente recebe mensagem, o que pra muitos nunca
+    // acontece. Numa conta de alto volume, depois de meses de uso ela pode
+    // ter milhares de itens — por isso NAO reconfirmamos o token
+    // proativamente aqui (isso ja causou uma regressao real: o botao
+    // "Atualizar" ficava girando pra sempre). withTokenRetry so paga o
+    // custo de renovar o token se a chamada realmente falhar com 401.
     try {
-      const packData = await fetchPackMessages(accessToken, watch.pack_id, sellerId);
+      const packResult = await withTokenRetry(sellerId, accessToken, (token) =>
+        fetchPackMessages(token, watch.pack_id, sellerId)
+      );
+      const packData = packResult.result;
+      accessToken = packResult.accessToken;
       if (Array.isArray(packData?.messages) && packData.messages.length > 0) {
         promovidos++;
         let orderInfo = null;
         try {
-          const fullOrder = await fetchOrderById(accessToken, watch.order_id);
+          const orderResult = await withTokenRetry(sellerId, accessToken, (token) =>
+            fetchOrderById(token, watch.order_id)
+          );
+          const fullOrder = orderResult.result;
+          accessToken = orderResult.accessToken;
           orderInfo = extractOrderInfo(fullOrder);
           orderInfo.shippingType = await fetchShippingType(accessToken, fullOrder);
         } catch (err) {

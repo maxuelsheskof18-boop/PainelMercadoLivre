@@ -6,7 +6,7 @@
 // vendedor) ou 'answered' (vendedor ja respondeu por ultimo) pra alimentar
 // uma aba propria no painel.
 const db = require("./db");
-const { getValidAccessToken } = require("./ml/tokens");
+const { getValidAccessToken, withTokenRetry } = require("./ml/tokens");
 const { fetchOrderById } = require("./ml/api");
 const { extractOrderInfo, fetchShippingType } = require("./sync");
 const {
@@ -200,21 +200,26 @@ async function upsertClaim(sellerId, claim, messages, orderInfo) {
 // Busca detalhes do pedido (produto/comprador/valor) associados a uma
 // reclamacao, quando o "resource" dela for um pedido — mesma logica ja usada
 // pras conversas de mensagens (extractOrderInfo), reaproveitada aqui.
-async function fetchOrderInfoForClaim(accessToken, info) {
-  if (info.resource !== "order" || !info.resourceId) return null;
+// Devolve { orderInfo, accessToken } — o accessToken devolvido pode ter sido
+// renovado (ver withTokenRetry em ml/tokens.js), e quem chamou deve
+// atualizar sua propria copia local com ele.
+async function fetchOrderInfoForClaim(sellerId, accessToken, info) {
+  if (info.resource !== "order" || !info.resourceId) return { orderInfo: null, accessToken };
   try {
-    const order = await fetchOrderById(accessToken, info.resourceId);
+    const orderResult = await withTokenRetry(sellerId, accessToken, (token) => fetchOrderById(token, info.resourceId));
+    const order = orderResult.result;
+    accessToken = orderResult.accessToken;
     // O tipo de envio (Flex/Agência/etc.) vem do mesmo pedido, do mesmo jeito
     // que ja e feito pras conversas de mensagens (ver fetchShippingType).
     const shippingType = await fetchShippingType(accessToken, order);
-    return { ...extractOrderInfo(order), shippingType };
+    return { orderInfo: { ...extractOrderInfo(order), shippingType }, accessToken };
   } catch (err) {
     console.warn(
       `[claims] nao consegui buscar detalhes do pedido ${info.resourceId} da reclamacao:`,
       err.status,
       err.body || err.message
     );
-    return null;
+    return { orderInfo: null, accessToken };
   }
 }
 
@@ -226,7 +231,7 @@ async function syncClaim(sellerId, claimId) {
   const messagesData = await fetchClaimMessages(accessToken, claimId);
   const messages = Array.isArray(messagesData) ? messagesData : messagesData?.messages || [];
   const info = extractClaimInfo(claim);
-  const orderInfo = await fetchOrderInfoForClaim(accessToken, info);
+  const { orderInfo } = await fetchOrderInfoForClaim(sellerId, accessToken, info);
   await upsertClaim(sellerId, claim, messages, orderInfo);
 }
 
@@ -237,9 +242,12 @@ async function syncClaim(sellerId, claimId) {
 // errada).
 async function reconcileClaimsForAccount(sellerId) {
   // Ver o comentario extenso em reconcileAccount (sync.js) sobre o mesmo
-  // bug: pegar o token UMA VEZ so e reusar por uma funcao inteira que pode
-  // demorar (loop grande) arrisca ele vencer no meio do ciclo. Por isso
-  // "let" (nao "const") e uma reconfirmacao dentro do loop abaixo.
+  // bug (token capturado uma unica vez pode vencer no meio de uma
+  // reconciliacao longa, ou ser invalidado por outra reconciliacao rodando
+  // em paralelo) e sobre por que a correcao NAO reconfirma o token
+  // proativamente a cada item (isso ja causou uma regressao real — ver
+  // withTokenRetry em ml/tokens.js). Aqui cada chamada arriscada usa
+  // withTokenRetry, que so renova o token se a chamada realmente falhar.
   let accessToken = await getValidAccessToken(sellerId);
 
   const all = [];
@@ -262,14 +270,14 @@ async function reconcileClaimsForAccount(sellerId) {
 
   let processadas = 0;
   for (const claim of all) {
-    // Reconfirma o token a cada reclamacao processada — ver comentario no
-    // topo desta funcao.
-    accessToken = await getValidAccessToken(sellerId);
     try {
       const info = extractClaimInfo(claim);
-      const messagesData = await fetchClaimMessages(accessToken, claim.id);
+      const msgResult = await withTokenRetry(sellerId, accessToken, (token) => fetchClaimMessages(token, claim.id));
+      const messagesData = msgResult.result;
+      accessToken = msgResult.accessToken;
       const messages = Array.isArray(messagesData) ? messagesData : messagesData?.messages || [];
-      const orderInfo = await fetchOrderInfoForClaim(accessToken, info);
+      const { orderInfo, accessToken: tokenAfterOrder } = await fetchOrderInfoForClaim(sellerId, accessToken, info);
+      accessToken = tokenAfterOrder;
       await upsertClaim(sellerId, claim, messages, orderInfo);
       processadas++;
     } catch (err) {

@@ -13,7 +13,7 @@
 // os campos question_text/answer_text na propria linha (ver tabela
 // "questions" em db.js).
 const db = require("./db");
-const { getValidAccessToken } = require("./ml/tokens");
+const { getValidAccessToken, withTokenRetry } = require("./ml/tokens");
 const { fetchItemById } = require("./ml/api");
 const { fetchQuestions, fetchQuestionById } = require("./ml/questionsApi");
 
@@ -54,17 +54,22 @@ function extractQuestionInfo(question) {
 
 // Busca titulo/link publico do anuncio associado a pergunta — a pergunta em
 // si so traz o item_id, sem esses dados (ver fetchItemById em ml/api.js).
-async function fetchItemInfoForQuestion(accessToken, itemId) {
-  if (!itemId) return null;
+async function fetchItemInfoForQuestion(sellerId, accessToken, itemId) {
+  if (!itemId) return { itemInfo: null, accessToken };
   try {
-    const item = await fetchItemById(accessToken, itemId);
+    const result = await withTokenRetry(sellerId, accessToken, (token) => fetchItemById(token, itemId));
+    const item = result.result;
+    accessToken = result.accessToken;
     return {
-      title: item?.title || null,
-      permalink: item?.permalink || null,
+      itemInfo: {
+        title: item?.title || null,
+        permalink: item?.permalink || null,
+      },
+      accessToken,
     };
   } catch (err) {
     console.warn(`[questions] nao consegui buscar detalhes do anuncio ${itemId}:`, err.status, err.body || err.message);
-    return null;
+    return { itemInfo: null, accessToken };
   }
 }
 
@@ -129,7 +134,7 @@ async function syncQuestion(sellerId, questionId) {
   const accessToken = await getValidAccessToken(sellerId);
   const question = await fetchQuestionById(accessToken, questionId);
   const info = extractQuestionInfo(question);
-  const itemInfo = await fetchItemInfoForQuestion(accessToken, info?.itemId);
+  const { itemInfo } = await fetchItemInfoForQuestion(sellerId, accessToken, info?.itemId);
   await upsertQuestion(sellerId, question, itemInfo);
 }
 
@@ -140,9 +145,12 @@ async function syncQuestion(sellerId, questionId) {
 // ficaria "presa" pra sempre na aba de pendentes aqui.
 async function reconcileQuestionsForAccount(sellerId) {
   // Ver o comentario extenso em reconcileAccount (sync.js) sobre o mesmo
-  // bug: pegar o token UMA VEZ so e reusar por uma funcao inteira que pode
-  // demorar (loop grande) arrisca ele vencer no meio do ciclo. Por isso
-  // "let" (nao "const") e uma reconfirmacao dentro do loop abaixo.
+  // bug (token capturado uma unica vez pode vencer no meio de uma
+  // reconciliacao longa, ou ser invalidado por outra reconciliacao rodando
+  // em paralelo) e sobre por que a correcao NAO reconfirma o token
+  // proativamente a cada item (isso ja causou uma regressao real — ver
+  // withTokenRetry em ml/tokens.js). Aqui cada chamada arriscada usa
+  // withTokenRetry, que so renova o token se a chamada realmente falhar.
   let accessToken = await getValidAccessToken(sellerId);
 
   const all = [];
@@ -165,12 +173,10 @@ async function reconcileQuestionsForAccount(sellerId) {
 
   let processadas = 0;
   for (const question of all) {
-    // Reconfirma o token a cada pergunta processada — ver comentario no
-    // topo desta funcao.
-    accessToken = await getValidAccessToken(sellerId);
     try {
       const info = extractQuestionInfo(question);
-      const itemInfo = await fetchItemInfoForQuestion(accessToken, info?.itemId);
+      const { itemInfo, accessToken: tokenAfterItem } = await fetchItemInfoForQuestion(sellerId, accessToken, info?.itemId);
+      accessToken = tokenAfterItem;
       await upsertQuestion(sellerId, question, itemInfo);
       processadas++;
     } catch (err) {
