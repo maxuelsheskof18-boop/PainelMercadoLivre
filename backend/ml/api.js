@@ -159,6 +159,50 @@ async function fetchItemById(accessToken, itemId) {
   return mlFetch(`/items/${itemId}`, accessToken);
 }
 
+// Busca varios ANUNCIOS de uma vez (endpoint "multiget", confirmado na
+// documentacao oficial: developers.mercadolivre.com.br/en_us/items-and-searches
+// — "GET /items?ids=id1,id2,...&attributes=...", no maximo 20 ids por
+// chamada, resposta em formato "verbo" onde cada posicao do array tem
+// {code, body} em vez do item direto). Usado pra buscar titulo/link de
+// MUITAS perguntas de uma vez so (varias perguntas costumam ser sobre o
+// mesmo anuncio) em vez de uma chamada por pergunta — ver
+// backend/questionsSync.js.
+const ITEMS_MULTIGET_CHUNK_SIZE = 20;
+
+async function fetchItemsByIds(accessToken, itemIds) {
+  const uniqueIds = [...new Set((itemIds || []).filter(Boolean).map(String))];
+  const byId = {};
+  for (let i = 0; i < uniqueIds.length; i += ITEMS_MULTIGET_CHUNK_SIZE) {
+    const chunk = uniqueIds.slice(i, i + ITEMS_MULTIGET_CHUNK_SIZE);
+    if (chunk.length === 0) continue;
+    const params = new URLSearchParams({ ids: chunk.join(","), attributes: "id,title,permalink,price" });
+    let entries;
+    try {
+      entries = await mlFetch(`/items?${params.toString()}`, accessToken);
+    } catch (err) {
+      // Token vencido no meio do lote: deixa subir pra quem chamou poder
+      // renovar e tentar de novo (ver withTokenRetry em ml/tokens.js) — sem
+      // isso, um 401 aqui so seria registrado como aviso e o lote inteiro
+      // (e os seguintes) falharia silenciosamente ate o proximo ciclo.
+      if (err?.status === 401) throw err;
+      console.warn("[items] falha ao buscar lote de anuncios:", err.status, err.body || err.message);
+      continue;
+    }
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      const item = entry?.body;
+      if (entry?.code === 200 && item?.id != null) {
+        byId[String(item.id)] = {
+          title: item.title || null,
+          permalink: item.permalink || null,
+          price: Number.isFinite(item.price) ? item.price : null,
+        };
+      }
+    }
+  }
+  return byId;
+}
+
 // Segue um link de recurso vindo de um webhook (ex: "/messages/packs/123/sellers/456").
 async function fetchResource(accessToken, resourcePath) {
   return mlFetch(resourcePath, accessToken);
@@ -277,6 +321,7 @@ module.exports = {
   fetchOrderById,
   fetchShipment,
   fetchItemById,
+  fetchItemsByIds,
   fetchResource,
   parsePackResource,
   sendMessage,
