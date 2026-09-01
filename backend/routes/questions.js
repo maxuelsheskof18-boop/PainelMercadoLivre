@@ -187,4 +187,84 @@ router.get("/debug/probe-questions", async (req, res) => {
   res.json(report);
 });
 
+// Rota TEMPORARIA de diagnostico (segunda etapa): o usuario relatou que,
+// mesmo depois da busca em lote dos anuncios (fetchItemsByIds em ml/api.js),
+// as perguntas continuam mostrando "Anúncio não identificado" — ou seja,
+// algo na busca do ANUNCIO em si (nao mais na busca da pergunta, que ja
+// esta funcionando) esta falhando silenciosamente (fetchItemsByIds engole
+// qualquer erro que nao seja 401 e so registra um aviso no log). Esta rota
+// pega item_id's REAIS de perguntas que ainda estao sem titulo no banco, e
+// faz a mesma chamada "na mao" (sem engolir erro nenhum), pra aparecer bem
+// claro o motivo exato (403? 404? campo errado?). Uso: abrir no navegador
+// (ja logado no painel) /api/debug/probe-item-batch
+router.get("/debug/probe-item-batch", async (req, res) => {
+  const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts");
+  const report = [];
+
+  for (const acc of accounts) {
+    const entry = { sellerId: acc.id, nickname: acc.nickname };
+    try {
+      const { rows: semTitulo } = await db.query(
+        `SELECT question_id, item_id FROM questions WHERE seller_id = $1 AND item_id IS NOT NULL AND item_title IS NULL LIMIT 5`,
+        [acc.id]
+      );
+      entry.perguntasSemTituloEncontradas = semTitulo.length;
+      if (semTitulo.length === 0) {
+        entry.observacao = "Nenhuma pergunta sem titulo pra essa conta agora (pode ja ter sido corrigida).";
+        report.push(entry);
+        continue;
+      }
+      const itemIds = [...new Set(semTitulo.map((r) => r.item_id))];
+      entry.itemIdsTentados = itemIds;
+
+      const accessToken = await getValidAccessToken(acc.id);
+
+      // 1) Chamada em LOTE, exatamente como o backfill automatico faz.
+      const multigetUrl = `https://api.mercadolibre.com/items?ids=${itemIds.join(
+        ","
+      )}&attributes=id,title,permalink,price&access_token=${accessToken}`;
+      const multigetRes = await fetch(multigetUrl, {
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+      });
+      const multigetText = await multigetRes.text();
+      entry.chamadaEmLote = {
+        status: multigetRes.status,
+        ok: multigetRes.ok,
+        corpo: (() => {
+          try {
+            return JSON.parse(multigetText);
+          } catch {
+            return multigetText;
+          }
+        })(),
+      };
+
+      // 2) Chamada de UM item so (endpoint mais simples/antigo), pra ver se
+      // o problema e so no formato "em lote" ou se e mais geral.
+      const singleUrl = `https://api.mercadolibre.com/items/${itemIds[0]}?access_token=${accessToken}`;
+      const singleRes = await fetch(singleUrl, {
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+      });
+      const singleText = await singleRes.text();
+      entry.chamadaUnica = {
+        itemId: itemIds[0],
+        status: singleRes.status,
+        ok: singleRes.ok,
+        corpo: (() => {
+          try {
+            return JSON.parse(singleText);
+          } catch {
+            return singleText;
+          }
+        })(),
+      };
+    } catch (err) {
+      entry.erro = { status: err.status, body: err.body || err.message };
+    }
+    report.push(entry);
+  }
+
+  res.json(report);
+});
+
 module.exports = router;
