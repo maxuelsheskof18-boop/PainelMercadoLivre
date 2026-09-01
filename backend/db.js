@@ -251,6 +251,11 @@ async function init() {
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS order_quantity INTEGER;
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS resolved_by_operator_at TIMESTAMPTZ;
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS resolved_by_operator TEXT;
+    -- Preco do anuncio associado a pergunta — usado so pra pre-preencher o
+    -- "valor assegurado" da calculadora de frete do Melhor Envio na aba de
+    -- Perguntas (pedido do usuario), ja que uma pergunta pre-venda nao tem
+    -- pedido/valor de venda como mensagens e reclamacoes tem.
+    ALTER TABLE questions ADD COLUMN IF NOT EXISTS item_price NUMERIC(12,2);
   `);
 }
 

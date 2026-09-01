@@ -14,7 +14,7 @@
 // "questions" em db.js).
 const db = require("./db");
 const { getValidAccessToken, withTokenRetry } = require("./ml/tokens");
-const { fetchItemById } = require("./ml/api");
+const { fetchItemById, fetchItemsByIds } = require("./ml/api");
 const { fetchQuestions, fetchQuestionById } = require("./ml/questionsApi");
 
 const QUESTIONS_PAGE_SIZE = 50;
@@ -64,6 +64,7 @@ async function fetchItemInfoForQuestion(sellerId, accessToken, itemId) {
       itemInfo: {
         title: item?.title || null,
         permalink: item?.permalink || null,
+        price: Number.isFinite(item?.price) ? item.price : null,
       },
       accessToken,
     };
@@ -93,12 +94,13 @@ async function upsertQuestion(sellerId, question, itemInfo) {
 
   await db.query(
     `INSERT INTO questions
-       (question_id, seller_id, item_id, item_title, item_permalink, buyer_id, buyer_nickname, question_text, question_date, ml_status, local_status, answer_text, answer_date, operator_name, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
+       (question_id, seller_id, item_id, item_title, item_permalink, item_price, buyer_id, buyer_nickname, question_text, question_date, ml_status, local_status, answer_text, answer_date, operator_name, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
      ON CONFLICT (question_id) DO UPDATE SET
        item_id = COALESCE(EXCLUDED.item_id, questions.item_id),
        item_title = COALESCE(EXCLUDED.item_title, questions.item_title),
        item_permalink = COALESCE(EXCLUDED.item_permalink, questions.item_permalink),
+       item_price = COALESCE(EXCLUDED.item_price, questions.item_price),
        buyer_id = COALESCE(EXCLUDED.buyer_id, questions.buyer_id),
        buyer_nickname = COALESCE(EXCLUDED.buyer_nickname, questions.buyer_nickname),
        question_text = COALESCE(EXCLUDED.question_text, questions.question_text),
@@ -115,6 +117,7 @@ async function upsertQuestion(sellerId, question, itemInfo) {
       info.itemId,
       itemInfo?.title ?? null,
       itemInfo?.permalink ?? null,
+      itemInfo?.price ?? null,
       info.buyerId,
       info.buyerNickname,
       info.questionText,
@@ -126,6 +129,60 @@ async function upsertQuestion(sellerId, question, itemInfo) {
       operatorName,
     ]
   );
+}
+
+// Busca (em lote, poucas chamadas) titulo/link de varios anuncios de uma
+// vez — ver fetchItemsByIds em ml/api.js. Usado pela reconciliacao pra
+// resolver todas as perguntas de um ciclo (e o "backfill" abaixo) sem
+// precisar de uma chamada de rede por pergunta, o que e importante porque
+// varias perguntas costumam ser sobre o mesmo anuncio, e uma conta pode ter
+// centenas de perguntas pendentes de uma vez.
+async function fetchItemsInfoMap(sellerId, accessToken, itemIds) {
+  const ids = [...new Set((itemIds || []).filter(Boolean).map(String))];
+  if (ids.length === 0) return { itemsById: {}, accessToken };
+  try {
+    const result = await withTokenRetry(sellerId, accessToken, (token) => fetchItemsByIds(token, ids));
+    return { itemsById: result.result, accessToken: result.accessToken };
+  } catch (err) {
+    console.warn(`[questions] falha ao buscar lote de anuncios da conta ${sellerId}:`, err.status, err.body || err.message);
+    return { itemsById: {}, accessToken };
+  }
+}
+
+// Corrige perguntas que ja estao gravadas no banco mas ficaram com
+// item_title/item_permalink em branco ("Anúncio não identificado" no
+// painel) — seja porque na epoca em que foram gravadas os endpoints de
+// pergunta ainda estavam errados (ver comentario no topo de
+// ml/questionsApi.js), seja porque a pergunta estava fora das paginas mais
+// recentes buscadas neste ciclo (ver QUESTIONS_MAX_PAGES abaixo). Roda pra
+// TODAS as perguntas da conta (nao so as pendentes) porque uma pergunta ja
+// respondida tambem mostra o anuncio na tela.
+async function backfillMissingItemTitles(sellerId, accessToken) {
+  const { rows } = await db.query(
+    `SELECT DISTINCT item_id FROM questions WHERE seller_id = $1 AND item_id IS NOT NULL AND item_title IS NULL`,
+    [sellerId]
+  );
+  if (rows.length === 0) return accessToken;
+
+  const itemIds = rows.map((r) => r.item_id);
+  const { itemsById, accessToken: newToken } = await fetchItemsInfoMap(sellerId, accessToken, itemIds);
+  accessToken = newToken;
+
+  let corrigidas = 0;
+  for (const itemId of Object.keys(itemsById)) {
+    const info = itemsById[itemId];
+    if (!info?.title) continue;
+    const { rowCount } = await db.query(
+      `UPDATE questions SET item_title = $1, item_permalink = $2, item_price = COALESCE(item_price, $3), updated_at = now()
+       WHERE seller_id = $4 AND item_id = $5 AND item_title IS NULL`,
+      [info.title, info.permalink, info.price ?? null, sellerId, itemId]
+    );
+    corrigidas += rowCount;
+  }
+  if (corrigidas > 0) {
+    console.log(`[questions] conta ${sellerId}: ${corrigidas} pergunta(s) tiveram o anuncio ("Anúncio não identificado") corrigido via backfill.`);
+  }
+  return accessToken;
 }
 
 // Sincroniza UMA pergunta especifica pelo id — usado tanto pelo webhook
@@ -171,12 +228,18 @@ async function reconcileQuestionsForAccount(sellerId) {
     if (results.length === 0 || offset >= total) break;
   }
 
+  // Busca o titulo/link de todos os anuncios envolvidos nesse ciclo de uma
+  // vez so (em lote — ver fetchItemsInfoMap acima), em vez de uma chamada de
+  // rede por pergunta: e comum varias perguntas serem sobre o mesmo anuncio.
+  const itemIdsDoCiclo = all.map((q) => (q.item_id != null ? String(q.item_id) : null));
+  const { itemsById, accessToken: tokenAfterItems } = await fetchItemsInfoMap(sellerId, accessToken, itemIdsDoCiclo);
+  accessToken = tokenAfterItems;
+
   let processadas = 0;
   for (const question of all) {
     try {
-      const info = extractQuestionInfo(question);
-      const { itemInfo, accessToken: tokenAfterItem } = await fetchItemInfoForQuestion(sellerId, accessToken, info?.itemId);
-      accessToken = tokenAfterItem;
+      const itemId = question.item_id != null ? String(question.item_id) : null;
+      const itemInfo = itemId ? itemsById[itemId] || null : null;
       await upsertQuestion(sellerId, question, itemInfo);
       processadas++;
     } catch (err) {
@@ -204,6 +267,13 @@ async function reconcileQuestionsForAccount(sellerId) {
     }
   }
 
+  // Corrige qualquer pergunta (de qualquer status, nao so pendente) que
+  // ainda esteja com o anuncio em branco — cobre tanto as que ficaram de
+  // fora das paginas buscadas acima (contas com muitas perguntas pendentes
+  // ao mesmo tempo) quanto as que foram gravadas antes da correcao dos
+  // endpoints (ver comentario no topo de ml/questionsApi.js).
+  await backfillMissingItemTitles(sellerId, accessToken);
+
   console.log(
     `[questions] conta ${sellerId}: ${all.length} pergunta(s) sem resposta encontrada(s) (${processadas} sincronizada(s)), ${trackedPending.length} pendente(s) rastreada(s) reverificada(s) (${atualizadas} mudaram de status agora).`
   );
@@ -227,4 +297,5 @@ module.exports = {
   extractQuestionInfo,
   upsertQuestion,
   computeLocalStatus,
+  backfillMissingItemTitles,
 };
