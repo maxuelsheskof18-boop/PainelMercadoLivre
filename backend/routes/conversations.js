@@ -532,6 +532,37 @@ router.get("/debug/probe-messages", async (req, res) => {
   res.json(report);
 });
 
+// Rota TEMPORARIA de diagnostico: chama fetchUnreadMessagePacks (a busca
+// dedicada por mensagens NAO LIDAS, ver comentario dela em ml/api.js) pra
+// cada conta e devolve a lista crua devolvida pelo Mercado Livre — serve pra
+// confirmar se um pedido especifico (que o vendedor ve com mensagem nao lida
+// no proprio painel de Vendas do Mercado Livre) realmente aparece nessa
+// busca ou nao. Uso: abrir no navegador (ja logado)
+// /api/debug/probe-unread?packId=SEU_PACK_OU_PEDIDO
+router.get("/debug/probe-unread", async (req, res) => {
+  const packIdProcurado = req.query.packId ? String(req.query.packId) : null;
+  const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts");
+  const report = [];
+
+  for (const acc of accounts) {
+    const entry = { sellerId: acc.id, nickname: acc.nickname };
+    try {
+      const accessToken = await getValidAccessToken(acc.id);
+      const unreadPacks = await fetchUnreadMessagePacks(accessToken, acc.id);
+      entry.totalPacksComMensagemNaoLida = unreadPacks.length;
+      entry.amostra = unreadPacks.slice(0, 10);
+      if (packIdProcurado) {
+        entry.pedidoProcuradoEncontrado = unreadPacks.some((p) => String(p.packId) === packIdProcurado);
+      }
+    } catch (err) {
+      entry.erro = { status: err.status, body: err.body || err.message };
+    }
+    report.push(entry);
+  }
+
+  res.json(report);
+});
+
 // Rota TEMPORARIA de diagnostico: pega ate 5 conversas pendentes reais que
 // ja estao no banco e busca o envio (shipment) de cada uma, pra descobrir
 // qual campo/valor identifica um envio do tipo "a combinar com o
