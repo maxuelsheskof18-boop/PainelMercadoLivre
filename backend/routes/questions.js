@@ -258,6 +258,34 @@ router.get("/debug/probe-item-batch", async (req, res) => {
           }
         })(),
       };
+
+      // 3) Mesma chamada de UM item, mas SEM NENHUM token/autenticacao — o
+      // detalhe de um anuncio publico e documentado como leitura publica
+      // (qualquer pessoa, logada ou nao, consegue ver os dados de um
+      // anuncio ativo no site). O erro visto acima ("blocked_by":
+      // "PolicyAgent", "PA_UNAUTHORIZED_RESULT_FROM_POLICIES") e um bloqueio
+      // de seguranca/policy do Mercado Livre que, por relatos de outros
+      // desenvolvedores, pode disparar justamente por causa da autenticacao
+      // (ex: aplicativo sem uma permissao especifica pra API de Itens,
+      // separada do escopo basico de leitura/escrita) — nao por falta dela.
+      // Se essa chamada sem token funcionar, confirma que o jeito de
+      // contornar e parar de mandar token nessa chamada especifica.
+      const anonRes = await fetch(`https://api.mercadolibre.com/items/${itemIds[0]}`, {
+        headers: { Accept: "application/json" },
+      });
+      const anonText = await anonRes.text();
+      entry.chamadaSemToken = {
+        itemId: itemIds[0],
+        status: anonRes.status,
+        ok: anonRes.ok,
+        corpo: (() => {
+          try {
+            return JSON.parse(anonText);
+          } catch {
+            return anonText;
+          }
+        })(),
+      };
     } catch (err) {
       entry.erro = { status: err.status, body: err.body || err.message };
     }
