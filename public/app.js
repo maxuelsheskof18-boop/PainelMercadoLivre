@@ -941,7 +941,21 @@ function renderQuestionThreadInfo(question) {
   claimInfoCard.classList.add("hidden");
   evidenceBox.classList.add("hidden");
   quickTemplates.classList.add("hidden");
-  freightBox.classList.add("hidden");
+
+  // Calculadora de frete tambem aqui (pedido do usuario: varias perguntas
+  // sao literalmente "quanto custa o frete pro meu CEP?") — so aparece se o
+  // Melhor Envio ja foi conectado, igual nas outras duas telas. Como uma
+  // pergunta pre-venda nao tem pedido nem CEP de destino conhecido, o CEP
+  // sempre comeca vazio (digitado na hora) e o "valor assegurado" ja vem
+  // preenchido com o preco do anuncio, quando conhecido (ver item_price em
+  // questionsSync.js) — o vendedor ainda pode trocar antes de calcular.
+  freightBox.classList.toggle("hidden", !state.melhorEnvio.connected);
+  freightForm.classList.add("hidden");
+  freightToggleArrow.textContent = "▾";
+  freightResults.innerHTML = "";
+  freightCep.value = "";
+  const itemPriceValue = Number(question.item_price);
+  freightInsurance.value = Number.isFinite(itemPriceValue) && itemPriceValue > 0 ? itemPriceValue.toFixed(2) : "20";
 
   // Uma pergunta nao tem "resolver depois" — uma vez respondida, acabou (o
   // Mercado Livre nao permite mais nenhuma interacao nela). Por isso o
