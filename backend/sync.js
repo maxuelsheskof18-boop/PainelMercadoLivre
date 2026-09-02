@@ -762,7 +762,7 @@ async function reconcileAccount(sellerId) {
     }
   } catch (err) {
     console.warn(
-      `[reconcile] falha ao buscar mensagens não lidas (marketplace/messages/unread) da conta ${sellerId}:`,
+      `[reconcile] falha ao buscar mensagens não lidas (messages/pending_read) da conta ${sellerId}:`,
       err.status,
       err.body || err.message
     );
