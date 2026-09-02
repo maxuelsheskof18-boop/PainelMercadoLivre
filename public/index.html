@@ -126,6 +126,11 @@
           Pendentes<span id="tab-count-questions-pending" class="tab-count hidden">0</span>
         </button>
         <button class="tab" data-question-status="answered">Respondidas</button>
+        <!-- Perguntas marcadas manualmente como resolvidas (ex: nao dava
+             pra responder porque o anuncio foi pausado/removido) caem
+             aqui — senao ficariam sem nenhum lugar pra aparecer depois de
+             saírem de Pendentes. -->
+        <button class="tab" data-question-status="closed">Fechadas</button>
       </div>
       <div class="filter-bar">
         <input
@@ -180,26 +185,32 @@
           <button type="button" id="claim-resolve-btn" class="btn btn-ghost btn-sm hidden">✓ Marcar como resolvido</button>
         </div>
         <div id="thread-order-card" class="order-card hidden">
-          <span class="order-card-icon">📦</span>
-          <div class="order-card-info">
-            <strong id="order-card-product">-</strong>
-            <span id="order-card-meta" class="muted small"></span>
-          </div>
-          <div class="order-card-actions">
+          <div class="order-card-row">
+            <span class="order-card-icon">📦</span>
+            <div class="order-card-info">
+              <strong id="order-card-product">-</strong>
+              <span id="order-card-meta" class="muted small"></span>
+            </div>
             <button type="button" id="order-card-copy-btn" class="order-card-copy-btn hidden" title="Copiar número do pedido">📋</button>
-            <a id="order-card-link" href="#" target="_blank" rel="noopener" class="order-card-link">Ver no Mercado Livre ↗</a>
           </div>
+          <!-- Link numa linha propria, separada da linha do titulo/botao de
+               copiar (pedido do usuario: "em um monitor usando no modo
+               retrato nao aparece o link" — numa janela estreita, o texto
+               do anuncio/pedido podia empurrar esse link pra fora do espaco
+               visivel quando ele dividia a mesma linha; numa linha só dele,
+               isso nunca mais acontece, em qualquer largura de tela). -->
+          <a id="order-card-link" href="#" target="_blank" rel="noopener" class="order-card-link">Ver no Mercado Livre ↗</a>
         </div>
         <div id="claim-info-card" class="order-card hidden">
-          <span class="order-card-icon">⚠️</span>
-          <div class="order-card-info">
-            <strong id="claim-info-title">-</strong>
-            <span id="claim-info-meta" class="muted small"></span>
-          </div>
-          <div class="order-card-actions">
+          <div class="order-card-row">
+            <span class="order-card-icon">⚠️</span>
+            <div class="order-card-info">
+              <strong id="claim-info-title">-</strong>
+              <span id="claim-info-meta" class="muted small"></span>
+            </div>
             <button type="button" id="claim-info-copy-btn" class="order-card-copy-btn hidden" title="Copiar número do pedido">📋</button>
-            <a id="claim-info-link" href="#" target="_blank" rel="noopener" class="order-card-link hidden">Ver no Mercado Livre ↗</a>
           </div>
+          <a id="claim-info-link" href="#" target="_blank" rel="noopener" class="order-card-link hidden">Ver no Mercado Livre ↗</a>
         </div>
         <div id="evidence-box" class="freight-box hidden">
           <button type="button" id="evidence-toggle" class="freight-toggle">
@@ -251,6 +262,12 @@
               <label>Comprimento (cm)<input id="freight-length" type="number" min="1" value="16" /></label>
             </div>
             <button type="button" id="freight-calc-btn" class="btn btn-primary btn-sm">Calcular frete</button>
+            <!-- So aparece na aba de Perguntas (pedido do usuario) — deixa
+                 reescrever o texto que preenche a resposta ao clicar num
+                 valor de frete calculado, ja que o modelo padrao das
+                 outras telas (mensagens/reclamações) fala de pedido/
+                 pagamento, o que nao existe ainda numa pergunta pre-venda. -->
+            <button type="button" id="freight-template-edit-btn" class="btn btn-ghost btn-sm hidden">✎ Editar modelo da resposta</button>
             <div id="freight-results" class="freight-results"></div>
           </div>
         </div>

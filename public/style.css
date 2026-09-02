@@ -804,15 +804,26 @@ body {
 
 /* ---------- Card de detalhe do pedido (dentro da conversa) ---------- */
 .order-card {
+  /* Coluna, nao linha: a linha de cima (icone + titulo + botao de copiar)
+     e o link "Ver no Mercado Livre" ficam em linhas SEPARADAS de proposito
+     (pedido do usuario: "em um monitor usando no modo retrato nao aparece
+     o link") — antes, o link dividia a mesma linha horizontal com o
+     titulo/numero do anuncio, e numa janela estreita um texto sem espaco
+     pra quebrar (tipo "MLB7247273110") podia empurrar o link pra fora do
+     espaco visivel. Numa linha só dele, o link nunca mais depende de sobrar
+     espaco horizontal ao lado de outra coisa — sempre visivel, em qualquer
+     largura de tela.
+  */
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
   margin: 12px 20px 0;
   padding: 12px 14px;
   background: var(--accent-soft);
   border: 1px solid #dbe7ff;
   border-radius: var(--radius-md);
 }
+.order-card-row { display: flex; align-items: center; gap: 12px; }
 .order-card-icon { font-size: 21px; flex-shrink: 0; line-height: 1; }
 .order-card-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .order-card-info strong {
@@ -821,16 +832,15 @@ body {
   overflow-wrap: break-word;
 }
 .order-card-link {
+  align-self: flex-start;
   font-size: 12px;
   font-weight: 700;
   color: var(--accent-dark);
   text-decoration: none;
-  white-space: nowrap;
-  flex-shrink: 0;
 }
 .order-card-link:hover { text-decoration: underline; }
-.order-card-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .order-card-copy-btn {
+  flex-shrink: 0;
   font-size: 13px;
   color: var(--text-soft);
   background: var(--card);

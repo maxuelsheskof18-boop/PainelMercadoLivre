@@ -87,6 +87,7 @@ const freightLength = document.getElementById("freight-length");
 const freightInsurance = document.getElementById("freight-insurance");
 const freightCalcBtn = document.getElementById("freight-calc-btn");
 const freightResults = document.getElementById("freight-results");
+const freightTemplateEditBtn = document.getElementById("freight-template-edit-btn");
 
 const quickTemplates = document.getElementById("quick-templates");
 const templateCombinarBtn = document.getElementById("template-combinar-btn");
@@ -712,6 +713,7 @@ function renderClaimThreadInfo(claim) {
   threadShippingTag.classList.toggle("hidden", !claim.shipping_type);
   quickTemplates.classList.add("hidden");
   freightBox.classList.add("hidden");
+  freightTemplateEditBtn.classList.add("hidden");
   orderCard.classList.add("hidden");
 
   threadClaimStageTag.textContent = claimStageLabel(claim);
@@ -732,6 +734,7 @@ function renderClaimThreadInfo(claim) {
   // banner.
   claimResolveBtn.dataset.claimId = claim.claim_id;
   delete claimResolveBtn.dataset.packId;
+  delete claimResolveBtn.dataset.questionId;
   if (claim.local_status === "closed") {
     if (claim.resolved_by_operator_at) {
       claimResolveInfo.textContent = `✓ Marcada como resolvida manualmente${
@@ -886,7 +889,13 @@ async function loadQuestions() {
   const items = await res.json();
 
   if (items.length === 0) {
-    const label = state.onlyPending ? "a responder" : state.questionStatus === "answered" ? "respondida" : "pendente";
+    const label = state.onlyPending
+      ? "a responder"
+      : state.questionStatus === "closed"
+      ? "fechada"
+      : state.questionStatus === "answered"
+      ? "respondida"
+      : "pendente";
     listEl.innerHTML = `<p class="muted empty-msg">Nenhuma pergunta ${label}.</p>`;
     return;
   }
@@ -962,14 +971,43 @@ function renderQuestionThreadInfo(question) {
   freightToggleArrow.textContent = "▾";
   freightResults.innerHTML = "";
   freightCep.value = "";
+  // So aqui (Perguntas) o modelo da resposta e editavel — ver
+  // freightTemplateEditBtn/buildFreightMessage (pedido do usuario).
+  freightTemplateEditBtn.classList.toggle("hidden", !state.melhorEnvio.connected);
   const itemPriceValue = Number(question.item_price);
   freightInsurance.value = Number.isFinite(itemPriceValue) && itemPriceValue > 0 ? itemPriceValue.toFixed(2) : "20";
 
-  // Uma pergunta nao tem "resolver depois" — uma vez respondida, acabou (o
-  // Mercado Livre nao permite mais nenhuma interacao nela). Por isso o
-  // banner de "marcar como resolvido" (das outras duas telas) nunca aparece
-  // aqui.
-  claimResolveBanner.classList.add("hidden");
+  // "Marcar como resolvido" tambem pra perguntas (pedido do usuario) —
+  // cobre o caso de uma pergunta que o Mercado Livre nunca vai deixar
+  // responder de verdade (ex: erro real visto pelo vendedor "Item must be
+  // active", quando o anuncio foi pausado/removido depois da pergunta):
+  // sem isso, ela ficaria pendente pra sempre, sem nenhum jeito de tirar da
+  // aba de pendentes. Mesmo padrao visual das outras duas telas (ver
+  // renderClaimThreadInfo/renderThreadInfo). O alvo exato (dataset.questionId)
+  // e reajustado logo depois, em loadQuestionMessages, pra apontar pra
+  // pergunta pendente certa quando o comprador tiver mais de uma agrupada
+  // aqui — aqui so decide SE o banner aparece, a partir do status da
+  // pergunta representante desta entrada.
+  claimResolveBtn.dataset.questionId = question.question_id;
+  delete claimResolveBtn.dataset.claimId;
+  delete claimResolveBtn.dataset.packId;
+  if (question.local_status === "closed") {
+    if (question.resolved_by_operator_at) {
+      claimResolveInfo.textContent = `✓ Marcada como resolvida manualmente${
+        question.resolved_by_operator ? ` por ${question.resolved_by_operator}` : ""
+      } em ${fmtDate(question.resolved_by_operator_at)}.`;
+      claimResolveBanner.classList.remove("hidden");
+      claimResolveBtn.classList.add("hidden");
+    } else {
+      // Fechada pelo proprio Mercado Livre (ex: prazo esgotado sem
+      // resposta, nao por acao manual aqui) — nada a mostrar.
+      claimResolveBanner.classList.add("hidden");
+    }
+  } else {
+    claimResolveInfo.textContent = "Não deu pra responder (ex: anúncio pausado ou removido)?";
+    claimResolveBanner.classList.remove("hidden");
+    claimResolveBtn.classList.remove("hidden");
+  }
 
   // Sem anexo em resposta de pergunta (a API do Mercado Livre nao documenta
   // suporte a isso, diferente de mensagens/reclamacoes).
@@ -1053,10 +1091,12 @@ async function loadQuestionMessages(questionId) {
   if (data.question) renderQuestionThreadInfo(data.question);
   renderQuestionMessages(data.messages || []);
   // Se esse comprador tiver mais de uma pergunta pendente juntas nessa
-  // mesma tela, responde a mais recente delas (a API do Mercado Livre so
-  // aceita responder uma pergunta por vez) — ver replyTargetQuestionId no
-  // backend (GET /questions/:questionId).
-  replyForm.dataset.questionId = data.replyTargetQuestionId || questionId;
+  // mesma tela, responde/resolve a mais recente delas (a API do Mercado
+  // Livre so aceita responder uma pergunta por vez) — ver
+  // replyTargetQuestionId no backend (GET /questions/:questionId).
+  const targetQuestionId = data.replyTargetQuestionId || questionId;
+  replyForm.dataset.questionId = targetQuestionId;
+  claimResolveBtn.dataset.questionId = targetQuestionId;
   return true;
 }
 
@@ -1122,26 +1162,40 @@ claimInfoCopyBtn.addEventListener("click", () => {
 });
 
 // "Marcar como resolvido" (pedido do usuario, estendido tambem pras
-// mensagens normais: "quero em tudo") — pra reclamacoes/conversas antigas
-// que ja foram tratadas por fora do painel e que, por isso, nunca vao
+// mensagens normais e agora pras perguntas: "quero em tudo") — pra
+// reclamacoes/conversas/perguntas antigas que ja foram tratadas por fora do
+// painel (ou, no caso de pergunta, que nunca vao poder ser respondidas de
+// verdade — ex: "Item must be active") e que, por isso, nunca vao
 // fechar/mudar de status sozinhas. Confirma antes (acao nao tem volta facil
 // pela UI) e manda pro endpoint certo dependendo do modo da thread aberta
-// (ver POST /claims/:claimId/mark-resolved em routes/claims.js e
-// POST /conversations/:packId/mark-resolved em routes/conversations.js).
+// (ver POST /claims/:claimId/mark-resolved em routes/claims.js, POST
+// /conversations/:packId/mark-resolved em routes/conversations.js e POST
+// /questions/:questionId/mark-resolved em routes/questions.js).
 claimResolveBtn.addEventListener("click", async () => {
-  const isClaim = replyForm.dataset.mode === "claim";
-  const id = isClaim ? claimResolveBtn.dataset.claimId : claimResolveBtn.dataset.packId;
+  const mode = replyForm.dataset.mode; // "claim" | "conversation" | "question"
+  const id =
+    mode === "claim"
+      ? claimResolveBtn.dataset.claimId
+      : mode === "question"
+      ? claimResolveBtn.dataset.questionId
+      : claimResolveBtn.dataset.packId;
   if (!id) return;
-  const confirmMsg = isClaim
-    ? "Marcar esta reclamação como resolvida? Ela vai sair de Pendentes/Respondidas e ir para Fechadas."
-    : "Marcar esta conversa como resolvida? Ela vai sair de Pendentes/Respondidas/Entregues.";
+  const confirmMsg =
+    mode === "claim"
+      ? "Marcar esta reclamação como resolvida? Ela vai sair de Pendentes/Respondidas e ir para Fechadas."
+      : mode === "question"
+      ? "Marcar esta pergunta como resolvida? Ela vai sair de Pendentes/Respondidas e ir para Fechadas."
+      : "Marcar esta conversa como resolvida? Ela vai sair de Pendentes/Respondidas/Entregues.";
   if (!confirm(confirmMsg)) return;
 
   claimResolveBtn.disabled = true;
   try {
-    const endpoint = isClaim
-      ? `/api/claims/${encodeURIComponent(id)}/mark-resolved`
-      : `/api/conversations/${encodeURIComponent(id)}/mark-resolved`;
+    const endpoint =
+      mode === "claim"
+        ? `/api/claims/${encodeURIComponent(id)}/mark-resolved`
+        : mode === "question"
+        ? `/api/questions/${encodeURIComponent(id)}/mark-resolved`
+        : `/api/conversations/${encodeURIComponent(id)}/mark-resolved`;
     const res = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1153,9 +1207,16 @@ claimResolveBtn.addEventListener("click", async () => {
       alert(data.error || "Falha ao marcar como resolvida.");
       return;
     }
-    if (isClaim) {
+    if (mode === "claim") {
       if (id === state.selectedClaimId) await loadClaimMessages(id);
       await Promise.all([loadClaims(), loadPendingCount()]);
+    } else if (mode === "question") {
+      // Compara com a pergunta REPRESENTANTE aberta na tela (state.selectedQuestionId),
+      // nao com "id" (que pode ser uma pergunta diferente dentro do mesmo
+      // grupo — ver replyTargetQuestionId) — e a representante que decide
+      // se a thread aberta precisa recarregar.
+      if (state.selectedQuestionId) await loadQuestionMessages(state.selectedQuestionId);
+      await Promise.all([loadQuestions(), loadPendingCount()]);
     } else {
       if (id === state.selectedPackId) await loadThreadMessages(id);
       await Promise.all([loadConversations(), loadPendingCount()]);
@@ -1329,6 +1390,7 @@ function renderThreadInfo(conv) {
   // combinar-entrega entregue) nem mostra o banner.
   claimResolveBtn.dataset.packId = conv.pack_id;
   delete claimResolveBtn.dataset.claimId;
+  delete claimResolveBtn.dataset.questionId;
   if (conv.status === "resolved_by_operator") {
     claimResolveInfo.textContent = `✓ Marcada como resolvida manualmente${
       conv.resolved_by_operator ? ` por ${conv.resolved_by_operator}` : ""
@@ -1386,6 +1448,10 @@ function renderThreadInfo(conv) {
   freightForm.classList.add("hidden");
   freightToggleArrow.textContent = "▾";
   freightResults.innerHTML = "";
+  // O modelo editavel de resposta (ver freightTemplateEditBtn) so faz
+  // sentido na aba de Perguntas — aqui (mensagens) usa sempre o modelo de
+  // pos-venda padrao, sem opcao de editar.
+  freightTemplateEditBtn.classList.add("hidden");
   freightCep.value = "";
   const orderTotalValue = Number(conv.order_total);
   freightInsurance.value = Number.isFinite(orderTotalValue) && orderTotalValue > 0 ? orderTotalValue.toFixed(2) : "20";
@@ -1571,16 +1637,68 @@ function pluralDias(n) {
 }
 
 // Mensagem padrao que o vendedor usa pra avisar o comprador do frete
-// combinado. Os campos "Prazo de entrega" e "Valor" vem da cotacao clicada
-// (com a margem ja aplicada no valor).
-function buildFreightMessage({ deliveryTime, finalPrice }) {
-  const prazo = pluralDias(deliveryTime);
+// combinado, nas telas de MENSAGENS/RECLAMACOES (pos-venda: ja existe um
+// pedido, so falta o comprador pagar o frete combinado). Os campos "Prazo
+// de entrega" e "Valor" vem da cotacao clicada (com a margem ja aplicada no
+// valor).
+function buildFreightMessagePosVenda({ prazo, valor }) {
   return `Calculamos o frete para o seu endereço:
 - Prazo de entrega: ${prazo}
-- Valor: ${fmtMoney(finalPrice)}
+- Valor: ${valor}
 Para fazer o pagamento verifique as opções disponíveis nos detalhes da compra ou confira o atalho nas mensagens do chat (Se disponível)
 ATENÇÃO: Esperamos sua confirmação de pagamento`;
 }
+
+// Modelo da mensagem usada SO na aba de Perguntas (pedido do usuario:
+// "so na tela das perguntas gostaria de altera a resposta padrao") —
+// separado do modelo de mensagens/reclamacoes porque uma pergunta e
+// PRE-venda (ainda nao existe pedido nem pagamento a confirmar, entao o
+// texto de pos-venda acima nao faz sentido aqui). Editavel pelo proprio
+// vendedor (botao "✎ editar modelo" no card de frete), guardado no
+// navegador (localStorage) — assim cada um pode escrever do jeito que
+// preferir, sem precisar pedir alteracao no codigo. "{prazo}" e "{valor}"
+// sao trocados pelos valores calculados na hora de usar.
+const FREIGHT_TEMPLATE_QUESTION_KEY = "ml-painel-freight-template-question";
+const DEFAULT_FREIGHT_TEMPLATE_QUESTION =
+  "O frete para o seu CEP fica em {valor}, com prazo de entrega de {prazo}. Qualquer dúvida, estou à disposição!";
+
+function getFreightTemplateQuestion() {
+  try {
+    return localStorage.getItem(FREIGHT_TEMPLATE_QUESTION_KEY) || DEFAULT_FREIGHT_TEMPLATE_QUESTION;
+  } catch {
+    // sem localStorage: so usa o padrao, sem quebrar nada.
+    return DEFAULT_FREIGHT_TEMPLATE_QUESTION;
+  }
+}
+
+// Monta a mensagem final a partir da cotacao clicada, usando o modelo certo
+// pra tela aberta no momento (Perguntas usa o modelo editavel acima;
+// Mensagens/Reclamações usam o modelo de pos-venda, sem alteracao).
+function buildFreightMessage({ deliveryTime, finalPrice }) {
+  const prazo = pluralDias(deliveryTime);
+  const valor = fmtMoney(finalPrice);
+  if (replyForm.dataset.mode === "question") {
+    return getFreightTemplateQuestion().replaceAll("{prazo}", prazo).replaceAll("{valor}", valor);
+  }
+  return buildFreightMessagePosVenda({ prazo, valor });
+}
+
+// Botao "✎ editar modelo" (so aparece na aba de Perguntas — ver
+// toggle no fim de renderQuestionThreadInfo) — deixa o vendedor reescrever
+// o texto que e inserido ao clicar numa cotacao de frete.
+freightTemplateEditBtn.addEventListener("click", () => {
+  const atual = getFreightTemplateQuestion();
+  const novo = prompt(
+    'Como o painel deve preencher a resposta ao clicar num valor de frete (nas Perguntas)?\n\nUse "{valor}" e "{prazo}" onde quiser que entrem o preço e o prazo calculados.',
+    atual
+  );
+  if (novo === null || !novo.trim()) return; // cancelou ou deixou vazio
+  try {
+    localStorage.setItem(FREIGHT_TEMPLATE_QUESTION_KEY, novo);
+  } catch {
+    // sem localStorage: so nao persiste entre sessoes, sem quebrar nada.
+  }
+});
 
 // Clicar numa cotacao ja calculada preenche a caixa de resposta com a
 // mensagem padrao (com a margem escalonada ja aplicada) e fecha a
@@ -1606,6 +1724,46 @@ freightResults.addEventListener("click", (e) => {
   freightForm.classList.add("hidden");
   freightToggleArrow.textContent = "▾";
 });
+
+// Pacote padrao (peso/altura/largura/comprimento) pra calculadora de frete
+// (pedido do usuario: "colocar peso e medidas cadastrado de uma forma que
+// so clicar ele se auto preenche sozinho") — assim que o vendedor digita
+// as medidas do pacote que ele mais usa UMA vez, elas ficam salvas no
+// navegador (localStorage) e continuam pre-preenchidas sozinhas em toda
+// conversa/pergunta seguinte, inclusive depois de fechar e abrir o painel
+// de novo (antes, eram sempre os mesmos 4 valores fixos no HTML, que so
+// duravam emquanto a pagina nao era recarregada).
+const FREIGHT_DEFAULTS_KEY = "ml-painel-freight-defaults";
+function loadFreightDefaults() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FREIGHT_DEFAULTS_KEY) || "null");
+    if (!saved) return;
+    if (saved.weight) freightWeight.value = saved.weight;
+    if (saved.height) freightHeight.value = saved.height;
+    if (saved.width) freightWidth.value = saved.width;
+    if (saved.length) freightLength.value = saved.length;
+  } catch {
+    // sem localStorage: so continua com os valores padrao do HTML.
+  }
+}
+function saveFreightDefaults() {
+  try {
+    localStorage.setItem(
+      FREIGHT_DEFAULTS_KEY,
+      JSON.stringify({
+        weight: freightWeight.value,
+        height: freightHeight.value,
+        width: freightWidth.value,
+        length: freightLength.value,
+      })
+    );
+  } catch {
+    // sem localStorage: so nao persiste entre sessoes, sem quebrar nada.
+  }
+}
+[freightWeight, freightHeight, freightWidth, freightLength].forEach((el) =>
+  el.addEventListener("change", saveFreightDefaults)
+);
 
 // Mensagem padrao explicando a modalidade "combinar entrega" (retirada ou
 // entrega com frete a parte) pro comprador que ainda nao sabe como
@@ -2066,6 +2224,7 @@ document.getElementById("bell").addEventListener("click", () => {
 // Carga inicial + verificacao periodica (sem precisar de webhook/servidor
 // mandando nada pro navegador: o proprio navegador pergunta de tempos em
 // tempos enquanto a aba estiver aberta).
+loadFreightDefaults();
 loadList();
 loadPendingCount();
 loadAccounts();
