@@ -337,7 +337,12 @@ router.get("/debug/probe-item-batch", async (req, res) => {
       // qualquer comprador ve no navegador) — e um dominio/sistema
       // diferente (site de vendas, nao a API), que pode nao estar sob o
       // mesmo bloqueio.
-      let paginaPublica = { tentativa: `https://articulo.mercadolibre.com.br/${itemIds[0].replace(/^([A-Z]+)(\d+)$/, "$1-$2")}` };
+      // "articulo.mercadolibre.com.br" (tentativa anterior) nem existe de
+      // verdade (deu erro de rede, nao de bloqueio) — o dominio publico
+      // certo do Brasil e "produto.mercadolivre.com.br" (com "v", igual o
+      // link que a propria API devolve no campo "permalink" quando
+      // funciona).
+      let paginaPublica = { tentativa: `https://produto.mercadolivre.com.br/${itemIds[0].replace(/^([A-Z]+)(\d+)$/, "$1-$2")}` };
       try {
         const pageRes = await fetch(paginaPublica.tentativa, {
           redirect: "follow",

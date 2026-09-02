@@ -810,16 +810,19 @@ router.get("/debug/webhook-events", async (req, res) => {
 });
 
 // Rota de diagnostico: mostra, por conta, os packs com mensagem NAO LIDA
-// que o endpoint dedicado (GET /marketplace/messages/unread — ver
+// que o endpoint dedicado (GET /messages/pending_read — ver
 // fetchUnreadMessagePacks em ml/api.js) devolve agora mesmo. Isso e o mesmo
 // dado que aparece no filtro "Com mensagens não lidas" do proprio painel de
-// Vendas do Mercado Livre; desde que o endpoint foi corrigido (precisava do
-// prefixo "/marketplace" e do parametro "user_id", que as tentativas
-// antigas nao tinham), esse mesmo dado passou a alimentar a reconciliacao
-// de verdade (ver o passo dedicado em reconcileAccount, em sync.js) — essa
-// rota so serve pra conferir manualmente o que essa busca esta encontrando
-// pra uma conta. Uso: abrir no navegador (ja logado no painel)
-// /api/debug/probe-unread-messages
+// Vendas do Mercado Livre. CORRIGIDO: esse endpoint usava antes
+// "/marketplace/messages/unread" (API de Global Selling — venda
+// transfronteirica —, que devolvia 403 "Invalid caller.id" pra qualquer
+// conta comum brasileira, ou seja, nunca funcionou de verdade); agora usa
+// "/messages/pending_read", da API normal de mensagens pos-venda (mesmo
+// dominio das outras chamadas deste arquivo). Esse dado alimenta a
+// reconciliacao de verdade (ver o passo dedicado em reconcileAccount, em
+// sync.js) — essa rota so serve pra conferir manualmente o que essa busca
+// esta encontrando pra uma conta. Uso: abrir no navegador (ja logado no
+// painel) /api/debug/probe-unread-messages
 router.get("/debug/probe-unread-messages", async (req, res) => {
   const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts");
   const report = [];
