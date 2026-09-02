@@ -217,6 +217,30 @@ router.post("/questions/:questionId/reply", express.json(), async (req, res) => 
   }
 });
 
+// "Marcar como resolvido" (pedido do usuario) — mesma logica ja usada em
+// mensagens/reclamacoes (ver POST /claims/:claimId/mark-resolved e POST
+// /conversations/:packId/mark-resolved), agora tambem pra perguntas. Cobre
+// o caso de uma pergunta que nunca vai poder ser respondida pelo Mercado
+// Livre (ex: erro real visto pelo vendedor "Item must be active", quando o
+// anuncio foi pausado/removido depois da pergunta) — sem isso ela ficaria
+// pendente pra sempre, sem nenhum jeito de tirar da aba de pendentes.
+router.post("/questions/:questionId/mark-resolved", express.json(), async (req, res) => {
+  const questionId = req.params.questionId;
+  const operator = String(req.body?.operatorName || "").trim().slice(0, 60) || null;
+
+  const { rows } = await db.query("SELECT question_id FROM questions WHERE question_id = $1", [questionId]);
+  if (!rows[0]) return res.status(404).json({ error: "Pergunta não encontrada" });
+
+  await db.query(
+    `UPDATE questions
+     SET local_status = 'closed', resolved_by_operator_at = now(), resolved_by_operator = $1, updated_at = now()
+     WHERE question_id = $2`,
+    [operator, questionId]
+  );
+
+  res.json({ ok: true });
+});
+
 // Mesma logica do botao "Atualizar" das outras duas telas, so que pras
 // perguntas.
 router.post("/questions/sync", async (req, res) => {
