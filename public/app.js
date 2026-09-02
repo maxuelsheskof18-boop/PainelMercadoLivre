@@ -901,6 +901,13 @@ async function loadQuestions() {
       (isUnread ? " unread" : "");
     const label = question.buyer_nickname || "Comprador #" + (question.buyer_id || "?");
     const preview = question.question_text || "";
+    // Quando o mesmo comprador fez mais de uma pergunta (ver agrupamento em
+    // GET /questions no backend), mostra quantas ao lado do nome — pedido do
+    // usuario ("se e o mesmo numero deixar as mensagens uma abaixo da
+    // outra"), pra ficar claro que ha mais de uma mensagem escondida ali
+    // dentro antes mesmo de abrir.
+    const grupoTotal = Number(question.grupo_total) || 1;
+    const grupoBadge = grupoTotal > 1 ? `<span class="ci-group-count">${grupoTotal} perguntas</span>` : "";
     div.innerHTML = `
       ${avatarHtml(label)}
       <div class="ci-body">
@@ -912,6 +919,7 @@ async function loadQuestions() {
         <div class="ci-preview">${preview}</div>
         <div class="ci-bottom">
           <span class="ci-date">${fmtDate(question.question_date)}</span>
+          ${grupoBadge}
           <span class="tag tag-question">Pergunta</span>
         </div>
       </div>
@@ -1014,6 +1022,16 @@ function renderQuestionMessages(messages) {
     return;
   }
   for (const m of messages) {
+    // Quando essa "conversa" na verdade junta varias perguntas separadas do
+    // mesmo comprador (ver agrupamento no backend), mostra de qual anuncio
+    // se trata antes da pergunta, so quando muda em relacao a anterior —
+    // ajuda a nao confundir perguntas sobre produtos diferentes.
+    if (m.itemLabel) {
+      const label = document.createElement("div");
+      label.className = "msg-item-label";
+      label.textContent = m.itemLabel;
+      threadMessages.appendChild(label);
+    }
     const div = document.createElement("div");
     div.className = "msg " + (m.sender_role === "respondent" ? "msg-out" : "msg-in");
     const roleLabel = m.sender_role === "respondent" ? "Você" : "Comprador";
@@ -1034,6 +1052,11 @@ async function loadQuestionMessages(questionId) {
   const data = await res.json();
   if (data.question) renderQuestionThreadInfo(data.question);
   renderQuestionMessages(data.messages || []);
+  // Se esse comprador tiver mais de uma pergunta pendente juntas nessa
+  // mesma tela, responde a mais recente delas (a API do Mercado Livre so
+  // aceita responder uma pergunta por vez) — ver replyTargetQuestionId no
+  // backend (GET /questions/:questionId).
+  replyForm.dataset.questionId = data.replyTargetQuestionId || questionId;
   return true;
 }
 
