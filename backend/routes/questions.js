@@ -325,6 +325,40 @@ router.get("/debug/probe-item-batch", async (req, res) => {
         headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
       });
       entry.chamadaUsersMeAindaFunciona = { status: meRes.status, ok: meRes.ok };
+
+      // 6) O bloqueio (tentativas 1 a 4) se repete identico com ou sem
+      // token e com ou sem User-Agent de navegador — ou seja, nao e sobre
+      // autenticacao nem sobre "parecer um robô": e a API de Itens
+      // (api.mercadolibre.com/items) bloqueando esse servidor
+      // especificamente (bloqueio por IP, bem comum contra raspagem de
+      // preco/produto, e o /users/me confirma que o resto da API aceita
+      // esse mesmo servidor numa boa). Ultima alternativa: em vez da API,
+      // buscar o TITULO direto na PAGINA PUBLICA do anuncio (a mesma que
+      // qualquer comprador ve no navegador) — e um dominio/sistema
+      // diferente (site de vendas, nao a API), que pode nao estar sob o
+      // mesmo bloqueio.
+      let paginaPublica = { tentativa: `https://articulo.mercadolibre.com.br/${itemIds[0].replace(/^([A-Z]+)(\d+)$/, "$1-$2")}` };
+      try {
+        const pageRes = await fetch(paginaPublica.tentativa, {
+          redirect: "follow",
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            Accept: "text/html",
+          },
+        });
+        const pageHtml = await pageRes.text();
+        const titleMatch = /<title>([^<]*)<\/title>/i.exec(pageHtml);
+        const ogTitleMatch = /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']*)["']/i.exec(pageHtml);
+        paginaPublica.status = pageRes.status;
+        paginaPublica.ok = pageRes.ok;
+        paginaPublica.urlFinalAposRedirect = pageRes.url;
+        paginaPublica.tituloEncontrado = ogTitleMatch?.[1] || titleMatch?.[1] || null;
+        paginaPublica.tamanhoHtml = pageHtml.length;
+      } catch (errPage) {
+        paginaPublica.erro = errPage.message;
+      }
+      entry.chamadaPaginaPublica = paginaPublica;
     } catch (err) {
       entry.erro = { status: err.status, body: err.body || err.message };
     }
