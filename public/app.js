@@ -972,12 +972,26 @@ function renderQuestionThreadInfo(question) {
   // Reaproveita o card de "pedido" pra mostrar o anuncio que a pergunta e
   // sobre — mesma ideia (titulo + link), so que apontando pro anuncio em
   // vez de pro pedido.
+  //
+  // O Mercado Livre esta bloqueando (do lado dele, por seguranca contra
+  // raspagem de dados — ver /api/debug/probe-item-batch) a busca automatica
+  // do titulo/link do anuncio pra algumas contas, entao "item_permalink"
+  // pode continuar vazio mesmo depois da correcao dos endpoints. Nesse
+  // caso, ainda montamos um link direto pro anuncio a partir so do
+  // "item_id" (formato conhecido: produto.mercadolivre.com.br/MLB-NUMERO) —
+  // ele nao mostra o titulo aqui no painel, mas o operador consegue abrir o
+  // anuncio de verdade num clique (no navegador dele, sem passar pelo mesmo
+  // bloqueio, ja que ai e um acesso normal de pessoa, nao do nosso servidor).
   if (question.item_title || question.item_id) {
     orderCard.classList.remove("hidden");
-    orderCardProduct.textContent = question.item_title || "Anúncio não identificado";
+    orderCardProduct.textContent = question.item_title || "Anúncio não identificado (clique no link pra ver)";
     orderCardMeta.textContent = question.item_id ? `Anúncio ${question.item_id}` : "";
-    if (question.item_permalink) {
-      orderCardLink.href = question.item_permalink;
+    const fallbackItemUrl = question.item_id
+      ? `https://produto.mercadolivre.com.br/${question.item_id.replace(/^([A-Z]+)(\d+)$/, "$1-$2")}`
+      : null;
+    const itemLinkHref = question.item_permalink || fallbackItemUrl;
+    if (itemLinkHref) {
+      orderCardLink.href = itemLinkHref;
       orderCardLink.classList.remove("hidden");
     } else {
       orderCardLink.classList.add("hidden");
