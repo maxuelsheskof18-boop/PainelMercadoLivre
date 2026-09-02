@@ -563,6 +563,61 @@ router.get("/debug/probe-unread", async (req, res) => {
   res.json(report);
 });
 
+// Rota TEMPORARIA de diagnostico: o endpoint "/messages/pending_read" (que
+// eu tinha confirmado como certo via um resumo automatico da documentacao)
+// devolveu 404 "resource not found" na pratica pra essa conta — ou seja, a
+// "confirmacao" anterior nao era confiavel (aconteceu de novo com o dominio
+// da pagina publica do anuncio: "articulo.mercadolibre.com.br" tambem era
+// invencao). Em vez de continuar tentando adivinhar a partir de resumos de
+// documentacao, esta rota testa VARIAS variantes de endpoint direto contra
+// a API de verdade, com o token de uma conta real, e devolve o resultado
+// cru de cada uma — assim a gente descobre empiricamente qual (se alguma)
+// e a certa, em vez de confiar em mais uma "leitura" da documentacao. Uso:
+// abrir no navegador (ja logado) /api/debug/probe-unread-variants
+router.get("/debug/probe-unread-variants", async (req, res) => {
+  const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts LIMIT 1");
+  const acc = accounts[0];
+  if (!acc) return res.json({ erro: "Nenhuma conta cadastrada." });
+
+  const accessToken = await getValidAccessToken(acc.id);
+  const sellerId = acc.id;
+
+  const variantes = [
+    { nome: "pending_read (sem parametro nenhum)", path: `/messages/pending_read` },
+    { nome: "pending_read?role=seller", path: `/messages/pending_read?role=seller` },
+    { nome: "pending_read?role=seller&tag=post_sale", path: `/messages/pending_read?role=seller&tag=post_sale` },
+    { nome: "packs?role=seller&tag=post_sale", path: `/messages/packs?role=seller&tag=post_sale` },
+    { nome: "packs?tag=post_sale", path: `/messages/packs?tag=post_sale` },
+    {
+      nome: "marketplace/messages/unread (a antiga, so pra comparar)",
+      path: `/marketplace/messages/unread?role=seller&tag=post_sale&user_id=${sellerId}`,
+    },
+  ];
+
+  const resultados = [];
+  for (const variante of variantes) {
+    const url = new URL(`https://api.mercadolibre.com${variante.path}`);
+    url.searchParams.set("access_token", accessToken);
+    try {
+      const r = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+      });
+      const text = await r.text();
+      let corpo;
+      try {
+        corpo = JSON.parse(text);
+      } catch {
+        corpo = text;
+      }
+      resultados.push({ nome: variante.nome, path: variante.path, status: r.status, ok: r.ok, corpo });
+    } catch (err) {
+      resultados.push({ nome: variante.nome, path: variante.path, erro: err.message });
+    }
+  }
+
+  res.json({ sellerId, nickname: acc.nickname, resultados });
+});
+
 // Rota TEMPORARIA de diagnostico: pega ate 5 conversas pendentes reais que
 // ja estao no banco e busca o envio (shipment) de cada uma, pra descobrir
 // qual campo/valor identifica um envio do tipo "a combinar com o
