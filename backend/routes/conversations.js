@@ -618,6 +618,96 @@ router.get("/debug/probe-unread-variants", async (req, res) => {
   res.json({ sellerId, nickname: acc.nickname, resultados });
 });
 
+// Rota TEMPORARIA de diagnostico: nenhuma variante de endpoint "liste os
+// packs com mensagem nao lida" funcionou pra conta comum (ver
+// /debug/probe-unread-variants) — entao muda a estrategia: em vez de
+// procurar um endpoint magico que lista tudo de uma vez, investiga um
+// PEDIDO ESPECIFICO que o vendedor ve com mensagem nao lida no proprio
+// painel de Vendas do Mercado Livre, passo a passo: (1) o pedido aparece na
+// busca comum de pedidos recentes (a mesma que alimenta o resto da
+// reconciliacao)? (2) a API de mensagens do pack dele mostra a mensagem, e
+// ela aparece como nao lida? (3) o que ja temos gravado no nosso banco pra
+// esse pedido/pack? Isso mostra se o pedido esta sendo perdido na busca, no
+// processamento das mensagens, ou se na verdade ja esta gravado (e o
+// "sumico" e so na tela). Uso: abrir no navegador (ja logado)
+// /api/debug/probe-order?orderId=SEU_NUMERO_DE_PEDIDO
+router.get("/debug/probe-order", async (req, res) => {
+  const orderId = req.query.orderId ? String(req.query.orderId) : null;
+  if (!orderId) return res.status(400).json({ erro: "Informe ?orderId=NUMERO_DO_PEDIDO na URL." });
+
+  const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts");
+  const relatorio = { orderId };
+
+  for (const acc of accounts) {
+    let orderDetail;
+    try {
+      const accessToken = await getValidAccessToken(acc.id);
+      try {
+        orderDetail = await fetchOrderById(accessToken, orderId);
+      } catch (err) {
+        // Pedido nao pertence a essa conta (normal, ja que testamos as 4) —
+        // segue pra proxima sem poluir o relatorio com erro 404 esperado.
+        if (err.status === 404) continue;
+        throw err;
+      }
+
+      const packId = orderDetail?.pack_id || orderDetail?.id;
+      relatorio.sellerId = acc.id;
+      relatorio.nickname = acc.nickname;
+      relatorio.packId = packId;
+      relatorio.pedido = {
+        status: orderDetail?.status,
+        tags: orderDetail?.tags,
+        date_created: orderDetail?.date_created,
+        date_last_updated: orderDetail?.date_last_updated,
+        date_closed: orderDetail?.date_closed,
+      };
+
+      // (1) Esse pedido aparece na busca comum de pedidos recentes (a
+      // primeira pagina, sem filtro de tag) — a mesma que roda toda
+      // reconciliacao?
+      try {
+        const recentes = await fetchRecentOrders(accessToken, acc.id, { limit: 50 });
+        const results = Array.isArray(recentes?.results) ? recentes.results : [];
+        relatorio.apareceNaBuscaRecente = results.some((o) => String(o.id) === orderId);
+        relatorio.totalPedidosRecentesNaPrimeiraPagina = results.length;
+      } catch (err) {
+        relatorio.erroBuscaRecente = { status: err.status, body: err.body || err.message };
+      }
+
+      // (2) A API de mensagens desse pack mostra a mensagem, e ela consta
+      // como nao lida (message_date.read === null)?
+      try {
+        const packData = await fetchPackMessages(accessToken, packId, acc.id);
+        const mensagens = Array.isArray(packData?.messages) ? packData.messages : [];
+        relatorio.mensagensDoPack = mensagens.map((m) => ({
+          id: m.id,
+          text: m.text,
+          from: m.from?.user_id,
+          lida: m.message_date?.read || null,
+          recebida: m.message_date?.received || null,
+        }));
+        relatorio.temMensagemNaoLida = mensagens.some((m) => !m.message_date?.read);
+      } catch (err) {
+        relatorio.erroMensagensDoPack = { status: err.status, body: err.body || err.message };
+      }
+
+      // (3) O que ja esta gravado no nosso banco pra esse pedido/pack?
+      const { rows: convRows } = await db.query(
+        "SELECT pack_id, order_id, status, is_delivered, is_combinar_entrega, last_message_text, last_message_date, updated_at FROM conversations WHERE order_id = $1 OR pack_id = $2",
+        [orderId, String(packId)]
+      );
+      relatorio.gravadoNoNossoBanco = convRows[0] || null;
+
+      break; // achou a conta dona do pedido, nao precisa testar as outras.
+    } catch (err) {
+      relatorio.erro = { sellerId: acc.id, status: err.status, body: err.body || err.message };
+    }
+  }
+
+  res.json(relatorio);
+});
+
 // Rota TEMPORARIA de diagnostico: pega ate 5 conversas pendentes reais que
 // ja estao no banco e busca o envio (shipment) de cada uma, pra descobrir
 // qual campo/valor identifica um envio do tipo "a combinar com o
