@@ -79,7 +79,6 @@ async function upsertQuestion(sellerId, question, itemInfo) {
   const info = extractQuestionInfo(question);
   if (!info) return;
   const questionId = String(question.id);
-  const localStatus = computeLocalStatus(info.mlStatus);
 
   // Se essa pergunta ja foi respondida por aqui antes (operator_name
   // gravado na hora do envio — ver POST /questions/:id/reply), preserva
@@ -87,10 +86,27 @@ async function upsertQuestion(sellerId, question, itemInfo) {
   // devolva essa informacao (ele nunca devolve "quem" respondeu, so o texto
   // da resposta).
   const { rows: existingRows } = await db.query(
-    "SELECT operator_name FROM questions WHERE question_id = $1",
+    "SELECT operator_name, resolved_by_operator_at FROM questions WHERE question_id = $1",
     [questionId]
   );
   const operatorName = existingRows[0]?.operator_name || null;
+
+  // Se o vendedor marcou essa pergunta como "resolvida" manualmente (ver
+  // POST /questions/:id/mark-resolved — caso tipico: "Item must be active",
+  // o Mercado Livre nunca vai deixar responder de verdade), mantem ela
+  // fechada aqui mesmo que a proxima varredura ainda encontre a mesma
+  // pergunta na busca de "sem resposta" do Mercado Livre (o que sempre vai
+  // acontecer, ja que a marcacao manual e so local — nunca chega a
+  // responder pra valer la). Sem essa checagem, o proximo ciclo de
+  // sincronizacao recalculava o status a partir do ml_status (ainda
+  // "unanswered") e jogava a pergunta de volta pra "pending" sozinha —
+  // bug relatado pelo usuario ("marco como resolvido e ele volta"). Mesmo
+  // padrao ja usado em claims (ver upsertClaim em claimsSync.js). Diferente
+  // de reclamacao, uma pergunta especifica nunca recebe atividade nova
+  // depois de criada (nao e uma conversa de ida-e-volta), entao aqui nao
+  // precisa da logica de "reabrir se chegou algo mais novo".
+  const resolvedByOperatorAt = existingRows[0]?.resolved_by_operator_at || null;
+  const localStatus = resolvedByOperatorAt ? "closed" : computeLocalStatus(info.mlStatus);
 
   await db.query(
     `INSERT INTO questions
