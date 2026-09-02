@@ -14,7 +14,7 @@
 // "questions" em db.js).
 const db = require("./db");
 const { getValidAccessToken, withTokenRetry } = require("./ml/tokens");
-const { fetchItemById, fetchItemsByIds } = require("./ml/api");
+const { fetchItemById, fetchItemsByIds, fetchUserById } = require("./ml/api");
 const { fetchQuestions, fetchQuestionById } = require("./ml/questionsApi");
 
 const QUESTIONS_PAGE_SIZE = 50;
@@ -185,6 +185,52 @@ async function backfillMissingItemTitles(sellerId, accessToken) {
   return accessToken;
 }
 
+// Corrige perguntas que ja estao gravadas no banco mas ficaram sem o nome
+// do comprador (mostrando so "Comprador #ID" no painel) — a pergunta em si
+// so traz o buyer_id, sem nickname (ver extractQuestionInfo acima). Pedido
+// do usuario: "Nem o nome do comprador tambem [aparece]". Uma chamada por
+// comprador (nao ha endpoint "multiget" de usuarios como o de anuncios —
+// ver fetchItemsInfoMap), por isso limitado a um numero pequeno por ciclo
+// (LIMIT abaixo) pra nao alongar demais a reconciliacao normal; o resto vai
+// sendo corrigido aos poucos, um ciclo de cada vez. Se o Mercado Livre
+// acabar bloqueando isso tambem (do jeito que bloqueia /items — ver
+// PolicyAgent nos comentarios de fetchItemsByIds em ml/api.js), a falha e
+// so registrada no log e o nome continua aparecendo como "Comprador #ID",
+// sem quebrar nada.
+const BUYER_NICKNAME_BACKFILL_LIMIT = 30;
+
+async function backfillMissingBuyerNicknames(sellerId, accessToken) {
+  const { rows } = await db.query(
+    `SELECT DISTINCT buyer_id FROM questions
+      WHERE seller_id = $1 AND buyer_id IS NOT NULL AND buyer_nickname IS NULL
+      LIMIT ${BUYER_NICKNAME_BACKFILL_LIMIT}`,
+    [sellerId]
+  );
+  if (rows.length === 0) return accessToken;
+
+  let corrigidos = 0;
+  for (const { buyer_id: buyerId } of rows) {
+    try {
+      const result = await withTokenRetry(sellerId, accessToken, (token) => fetchUserById(token, buyerId));
+      accessToken = result.accessToken;
+      const nickname = result.result?.nickname || null;
+      if (!nickname) continue;
+      const { rowCount } = await db.query(
+        `UPDATE questions SET buyer_nickname = $1, updated_at = now()
+         WHERE seller_id = $2 AND buyer_id = $3 AND buyer_nickname IS NULL`,
+        [nickname, sellerId, buyerId]
+      );
+      corrigidos += rowCount;
+    } catch (err) {
+      console.warn(`[questions] nao consegui buscar nome do comprador ${buyerId} (conta ${sellerId}):`, err.status, err.body || err.message);
+    }
+  }
+  if (corrigidos > 0) {
+    console.log(`[questions] conta ${sellerId}: ${corrigidos} pergunta(s) tiveram o nome do comprador corrigido via backfill.`);
+  }
+  return accessToken;
+}
+
 // Sincroniza UMA pergunta especifica pelo id — usado tanto pelo webhook
 // (tempo real) quanto pela reverificacao de perguntas ja pendentes.
 async function syncQuestion(sellerId, questionId) {
@@ -272,7 +318,8 @@ async function reconcileQuestionsForAccount(sellerId) {
   // fora das paginas buscadas acima (contas com muitas perguntas pendentes
   // ao mesmo tempo) quanto as que foram gravadas antes da correcao dos
   // endpoints (ver comentario no topo de ml/questionsApi.js).
-  await backfillMissingItemTitles(sellerId, accessToken);
+  accessToken = await backfillMissingItemTitles(sellerId, accessToken);
+  await backfillMissingBuyerNicknames(sellerId, accessToken);
 
   console.log(
     `[questions] conta ${sellerId}: ${all.length} pergunta(s) sem resposta encontrada(s) (${processadas} sincronizada(s)), ${trackedPending.length} pendente(s) rastreada(s) reverificada(s) (${atualizadas} mudaram de status agora).`
@@ -298,4 +345,5 @@ module.exports = {
   upsertQuestion,
   computeLocalStatus,
   backfillMissingItemTitles,
+  backfillMissingBuyerNicknames,
 };
