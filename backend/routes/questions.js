@@ -6,6 +6,7 @@ const db = require("../db");
 const { requireLogin } = require("../authMiddleware");
 const { getValidAccessToken } = require("../ml/tokens");
 const { answerQuestion, fetchQuestions } = require("../ml/questionsApi");
+const { fetchUserById } = require("../ml/api");
 const { reconcileAllQuestions, extractQuestionInfo } = require("../questionsSync");
 
 const router = express.Router();
@@ -61,19 +62,55 @@ router.get("/questions", async (req, res) => {
     if (query) {
       params.push(`%${query}%`);
       const p = `$${params.length}`;
-      conditions.push(`(q.buyer_nickname ILIKE ${p} OR q.item_title ILIKE ${p} OR q.question_text ILIKE ${p})`);
+      // Inclui buyer_id na busca (pedido do usuario: "tem que ser possivel a
+      // pesquisa atraves do numero depois do #") — assim da pra achar um
+      // comprador especifico digitando o numero que aparece como
+      // "Comprador #123..." quando o nome dele nao e conhecido.
+      conditions.push(
+        `(q.buyer_nickname ILIKE ${p} OR q.item_title ILIKE ${p} OR q.question_text ILIKE ${p} OR q.buyer_id ILIKE ${p})`
+      );
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
+    // Agrupa por comprador dentro da mesma loja: se o mesmo comprador (mesmo
+    // numero depois do "#") fez mais de uma pergunta, mostra so UMA entrada
+    // na lista em vez de uma linha repetida pra cada pergunta separada —
+    // pedido do usuario ("se e o mesmo numero deixar as mensagens uma abaixo
+    // da outra"). A entrada mostrada e a pergunta mais recente AINDA
+    // PENDENTE do grupo (se houver alguma); senao, a mais recente de
+    // qualquer status. Ao abrir essa entrada (GET /questions/:questionId
+    // abaixo), TODAS as perguntas desse comprador aparecem juntas,
+    // empilhadas, na mesma tela. Perguntas sem buyer_id conhecido (raro)
+    // usam o proprio question_id como chave de agrupamento, entao nunca se
+    // misturam por engano com as de outro comprador. Duas contas diferentes
+    // (seller_id diferente) NUNCA agrupam entre si, mesmo que seja o mesmo
+    // comprador em ambas — cada loja responde com o proprio login dela.
     const { rows } = await db.query(
-      `SELECT q.*, a.nickname AS seller_nickname
+      `SELECT DISTINCT ON (q.seller_id, COALESCE(q.buyer_id, q.question_id))
+              q.*, a.nickname AS seller_nickname,
+              COUNT(*) OVER (PARTITION BY q.seller_id, COALESCE(q.buyer_id, q.question_id))::int AS grupo_total,
+              COUNT(*) FILTER (WHERE q.local_status = 'pending')
+                OVER (PARTITION BY q.seller_id, COALESCE(q.buyer_id, q.question_id))::int AS grupo_pendentes
          FROM questions q
          JOIN accounts a ON a.id = q.seller_id
          ${where}
-        ORDER BY q.question_date DESC NULLS LAST, q.updated_at DESC`,
+        ORDER BY q.seller_id, COALESCE(q.buyer_id, q.question_id),
+                 (q.local_status = 'pending') DESC,
+                 q.question_date DESC NULLS LAST,
+                 q.updated_at DESC`,
       params
     );
+
+    // O DISTINCT ON acima precisa ordenar primeiro pela chave de
+    // agrupamento (senao nao funciona) — reordena aqui pelo criterio real da
+    // lista (mais recente primeiro), igual antes do agrupamento existir.
+    rows.sort((a, b) => {
+      const dateA = a.question_date ? new Date(a.question_date).getTime() : 0;
+      const dateB = b.question_date ? new Date(b.question_date).getTime() : 0;
+      if (dateB !== dateA) return dateB - dateA;
+      return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+    });
 
     res.json(rows);
   } catch (err) {
@@ -98,19 +135,52 @@ router.get("/questions/:questionId", async (req, res) => {
   const question = rows[0] || null;
   if (!question) return res.status(404).json({ error: "Pergunta não encontrada" });
 
-  const messages = [
-    { sender_role: "buyer", message: question.question_text, sent_date: question.question_date },
-  ];
-  if (question.answer_text) {
+  // Se o mesmo comprador fez mais de uma pergunta pra essa loja, traz todas
+  // juntas (da mais antiga pra mais nova, uma abaixo da outra) — mesmo
+  // agrupamento da listagem acima (GET /questions). Perguntas do mesmo
+  // comprador em OUTRAS lojas ficam de fora de proposito (cada loja responde
+  // com o proprio login/token dela, entao nao daria pra misturar as
+  // respostas).
+  const grupoChave = question.buyer_id || question.question_id;
+  const { rows: grupo } = await db.query(
+    `SELECT * FROM questions
+      WHERE seller_id = $1 AND COALESCE(buyer_id, question_id) = $2
+      ORDER BY question_date ASC NULLS LAST, updated_at ASC`,
+    [question.seller_id, grupoChave]
+  );
+  const perguntas = grupo.length > 0 ? grupo : [question];
+
+  const messages = [];
+  let ultimoAnuncio = null;
+  for (const q of perguntas) {
+    // Mostra de qual anuncio se trata so quando muda em relacao a pergunta
+    // anterior da mesma "conversa" (evita repetir a mesma legenda em toda
+    // mensagem quando e tudo sobre o mesmo produto, o caso mais comum).
+    const anuncioAtual = q.item_title || (q.item_id ? `Anúncio ${q.item_id}` : null);
     messages.push({
-      sender_role: "respondent",
-      message: question.answer_text,
-      sent_date: question.answer_date,
-      operator_name: question.operator_name,
+      sender_role: "buyer",
+      message: q.question_text,
+      sent_date: q.question_date,
+      itemLabel: anuncioAtual && anuncioAtual !== ultimoAnuncio ? anuncioAtual : null,
     });
+    ultimoAnuncio = anuncioAtual;
+    if (q.answer_text) {
+      messages.push({
+        sender_role: "respondent",
+        message: q.answer_text,
+        sent_date: q.answer_date,
+        operator_name: q.operator_name,
+      });
+    }
   }
 
-  res.json({ question, messages });
+  // A caixa de resposta so envia pra UMA pergunta por vez (assim que a API
+  // do Mercado Livre funciona) — se houver mais de uma pergunta desse
+  // comprador ainda sem resposta no grupo, aponta pra mais recente delas.
+  const pendentes = perguntas.filter((q) => q.local_status === "pending");
+  const replyTarget = pendentes.length > 0 ? pendentes[pendentes.length - 1] : question;
+
+  res.json({ question, messages, replyTargetQuestionId: replyTarget.question_id });
 });
 
 router.post("/questions/:questionId/reply", express.json(), async (req, res) => {
@@ -364,6 +434,54 @@ router.get("/debug/probe-item-batch", async (req, res) => {
         paginaPublica.erro = errPage.message;
       }
       entry.chamadaPaginaPublica = paginaPublica;
+    } catch (err) {
+      entry.erro = { status: err.status, body: err.body || err.message };
+    }
+    report.push(entry);
+  }
+
+  res.json(report);
+});
+
+// Rota TEMPORARIA de diagnostico: mesma logica de probe-item-batch acima,
+// so que pro NOME DO COMPRADOR em vez do anuncio (pedido do usuario: "Nem o
+// nome do comprador tambem [aparece]") — testa /users/{id} (endpoint nunca
+// chamado antes pra um usuario que nao seja "me") direto pra algumas
+// perguntas reais que ainda estao com buyer_nickname em branco, mostrando o
+// status/corpo cru da resposta. Uso: abrir no navegador (ja logado no
+// painel) /api/debug/probe-buyer-info
+router.get("/debug/probe-buyer-info", async (req, res) => {
+  const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts");
+  const report = [];
+
+  for (const acc of accounts) {
+    const entry = { sellerId: acc.id, nickname: acc.nickname };
+    try {
+      const { rows: semNome } = await db.query(
+        `SELECT question_id, buyer_id FROM questions WHERE seller_id = $1 AND buyer_id IS NOT NULL AND buyer_nickname IS NULL LIMIT 3`,
+        [acc.id]
+      );
+      entry.perguntasSemNomeEncontradas = semNome.length;
+      if (semNome.length === 0) {
+        entry.observacao = "Nenhuma pergunta sem nome de comprador pra essa conta agora.";
+        report.push(entry);
+        continue;
+      }
+
+      const accessToken = await getValidAccessToken(acc.id);
+      entry.tentativas = [];
+      for (const row of semNome) {
+        const tentativa = { buyerId: row.buyer_id };
+        try {
+          const user = await fetchUserById(accessToken, row.buyer_id);
+          tentativa.status = 200;
+          tentativa.nicknameEncontrado = user?.nickname || null;
+        } catch (err) {
+          tentativa.status = err.status;
+          tentativa.corpo = err.body || err.message;
+        }
+        entry.tentativas.push(tentativa);
+      }
     } catch (err) {
       entry.erro = { status: err.status, body: err.body || err.message };
     }
