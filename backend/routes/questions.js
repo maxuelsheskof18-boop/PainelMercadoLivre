@@ -467,6 +467,52 @@ router.get("/debug/probe-item-batch", async (req, res) => {
   res.json(report);
 });
 
+// Rota TEMPORARIA de diagnostico: o usuario relatou que, mesmo depois da
+// correcao feita em upsertQuestion (ver questionsSync.js — o guard que
+// preserva local_status='closed' quando resolved_by_operator_at esta
+// preenchido), perguntas marcadas manualmente como resolvidas continuam
+// aparecendo em Pendentes, mesmo apos o deploy dessa correcao (v20) e um
+// "Manual Deploy" forcado no Render. Essa rota mostra, pra CADA pergunta
+// que ja foi marcada como resolvida manualmente (resolved_by_operator_at
+// preenchido), o estado exato dela AGORA no banco — local_status realmente
+// gravado, ml_status (o que o Mercado Livre diz), e importante: quantas
+// perguntas existem no MESMO grupo (mesmo comprador+loja — ver agrupamento
+// em GET /questions) e quantas dessas ainda estao pendentes. Isso separa
+// duas hipoteses bem diferentes: (a) o guard nao esta segurando o
+// local_status da PROPRIA pergunta (voltou pra 'pending' sozinha — bug
+// ainda nao corrigido de verdade, ou versao antiga ainda no ar), ou (b) a
+// pergunta em si continua 'closed' certinho, mas ela aparece agrupada com
+// OUTRA pergunta do mesmo comprador que ainda esta pendente de verdade
+// (grupo_pendentes > 0) — nesse caso nao e bug, e so uma 2a duvida do
+// mesmo comprador que ainda precisa de resposta separada. Uso: abrir no
+// navegador (ja logado no painel) /api/debug/probe-resolved-questions
+router.get("/debug/probe-resolved-questions", async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT q.question_id, q.seller_id, a.nickname AS seller_nickname,
+            q.buyer_id, q.buyer_nickname, q.question_text,
+            q.local_status, q.ml_status, q.resolved_by_operator, q.resolved_by_operator_at,
+            q.updated_at, q.question_date,
+            (SELECT COUNT(*) FROM questions q2
+              WHERE q2.seller_id = q.seller_id
+                AND COALESCE(q2.buyer_id, q2.question_id) = COALESCE(q.buyer_id, q.question_id))::int AS grupo_total,
+            (SELECT COUNT(*) FROM questions q2
+              WHERE q2.seller_id = q.seller_id
+                AND COALESCE(q2.buyer_id, q2.question_id) = COALESCE(q.buyer_id, q.question_id)
+                AND q2.local_status = 'pending')::int AS grupo_pendentes,
+            (SELECT json_agg(json_build_object('question_id', q3.question_id, 'local_status', q3.local_status, 'question_text', q3.question_text, 'question_date', q3.question_date))
+               FROM questions q3
+              WHERE q3.seller_id = q.seller_id
+                AND COALESCE(q3.buyer_id, q3.question_id) = COALESCE(q.buyer_id, q.question_id)
+                AND q3.question_id <> q.question_id) AS outras_perguntas_do_mesmo_grupo
+       FROM questions q
+       JOIN accounts a ON a.id = q.seller_id
+      WHERE q.resolved_by_operator_at IS NOT NULL
+      ORDER BY q.resolved_by_operator_at DESC
+      LIMIT 50`
+  );
+  res.json(rows);
+});
+
 // Rota TEMPORARIA de diagnostico: mesma logica de probe-item-batch acima,
 // so que pro NOME DO COMPRADOR em vez do anuncio (pedido do usuario: "Nem o
 // nome do comprador tambem [aparece]") — testa /users/{id} (endpoint nunca
