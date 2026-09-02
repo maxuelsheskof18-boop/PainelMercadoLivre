@@ -820,6 +820,42 @@ router.get("/debug/probe-order", async (req, res) => {
   res.json(report);
 });
 
+// Rota TEMPORARIA de diagnostico: o pedido #2000014790041703 (Escola
+// Delariva Barueri, "atrasado 2 dias") aparece no proprio painel de Vendas
+// do Mercado Livre dentro da conta VESCO SUPRIMENTOS (confirmado pelo
+// vendedor), mas /orders/2000014790041703 devolve 404 "Order do not exists"
+// justamente quando chamado com o token gravado pra essa conta (id
+// 522101670) — ou seja, o pedido e real e e dela, mas o token que a gente
+// tem gravado pra "VESCO SUPRIMENTOS" nao enxerga ele. Isso só faz sentido
+// se o token gravado no nosso banco pra essa conta na verdade pertencer a
+// um usuario/vendedor diferente do que a gente pensa (por exemplo: a conta
+// foi reconectada em algum momento e o token novo ficou de outro usuario,
+// ou o ID gravado como "dono" desse token nao e o ID real do vendedor
+// autenticado). Essa rota confere isso na fonte: pra cada conta gravada,
+// pega o token e pergunta pro proprio Mercado Livre (/users/me) "de quem
+// e esse token" — e compara com o que o nosso banco acha que e essa conta.
+// Uso: abrir no navegador (ja logado no painel) /api/debug/probe-identidade
+router.get("/debug/probe-identidade", async (req, res) => {
+  const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts");
+  const relatorio = [];
+
+  for (const acc of accounts) {
+    const entry = { idGravadoNoBanco: acc.id, nicknameGravadoNoBanco: acc.nickname };
+    try {
+      const accessToken = await getValidAccessToken(acc.id);
+      const me = await fetchMe(accessToken);
+      entry.idRealDoToken = String(me?.id ?? "");
+      entry.nicknameRealDoToken = me?.nickname ?? null;
+      entry.bateCertinho = String(me?.id ?? "") === String(acc.id);
+    } catch (err) {
+      entry.erro = { status: err.status, body: err.body || err.message };
+    }
+    relatorio.push(entry);
+  }
+
+  res.json(relatorio);
+});
+
 // Rota TEMPORARIA de diagnostico: mostra as ultimas notificacoes (webhooks)
 // que o Mercado Livre mandou pra essa aplicacao, por conta — inclusive de
 // topicos que a gente ignora. Serve pra responder se o problema de
