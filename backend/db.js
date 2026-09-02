@@ -256,6 +256,13 @@ async function init() {
     -- Perguntas (pedido do usuario), ja que uma pergunta pre-venda nao tem
     -- pedido/valor de venda como mensagens e reclamacoes tem.
     ALTER TABLE questions ADD COLUMN IF NOT EXISTS item_price NUMERIC(12,2);
+    -- "Marcar como resolvido" tambem pra perguntas (pedido do usuario) —
+    -- cobre o caso de uma pergunta que nunca vai poder ser respondida pelo
+    -- Mercado Livre (ex: erro "Item must be active", quando o anuncio foi
+    -- pausado/removido depois da pergunta), que sem isso ficaria pendente
+    -- pra sempre. Mesmo padrao ja usado em claims/conversations acima.
+    ALTER TABLE questions ADD COLUMN IF NOT EXISTS resolved_by_operator_at TIMESTAMPTZ;
+    ALTER TABLE questions ADD COLUMN IF NOT EXISTS resolved_by_operator TEXT;
   `);
 }
 
