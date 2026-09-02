@@ -163,6 +163,23 @@ async function fetchShipment(accessToken, shipmentId) {
   return mlFetch(`/shipments/${shipmentId}`, accessToken);
 }
 
+// Busca os dados publicos de um USUARIO (ex: o nome/nickname de um
+// comprador) — a pergunta pre-venda so traz o buyer_id, sem o nickname (ver
+// backend/questionsSync.js). Endpoint diferente do /items (que o Mercado
+// Livre bloqueia pra este servidor por seguranca anti-raspagem — ver
+// PA_UNAUTHORIZED_RESULT_FROM_POLICIES/PolicyAgent nos comentarios de
+// fetchItemsByIds abaixo e no debug/probe-item-batch): /users/{id} e um
+// endpoint muito mais basico/estavel (o mesmo tipo de chamada que /users/me
+// ja faz, e essa sempre funcionou mesmo quando /items estava bloqueado) —
+// mas como nunca foi testado pra um usuario QUALQUER (so pra "me"), o
+// backfill que usa isso (backfillMissingBuyerNicknames, em
+// questionsSync.js) e construido pra nao quebrar nada mesmo se acabar
+// tambem bloqueado: se falhar, o nome do comprador so continua aparecendo
+// como "Comprador #ID" (mesmo comportamento de hoje), sem erro visivel.
+async function fetchUserById(accessToken, userId) {
+  return mlFetch(`/users/${userId}`, accessToken);
+}
+
 // Busca o detalhe de um ANUNCIO (titulo, link publico) — usado pelas
 // perguntas pre-venda (ver backend/questionsSync.js), ja que a pergunta em
 // si so traz o item_id, sem o titulo do produto.
@@ -333,6 +350,7 @@ module.exports = {
   fetchShipment,
   fetchItemById,
   fetchItemsByIds,
+  fetchUserById,
   fetchResource,
   parsePackResource,
   sendMessage,
