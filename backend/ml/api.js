@@ -69,19 +69,30 @@ async function mlFetch(path, accessToken, options = {}) {
 // resolve isso porque nao depende de nenhuma janela, e sim exatamente do que
 // o Mercado Livre ja sabe estar pendente de leitura.
 //
-// Endpoint correto (confirmado via documentacao — as tentativas antigas sem
-// o prefixo "/marketplace" e sem "user_id" devolviam 404/formato errado):
-// GET /marketplace/messages/unread?role=seller&tag=post_sale&user_id=$SELLER_ID
-// Resposta: { results: [ { resource: "/packs/{pack_id}", count: N }, ... ] }
+// CORRIGIDO: a versao anterior usava "/marketplace/messages/unread" — um
+// endpoint documentado em global-selling.mercadolibre.com (sufixo "-gs" =
+// "Global Selling", o programa de venda TRANSFRONTEIRICA do Mercado Livre,
+// bem diferente de uma conta comum brasileira). Pra uma conta normal (nao
+// participante do Global Selling), esse endpoint sempre falhava com 403
+// "Invalid caller.id" — silenciosamente (so um aviso no log a cada ciclo),
+// entao essa "rede de seguranca" nunca funcionou de verdade, pra nenhuma
+// conta, desde que foi criada. Isso explica pedidos "atrasado"/"pronta para
+// enviar" (ainda nao despachados) com mensagem nao lida que nao apareciam no
+// painel mesmo estando visiveis no proprio painel de Vendas do Mercado
+// Livre — essa era a unica busca capaz de resgatar esses casos.
+//
+// Endpoint certo pra conta comum (confirmado em developers.mercadolivre.com.br
+// /pt_br/mensagens-post-venda, secao "mensagens ainda nao lidas" — mesmo
+// dominio/doc das outras chamadas de mensagens deste arquivo, SEM o prefixo
+// "/marketplace" e sem precisar de seller_id/user_id na URL, ja que a
+// identidade vem do proprio token):
+// GET /messages/pending_read?role=seller
+// Resposta: { user_id: N, results: [ { resource: "/packs/{pack_id}/sellers/{seller_id}", count: N }, ... ] }
 async function fetchUnreadMessagePacks(accessToken, sellerId) {
-  const params = new URLSearchParams({
-    role: "seller",
-    tag: "post_sale",
-    user_id: String(sellerId),
-  });
-  const data = await mlFetch(`/marketplace/messages/unread?${params.toString()}`, accessToken);
+  const data = await mlFetch(`/messages/pending_read?role=seller`, accessToken);
   const results = Array.isArray(data?.results) ? data.results : [];
-  // "resource" vem como "/packs/{pack_id}" — extrai so o id.
+  // "resource" vem como "/packs/{pack_id}" ou "/packs/{pack_id}/sellers/{seller_id}"
+  // dependendo da origem — extrai so o id do pack, ignorando o resto.
   return results
     .map((r) => {
       const match = /\/packs\/(\w+)/.exec(r?.resource || "");
