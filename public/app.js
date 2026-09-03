@@ -1794,7 +1794,30 @@ templateCombinarBtn.addEventListener("click", () => {
   replyText.focus();
 });
 
-function renderMessages(messages) {
+// Anexo que o COMPRADOR manda numa mensagem pos-venda (ex: foto de um
+// produto com defeito) vem no campo "attachments" da propria mensagem — um
+// id/"filename" que so serve pra baixar o arquivo pela rota do painel (que
+// repassa a chamada autenticada pro Mercado Livre, ver GET
+// /conversations/:packId/attachments/:id/download em routes/conversations.js).
+// Mesmo formato/funcao de renderClaimMessageAttachments (reclamacoes), so
+// que apontando pra rota de mensagens normais — pedido do usuario: "Nem
+// todas as midia estao sendo importadas".
+function renderMessageAttachments(container, attachments, packId) {
+  for (const att of attachments) {
+    const id = typeof att === "string" ? att : att.filename || att.id || att.attachment_id;
+    if (!id) continue;
+    const label = typeof att === "string" ? att : att.original_filename || att.filename || "arquivo anexado";
+    const a = document.createElement("a");
+    a.href = `/api/conversations/${encodeURIComponent(packId)}/attachments/${encodeURIComponent(id)}/download`;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.className = "msg-attachment-link";
+    a.textContent = `📎 ${label}`;
+    container.appendChild(a);
+  }
+}
+
+function renderMessages(messages, packId) {
   threadMessages.innerHTML = "";
   if (messages.length === 0) {
     threadMessages.innerHTML =
@@ -1804,12 +1827,18 @@ function renderMessages(messages) {
   for (const m of messages) {
     const div = document.createElement("div");
     div.className = "msg " + (m.direction === "out" ? "msg-out" : "msg-in");
+    const hasIncomingAttachments = Array.isArray(m.attachments) && m.attachments.length > 0;
     div.innerHTML = `<div class="msg-text"></div>${
       m.attachment_name ? '<div class="msg-attachment"></div>' : ""
+    }${
+      hasIncomingAttachments ? '<div class="msg-attachments"></div>' : ""
     }<div class="msg-date">${fmtDate(m.sent_date)}</div>`;
     renderMessageTextWithLinks(div.querySelector(".msg-text"), m.text);
     if (m.attachment_name) {
       div.querySelector(".msg-attachment").textContent = `📎 ${m.attachment_name}`;
+    }
+    if (hasIncomingAttachments) {
+      renderMessageAttachments(div.querySelector(".msg-attachments"), m.attachments, packId);
     }
     threadMessages.appendChild(div);
   }
@@ -1834,7 +1863,7 @@ async function loadThreadMessages(packId) {
   // cabecalho com essa versao mais completa.
   if (data.conversation) renderThreadInfo(data.conversation);
 
-  renderMessages(data.messages || []);
+  renderMessages(data.messages || [], packId);
   return true;
 }
 
