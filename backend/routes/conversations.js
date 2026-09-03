@@ -6,6 +6,7 @@ const { getValidAccessToken } = require("../ml/tokens");
 const {
   sendMessage,
   uploadMessageAttachment,
+  fetchMessageAttachmentFile,
   fetchMe,
   fetchRecentOrders,
   fetchPackMessages,
@@ -240,6 +241,31 @@ router.get("/conversations/:packId/messages", async (req, res) => {
   }
 
   res.json({ conversation, messages });
+});
+
+// Baixa o arquivo de um anexo que o COMPRADOR mandou numa mensagem pos-venda
+// (ex: foto de um produto que veio com defeito) — ate agora o painel so
+// gravava/mostrava o texto da mensagem, o anexo em si era ignorado por
+// completo (pedido do usuario: "Nem todas as midia estao sendo
+// importadas"). O id do anexo vem do campo "attachments" de cada mensagem
+// (ver GET /conversations/:packId/messages acima e upsertConversationFromPack
+// em sync.js). Mesmo padrao da rota equivalente de reclamacoes (ver GET
+// /claims/:claimId/attachments/:attachmentId/download em routes/claims.js).
+router.get("/conversations/:packId/attachments/:attachmentId/download", async (req, res) => {
+  const { packId, attachmentId } = req.params;
+  const { rows } = await db.query("SELECT seller_id FROM conversations WHERE pack_id = $1", [packId]);
+  const conversation = rows[0];
+  if (!conversation) return res.status(404).json({ error: "Conversa não encontrada" });
+
+  try {
+    const accessToken = await getValidAccessToken(conversation.seller_id);
+    const file = await fetchMessageAttachmentFile(accessToken, attachmentId);
+    res.set("Content-Type", file.contentType);
+    res.send(file.buffer);
+  } catch (err) {
+    console.error("[conversations/attachment-download]", err.status, err.body || err.message);
+    res.status(502).json({ error: "Falha ao baixar o anexo do Mercado Livre." });
+  }
 });
 
 // Quando o Mercado Livre recusa o envio porque a conversa foi bloqueada
