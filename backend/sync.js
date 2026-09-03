@@ -383,15 +383,23 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
     const id = m?.id ? String(m.id) : null;
     if (id && existing.has(id)) continue; // ja gravada
     const fromId = String(m?.from?.user_id ?? "");
+    // Anexo que o comprador (ou o vendedor, por fora do painel) mandou
+    // junto com essa mensagem — ex: foto de um produto com defeito. Sem
+    // isso, so o texto ficava gravado e o anexo em si desaparecia (pedido
+    // do usuario: "Nem todas as midia estao sendo importadas"). Mesmo campo
+    // "attachments" usado pra ENVIAR anexo (ver sendMessage em ml/api.js) —
+    // a hipotese e que o GET devolve com o mesmo nome, igual ja confirmado
+    // pra reclamacoes (ver upsertClaim em claimsSync.js).
     await db.query(
-      `INSERT INTO messages (pack_id, message_id, direction, author_user_id, text, sent_date)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+      `INSERT INTO messages (pack_id, message_id, direction, author_user_id, text, attachments, sent_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
         String(packId),
         id,
         fromId === sellerIdStr ? "out" : "in",
         fromId || null,
         m?.text || null,
+        m?.attachments ? JSON.stringify(m.attachments) : null,
         messageDate(m),
       ]
     );

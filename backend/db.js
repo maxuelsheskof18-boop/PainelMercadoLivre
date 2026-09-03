@@ -243,6 +243,12 @@ async function init() {
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS shipping_type TEXT;
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS operator_name TEXT;
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_name TEXT;
+    -- Anexo que o COMPRADOR manda numa mensagem pos-venda (ex: foto de um
+    -- produto que veio errado) — ate agora so o texto era gravado, o anexo
+    -- em si era ignorado por completo (pedido do usuario: "Nem todas as
+    -- midia estao sendo importadas"). Mesmo formato/ideia de
+    -- claim_messages.attachments (ver db.js mais abaixo e claimsSync.js).
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments JSONB;
     ALTER TABLE claim_messages ADD COLUMN IF NOT EXISTS operator_name TEXT;
     ALTER TABLE claims ADD COLUMN IF NOT EXISTS shipping_type TEXT;
     ALTER TABLE claims ADD COLUMN IF NOT EXISTS resolved_by_operator_at TIMESTAMPTZ;
