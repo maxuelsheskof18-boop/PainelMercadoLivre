@@ -336,6 +336,51 @@ async function uploadMessageAttachment(accessToken, buffer, filename, mimetype) 
   return data;
 }
 
+// Baixa o ARQUIVO de um anexo trocado numa mensagem pos-venda — o comprador
+// as vezes manda foto (ex: "veio errado, olha a foto") junto com o texto, e
+// ate agora o painel so guardava/mostrava o texto, ignorando esse anexo por
+// completo (pedido do usuario: "Nem todas as midia estao sendo
+// importadas"). O id do anexo vem do campo "attachments" de cada mensagem
+// (ver upsertConversationFromPack em sync.js) — mesmo campo usado pra
+// ENVIAR anexo (ver sendMessage acima, que manda "attachments: [id, ...]"
+// no corpo), entao a hipotese e que o GET devolve esse campo com o mesmo
+// nome (mesma logica ja confirmada de verdade pra reclamacoes — ver
+// fetchClaimAttachmentFile em ml/claimsApi.js). "?tag=post_sale" incluido
+// por seguranca, ja que TODAS as outras chamadas desse mesmo endpoint de
+// mensagens pos-venda (GET e POST) precisam dele pra o Mercado Livre achar
+// o recurso certo (ver comentario em sendMessage acima e em
+// fetchPackMessages). Devolve o arquivo cru (buffer) + content-type, pra a
+// rota do painel repassar pro navegador sem expor o access_token.
+async function fetchMessageAttachmentFile(accessToken, attachmentId) {
+  const url = new URL(`${API_BASE}/messages/attachments/${attachmentId}`);
+  url.searchParams.set("tag", "post_sale");
+  url.searchParams.set("access_token", accessToken);
+
+  const res = await fetch(url.toString(), {
+    signal: AbortSignal.timeout(60_000),
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!res.ok) {
+    let body;
+    try {
+      body = await res.json();
+    } catch {
+      body = await res.text().catch(() => null);
+    }
+    const err = new Error(`Mercado Livre API ${res.status} ao baixar anexo de mensagem`);
+    err.status = res.status;
+    err.body = body;
+    throw err;
+  }
+
+  const arrayBuffer = await res.arrayBuffer();
+  return {
+    buffer: Buffer.from(arrayBuffer),
+    contentType: res.headers.get("content-type") || "application/octet-stream",
+  };
+}
+
 // Dados basicos do usuario autenticado (usado logo apos o OAuth para
 // confirmar qual conta/vendedor foi conectado).
 async function fetchMe(accessToken) {
@@ -355,5 +400,6 @@ module.exports = {
   parsePackResource,
   sendMessage,
   uploadMessageAttachment,
+  fetchMessageAttachmentFile,
   fetchMe,
 };
