@@ -584,6 +584,51 @@ router.get("/debug/probe-messages", async (req, res) => {
   res.json(report);
 });
 
+// Rota TEMPORARIA de diagnostico: o usuario relatou (com print real) que
+// mensagens com foto/anexo do comprador continuam aparecendo em branco (so
+// a data e hora, sem texto nem imagem nenhuma) mesmo depois da correcao que
+// deveria importar esses anexos (ver upsertConversationFromPack em sync.js,
+// que le o campo "attachments" de cada mensagem). A hipotese da correcao
+// era que o GET de mensagens devolve o anexo no mesmo campo "attachments"
+// usado pra ENVIAR (ver sendMessage em ml/api.js) — mas isso nunca foi
+// confirmado contra uma mensagem real com foto, so contra a documentacao. Se
+// o nome do campo de verdade for outro (ex: "message_attachments", ou o
+// anexo vier dentro de outra estrutura), a correcao simplesmente nunca
+// encontra nada pra gravar, e a mensagem continua em branco do mesmo jeito
+// que antes. Esta rota busca a conversa pelo PEDIDO (nao pelo pack_id, que o
+// vendedor nao tem como saber de cabeca) e devolve o JSON CRU de todas as
+// mensagens desse pack, direto do Mercado Livre, pra ver o nome real do
+// campo onde o anexo vem. Uso: abrir no navegador (ja logado)
+// /api/debug/probe-message-attachments/SEU_NUMERO_DE_PEDIDO
+router.get("/debug/probe-message-attachments/:orderId", async (req, res) => {
+  const { orderId } = req.params;
+  const { rows } = await db.query(
+    "SELECT pack_id, seller_id FROM conversations WHERE order_id = $1",
+    [orderId]
+  );
+  const conversation = rows[0];
+  if (!conversation) {
+    return res.status(404).json({ error: `Nenhuma conversa encontrada no banco pro pedido ${orderId}.` });
+  }
+
+  try {
+    const accessToken = await getValidAccessToken(conversation.seller_id);
+    const packData = await fetchPackMessages(accessToken, conversation.pack_id, conversation.seller_id);
+    res.json({
+      packId: conversation.pack_id,
+      sellerId: conversation.seller_id,
+      totalMensagens: Array.isArray(packData?.messages) ? packData.messages.length : null,
+      jsonCruCompleto: packData,
+    });
+  } catch (err) {
+    res.status(502).json({
+      error: "Falha ao buscar as mensagens desse pack no Mercado Livre.",
+      status: err.status,
+      body: err.body || err.message,
+    });
+  }
+});
+
 // Rota TEMPORARIA de diagnostico: chama fetchUnreadMessagePacks (a busca
 // dedicada por mensagens NAO LIDAS, ver comentario dela em ml/api.js) pra
 // cada conta e devolve a lista crua devolvida pelo Mercado Livre — serve pra
