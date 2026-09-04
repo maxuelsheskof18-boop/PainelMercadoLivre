@@ -156,8 +156,27 @@ router.get("/conversations", async (req, res) => {
   const orderDir = req.query.sort === "oldest" ? "ASC" : "DESC";
   const nullsPos = orderDir === "ASC" ? "NULLS FIRST" : "NULLS LAST";
 
+  // Marca se o PEDIDO dessa conversa tem uma reclamacao ainda ABERTA (aba
+  // separada de Reclamacoes, tabela "claims" — ver claimsSync.js). Pedido do
+  // usuario: quando o comprador abre reclamacao numa venda de "combinar
+  // entrega" (ou em qualquer venda), ela precisa continuar aparecendo (ou
+  // com um marcador) aqui em Mensagens tambem — sem isso, o vendedor so
+  // ficaria sabendo da reclamacao se checasse a aba de Reclamacoes por
+  // conta propria, podendo perder o prazo (ex: reputacao afetada, como no
+  // aviso real do Mercado Livre: "Você tem até [data] para... para que sua
+  // reputação não seja afetada"). "cl.order_id = c.order_id" cobre o caso
+  // comum (mesmo pedido); claims sem order_id (ex: reclamacao ligada a
+  // pagamento/envio, nao a pedido) simplesmente nunca casam aqui, sem falso
+  // positivo.
   const { rows } = await db.query(
-    `SELECT c.*, a.nickname AS seller_nickname
+    `SELECT c.*, a.nickname AS seller_nickname,
+            EXISTS (
+              SELECT 1 FROM claims cl
+               WHERE cl.seller_id = c.seller_id
+                 AND cl.order_id = c.order_id
+                 AND c.order_id IS NOT NULL
+                 AND cl.local_status <> 'closed'
+            ) AS has_open_claim
        FROM conversations c
        JOIN accounts a ON a.id = c.seller_id
        WHERE ${conditions.join(" AND ")}
@@ -177,7 +196,14 @@ router.get("/conversations/:packId/messages", async (req, res) => {
   );
 
   const { rows: convRows } = await db.query(
-    `SELECT c.*, a.nickname AS seller_nickname
+    `SELECT c.*, a.nickname AS seller_nickname,
+            EXISTS (
+              SELECT 1 FROM claims cl
+               WHERE cl.seller_id = c.seller_id
+                 AND cl.order_id = c.order_id
+                 AND c.order_id IS NOT NULL
+                 AND cl.local_status <> 'closed'
+            ) AS has_open_claim
        FROM conversations c
        JOIN accounts a ON a.id = c.seller_id
       WHERE c.pack_id = $1`,
