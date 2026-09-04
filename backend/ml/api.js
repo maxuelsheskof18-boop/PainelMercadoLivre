@@ -340,12 +340,13 @@ async function uploadMessageAttachment(accessToken, buffer, filename, mimetype) 
 // as vezes manda foto (ex: "veio errado, olha a foto") junto com o texto, e
 // ate agora o painel so guardava/mostrava o texto, ignorando esse anexo por
 // completo (pedido do usuario: "Nem todas as midia estao sendo
-// importadas"). O id do anexo vem do campo "attachments" de cada mensagem
-// (ver upsertConversationFromPack em sync.js) — mesmo campo usado pra
-// ENVIAR anexo (ver sendMessage acima, que manda "attachments: [id, ...]"
-// no corpo), entao a hipotese e que o GET devolve esse campo com o mesmo
-// nome (mesma logica ja confirmada de verdade pra reclamacoes — ver
-// fetchClaimAttachmentFile em ml/claimsApi.js). "?tag=post_sale" incluido
+// importadas"). O identificador do anexo (o "filename" gerado pelo Mercado
+// Livre, ex: "163262277_c442f9b8-....jpeg") vem do campo "message_attachments"
+// de cada mensagem (ver upsertConversationFromPack em sync.js) —
+// CONFIRMADO com JSON cru real via rota /debug/probe-message-attachments,
+// depois que uma primeira tentativa usando o campo "attachments" (nome
+// usado so no corpo do POST pra ENVIAR anexo, ver sendMessage acima) se
+// mostrou errada em producao. "?tag=post_sale" incluido
 // por seguranca, ja que TODAS as outras chamadas desse mesmo endpoint de
 // mensagens pos-venda (GET e POST) precisam dele pra o Mercado Livre achar
 // o recurso certo (ver comentario em sendMessage acima e em
