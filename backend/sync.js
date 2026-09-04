@@ -386,10 +386,13 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
     // Anexo que o comprador (ou o vendedor, por fora do painel) mandou
     // junto com essa mensagem — ex: foto de um produto com defeito. Sem
     // isso, so o texto ficava gravado e o anexo em si desaparecia (pedido
-    // do usuario: "Nem todas as midia estao sendo importadas"). Mesmo campo
-    // "attachments" usado pra ENVIAR anexo (ver sendMessage em ml/api.js) —
-    // a hipotese e que o GET devolve com o mesmo nome, igual ja confirmado
-    // pra reclamacoes (ver upsertClaim em claimsSync.js).
+    // do usuario: "Nem todas as midia estao sendo importadas"). CONFIRMADO
+    // com JSON cru real (rota /debug/probe-message-attachments) que o campo
+    // NAO se chama "attachments" (esse e so o campo usado pra ENVIAR, no
+    // corpo do POST — ver sendMessage em ml/api.js) e sim
+    // "message_attachments", com uma lista de objetos tipo
+    // { filename, original_filename, type, size, ... } — sem "id" proprio,
+    // o identificador usado pra baixar o arquivo depois e o "filename".
     await db.query(
       `INSERT INTO messages (pack_id, message_id, direction, author_user_id, text, attachments, sent_date)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -399,7 +402,9 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
         fromId === sellerIdStr ? "out" : "in",
         fromId || null,
         m?.text || null,
-        m?.attachments ? JSON.stringify(m.attachments) : null,
+        Array.isArray(m?.message_attachments) && m.message_attachments.length
+          ? JSON.stringify(m.message_attachments)
+          : null,
         messageDate(m),
       ]
     );
