@@ -48,6 +48,7 @@ const threadDeliveryTag = document.getElementById("thread-delivery-tag");
 const threadDeliveredTag = document.getElementById("thread-delivered-tag");
 const threadShippingTag = document.getElementById("thread-shipping-tag");
 const threadClaimStageTag = document.getElementById("thread-claim-stage-tag");
+const threadClaimWarningTag = document.getElementById("thread-claim-warning-tag");
 const claimDueBanner = document.getElementById("claim-due-banner");
 const claimInfoCard = document.getElementById("claim-info-card");
 const claimInfoTitle = document.getElementById("claim-info-title");
@@ -596,6 +597,7 @@ async function loadConversations() {
           <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · #${conv.order_id}` : ""}${fmtMoney(conv.order_total) ? ` · ${fmtMoney(conv.order_total)}` : ""}${fmtQuantity(conv.order_quantity) ? ` · ${fmtQuantity(conv.order_quantity)}` : ""}</span>
           ${conv.is_delivered ? '<span class="tag tag-delivered">Pedido já entregue</span>' : conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
           ${conv.shipping_type ? `<span class="tag tag-shipping">${conv.shipping_type}</span>` : ""}
+          ${conv.has_open_claim ? '<span class="tag tag-claim" title="Este pedido tem uma reclamação aberta na aba Reclamações">⚠ Reclamação aberta</span>' : ""}
         </div>
       </div>
     `;
@@ -709,6 +711,7 @@ function renderClaimThreadInfo(claim) {
   // o tipo de envio (Flex/Agência/etc.), que existe pras duas coisas.
   threadDeliveryTag.classList.add("hidden");
   threadDeliveredTag.classList.add("hidden");
+  threadClaimWarningTag.classList.add("hidden");
   threadShippingTag.textContent = claim.shipping_type || "-";
   threadShippingTag.classList.toggle("hidden", !claim.shipping_type);
   quickTemplates.classList.add("hidden");
@@ -954,6 +957,7 @@ function renderQuestionThreadInfo(question) {
   threadDeliveredTag.classList.add("hidden");
   threadShippingTag.classList.add("hidden");
   threadClaimStageTag.classList.add("hidden");
+  threadClaimWarningTag.classList.add("hidden");
   claimDueBanner.classList.add("hidden");
   claimInfoCard.classList.add("hidden");
   evidenceBox.classList.add("hidden");
@@ -1372,6 +1376,12 @@ function renderThreadInfo(conv) {
   // O atalho da mensagem padrao de "combinar entrega" so faz sentido pra
   // pedidos classificados assim — nos outros, fica escondido.
   quickTemplates.classList.toggle("hidden", !conv.is_combinar_entrega);
+  // Avisa aqui em Mensagens quando o MESMO pedido tem uma reclamacao aberta
+  // na aba Reclamacoes (ver has_open_claim em GET /conversations e GET
+  // /conversations/:packId/messages) — pedido do usuario: uma venda de
+  // "combinar entrega" com reclamacao aberta nao pode passar despercebida
+  // so porque o vendedor estava olhando a aba de Mensagens.
+  threadClaimWarningTag.classList.toggle("hidden", !conv.has_open_claim);
 
   // Elementos que so existem pra reclamacoes (ver renderClaimThreadInfo) —
   // sempre escondidos numa conversa de mensagens normal.
