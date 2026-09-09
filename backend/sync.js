@@ -2,13 +2,212 @@
 // as tabelas locais (conversations + messages), decidindo se ela fica
 // "pending" (aguardando resposta do vendedor) ou "answered".
 const db = require("./db");
-const {
-  fetchPackMessages,
-  fetchPendingRead,
-  fetchOrder,
-  fetchShipment,
-} = require("./ml/api");
-const { getValidAccessToken } = require("./ml/tokens");
+const { fetchPackMessages, fetchRecentOrders, fetchOrderById, fetchShipment, fetchUnreadMessagePacks } = require("./ml/api");
+const { getValidAccessToken, withTokenRetry } = require("./ml/tokens");
+
+// Rotulo legivel pra cada "logistic_type" que o Mercado Livre usa nos envios
+// (confirmado na documentacao oficial de Mercado Envios): "self_service" e o
+// Flex (o proprio vendedor, ou alguem contratado por ele, entrega);
+// "xd_drop_off" e a Agência (o vendedor leva o pacote pra um ponto/agencia
+// do Mercado Envios); "cross_docking" e a Coleta (uma transportadora busca
+// o pacote na casa/loja do vendedor); "drop_off" e o Correios (postagem
+// tradicional); "fulfillment" e o Full (estoque no proprio Mercado Livre).
+// Combinar entrega (tag "no_shipping") nao tem envio de verdade, entao nao
+// entra aqui — fica sempre sem esse rotulo.
+const SHIPPING_TYPE_LABELS = {
+  self_service: "Flex",
+  xd_drop_off: "Agência",
+  cross_docking: "Coleta",
+  drop_off: "Correios",
+  fulfillment: "Full",
+};
+
+// Busca o tipo de envio (Flex/Agência/Coleta/Correios/Full) de um pedido, pra
+// mostrar como uma tag no painel — o vendedor pediu isso pra saber de onde
+// veio a venda, do mesmo jeito que ja existe a tag de "combinar entrega".
+// So vale a pena chamar isso pros pedidos que ja vamos buscar o detalhe
+// completo de qualquer forma (ou seja, os que tem mensagem) — chamar pra
+// TODO pedido verificado a cada reconciliacao pesaria demais numa conta de
+// alto volume, sem necessidade (pedido sem mensagem nao aparece em nenhuma
+// aba, entao a tag nao seria vista mesmo).
+async function fetchShippingType(accessToken, order) {
+  if (!order) return null;
+  const tags = Array.isArray(order.tags) ? order.tags : [];
+  if (tags.includes("no_shipping")) return null; // combinar entrega: sem envio de verdade
+  const shippingId = order?.shipping?.id;
+  if (!shippingId) return null;
+  try {
+    const shipment = await fetchShipment(accessToken, shippingId);
+    const type = shipment?.logistic_type || shipment?.logistic?.type || null;
+    if (!type) return null;
+    return SHIPPING_TYPE_LABELS[type] || null;
+  } catch (err) {
+    console.warn(
+      `[shippingType] falha ao buscar o envio ${shippingId} do pedido ${order?.id}:`,
+      err.status,
+      err.body || err.message
+    );
+    return null;
+  }
+}
+
+// Quantos pedidos recentes verificar por conta a cada reconciliacao. O
+// Mercado Livre nao tem mais (ou nunca teve de forma confiavel, pra essa
+// aplicacao) um endpoint que liste so os pedidos com mensagem pendente —
+// confirmamos isso testando ao vivo. Em vez disso, olhamos os N pedidos
+// mais recentes e checamos as mensagens de cada um. Isso cobre bem o caso
+// de uso (webhooks cuidam do tempo real; isso aqui e so uma rede de
+// seguranca).
+//
+// PROBLEMA JA VISTO NA PRATICA: numa conta que vende muito (ex: dezenas de
+// pedidos por dia via Flex/Agencia, alem dos de combinar entrega), os N
+// pedidos MAIS RECENTES no geral podem ser todos de outros tipos de envio —
+// um pedido de combinar entrega de ontem pode ja ter saido dessa janela so
+// porque vieram 50+ pedidos de outros tipos depois dele. Foi exatamente o
+// que aconteceu com uma conta de maior volume: as mensagens dela paravam de
+// ser importadas.
+//
+// A correcao: alem dessa varredura geral (que continua servindo de rede de
+// seguranca ampla), fazemos TAMBEM uma busca dedicada e paginada so pelos
+// pedidos com a tag "no_shipping" (= combinar entrega) — assim um pedido
+// desse tipo nunca fica de fora so por causa do volume de outros tipos de
+// envio. Ver fetchAllNoShippingOrders() abaixo.
+const RECENT_ORDERS_LIMIT = 50;
+
+// Tamanho de cada pagina e quantas paginas buscar, no maximo, na varredura
+// dedicada de "combinar entrega". Combinar entrega costuma ser uma fatia
+// pequena do total de vendas de uma loja, entao da pra cobrir uma janela
+// bem mais larga (ate 300 pedidos) gastando poucas chamadas extras de API.
+const NO_SHIPPING_PAGE_SIZE = 50;
+const NO_SHIPPING_MAX_PAGES = 6;
+
+// Busca TODOS os pedidos recentes marcados com a tag "no_shipping"
+// (combinar entrega), paginando ate NO_SHIPPING_MAX_PAGES paginas ou ate
+// acabarem os resultados — o que vier primeiro.
+async function fetchAllNoShippingOrders(accessToken, sellerId) {
+  const all = [];
+  let offset = 0;
+  for (let page = 0; page < NO_SHIPPING_MAX_PAGES; page++) {
+    const data = await fetchRecentOrders(accessToken, sellerId, {
+      limit: NO_SHIPPING_PAGE_SIZE,
+      offset,
+      tags: "no_shipping",
+    });
+    const results = Array.isArray(data?.results) ? data.results : [];
+    all.push(...results);
+    offset += results.length;
+    const total = data?.paging?.total ?? offset;
+    if (results.length === 0 || offset >= total) break;
+  }
+  return all;
+}
+
+// Segunda rede de seguranca dedicada, pelo mesmo motivo da de "combinar
+// entrega" acima: o usuario relatou pedidos JA ENTREGUES (nao so combinar
+// entrega — pedidos normais de Flex/Agencia tambem) recebendo mensagem nova
+// (pedido de nota fiscal, duvida) muito tempo depois de terem sido criados
+// — numa conta de alto volume, um pedido assim ja saiu ha muito da janela
+// dos RECENT_ORDERS_LIMIT mais recentes (que ordena por data do pedido, nao
+// da mensagem). Como o Mercado Livre nao tem uma busca por "tem mensagem
+// nova", usamos o filtro por order.date_last_updated (documentado
+// separadamente de date_created) pra pegar pedidos que tiveram QUALQUER
+// atividade recente, mesmo antigos. Isso e complementar ao webhook em tempo
+// real (que deveria ser o caminho principal pra esse caso) — nao um
+// substituto: nao ha garantia de que o Mercado Livre atualiza esse campo so
+// por causa de uma mensagem nova, so quando o status/envio muda. Por isso a
+// importancia de tambem confirmar se o webhook de "messages" esta mesmo
+// configurado e chegando pra essa conta.
+// Paginas mais curtas que as de "combinar entrega" (3 em vez de 6) de
+// proposito: essa busca (sem filtro de tag) e a de "delivered" abaixo somam
+// chamadas de API a cada reconciliacao (a cada 10 minutos), e numa conta de
+// altissimo volume como a que motivou essa correcao (quase 100 mudancas de
+// pedido notificadas em poucas horas) isso pode virar bastante chamada
+// extra. 150 pedidos por busca ja cobre bem o caso comum sem pesar demais.
+const RECENTLY_UPDATED_WINDOW_DAYS = 3;
+const RECENTLY_UPDATED_PAGE_SIZE = 50;
+const RECENTLY_UPDATED_MAX_PAGES = 3;
+
+// Formata uma data no formato que a API do Mercado Livre espera
+// (ISO 8601 com o offset de Brasilia, -03:00 — o Brasil nao tem mais
+// horario de verao desde 2019, entao o offset e fixo).
+function toMlDateParam(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const shifted = new Date(date.getTime() - 3 * 60 * 60 * 1000);
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}T${pad(
+    shifted.getUTCHours()
+  )}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}.000-03:00`;
+}
+
+async function fetchAllRecentlyUpdatedOrders(accessToken, sellerId) {
+  const to = new Date();
+  const from = new Date(to.getTime() - RECENTLY_UPDATED_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const all = [];
+  let offset = 0;
+  let total = 0;
+  for (let page = 0; page < RECENTLY_UPDATED_MAX_PAGES; page++) {
+    const data = await fetchRecentOrders(accessToken, sellerId, {
+      limit: RECENTLY_UPDATED_PAGE_SIZE,
+      offset,
+      dateLastUpdatedFrom: toMlDateParam(from),
+      dateLastUpdatedTo: toMlDateParam(to),
+    });
+    const results = Array.isArray(data?.results) ? data.results : [];
+    all.push(...results);
+    offset += results.length;
+    total = data?.paging?.total ?? offset;
+    if (results.length === 0 || offset >= total) break;
+  }
+  // Numa conta de altissimo volume (visto na pratica: uma conta chegou a
+  // gerar quase 100 notificacoes de mudanca de pedido em poucas horas),
+  // essa busca sem filtro de tag pode ter MUITO mais pedidos "com atividade
+  // recente" (qualquer mudanca de status) do que da pra cobrir nas paginas
+  // buscadas — e ai um pedido especifico com mensagem nova pode acabar
+  // ficando de fora mesmo assim. Melhor avisar isso no log (sem cortar
+  // silenciosamente) do que fingir que a cobertura foi completa.
+  if (total > all.length) {
+    console.warn(
+      `[reconcile] busca de atividade recente da conta ${sellerId}: so cobri ${all.length} de ${total} pedidos (limite de paginas atingido) — pode haver pedidos com mensagem nova fora dessa varredura.`
+    );
+  }
+  return all;
+}
+
+// Quarta rede de seguranca, mais direcionada que a de "atividade recente"
+// acima: busca os pedidos com a tag "delivered" (ja entregues), sem filtro
+// de data. A API do Mercado Livre ordena por data_desc que, pra contas de
+// vendedor, e a data de FECHAMENTO do pedido (nao de criacao) — entao os
+// primeiros resultados sao sempre os pedidos entregues/fechados MAIS
+// RECENTEMENTE, o que cobre bem o caso de "comprador manda mensagem logo
+// depois da entrega" sem depender do campo incerto date_last_updated.
+// Complementa (nao substitui) a busca acima: uma conta de alto volume tem
+// MUITO mais pedidos entregues no total do que "com atividade nas ultimas
+// 72h", entao aqui vale a pena olhar uma janela maior de paginas.
+const DELIVERED_PAGE_SIZE = 50;
+const DELIVERED_MAX_PAGES = 3;
+
+async function fetchAllDeliveredOrders(accessToken, sellerId) {
+  const all = [];
+  let offset = 0;
+  let total = 0;
+  for (let page = 0; page < DELIVERED_MAX_PAGES; page++) {
+    const data = await fetchRecentOrders(accessToken, sellerId, {
+      limit: DELIVERED_PAGE_SIZE,
+      offset,
+      tags: "delivered",
+    });
+    const results = Array.isArray(data?.results) ? data.results : [];
+    all.push(...results);
+    offset += results.length;
+    total = data?.paging?.total ?? offset;
+    if (results.length === 0 || offset >= total) break;
+  }
+  if (total > all.length) {
+    console.warn(
+      `[reconcile] busca de pedidos entregues (tags=delivered) da conta ${sellerId}: so cobri ${all.length} de ${total} pedidos entregues no total (limite de paginas atingido) — como a lista vem ordenada pelos fechados mais recentemente primeiro, os pedidos entregues ha mais tempo podem ficar de fora, mas os recem-entregues (que sao os que costumam receber mensagem de pos-entrega) estao cobertos.`
+    );
+  }
+  return all;
+}
 
 function messageDate(msg) {
   return (
@@ -20,21 +219,52 @@ function messageDate(msg) {
   );
 }
 
-// Normaliza qualquer data (ISO 8601 do ML ou "YYYY-MM-DD HH:MM:SS" do SQLite)
-// para ISO 8601 em UTC. Assim o ORDER BY last_message_date fica consistente e
-// o front recebe sempre o mesmo formato.
-function toIso(value) {
-  if (!value) return null;
-  const d = new Date(value);
-  if (isNaN(d.getTime())) return typeof value === "string" ? value : null;
-  return d.toISOString();
+// A tag "no_shipping" num pedido significa que nao ha envio pelo Mercado
+// Envios associado — ou seja, a entrega e combinada diretamente entre
+// vendedor e comprador. Confirmamos isso comparando pedidos reais: os que
+// tinham essa tag eram exatamente os de "combinar entrega", e o unico
+// pedido com envio de verdade (logistic_type real) nao tinha essa tag.
+function extractOrderInfo(order) {
+  if (!order) return null;
+  const tags = Array.isArray(order.tags) ? order.tags : [];
+  const isCombinarEntrega = tags.includes("no_shipping");
+  // Mesma tag usada em isAlreadyResolved() (pedidos sem mensagem que ja
+  // foram entregues/concluidos). Aqui serve pra outro caso: pedidos que TEM
+  // mensagem, mas o comprador escreveu depois de ja ter recebido a compra
+  // (ex: pedindo nota fiscal, duvida geral) — esses vao pra uma aba propria
+  // ("Entregues"), separada de Pendentes/Respondidas/Sem contato.
+  const isDelivered = tags.includes("delivered");
+
+  const productTitle =
+    (order.order_items || [])
+      .map((oi) => oi?.item?.title)
+      .filter(Boolean)
+      .join(", ") || null;
+
+  const buyerFullName = order.buyer
+    ? [order.buyer.first_name, order.buyer.last_name]
+        .map((s) => (s || "").trim())
+        .filter(Boolean)
+        .join(" ") || null
+    : null;
+
+  // total_amount e o valor total da venda (soma dos itens); e o mesmo
+  // numero que aparece como "Total" na tela do pedido no Mercado Livre.
+  const orderTotal = typeof order.total_amount === "number" ? order.total_amount : null;
+
+  // Soma das quantidades de cada item do pedido (ex: "4 unidades" que
+  // aparece na tela do pedido no Mercado Livre). Fica null quando o pedido
+  // nao tem itens com quantidade valida.
+  const quantitySum = (order.order_items || []).reduce((acc, oi) => {
+    const q = Number(oi?.quantity);
+    return Number.isFinite(q) ? acc + q : acc;
+  }, 0);
+  const orderQuantity = quantitySum > 0 ? quantitySum : null;
+
+  return { isCombinarEntrega, isDelivered, productTitle, buyerFullName, orderTotal, orderQuantity };
 }
 
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function upsertConversationFromPack(sellerId, packId, packData, orderId) {
+async function upsertConversationFromPack(sellerId, packId, packData, orderId, orderInfo) {
   const messages = Array.isArray(packData?.messages) ? [...packData.messages] : [];
 
   // Ordena por data (mais antiga -> mais recente). Se a data vier vazia,
@@ -49,182 +279,822 @@ function upsertConversationFromPack(sellerId, packId, packData, orderId) {
   const last = messages[messages.length - 1];
   if (!last) return; // conversa sem mensagens ainda, nada a fazer
 
+  const sellerIdStr = String(sellerId);
   const lastFromId = String(last?.from?.user_id ?? "");
-  const isLastFromSeller = lastFromId === String(sellerId);
-  const status = isLastFromSeller ? "answered" : "pending";
+  const isLastFromSeller = lastFromId === sellerIdStr;
+  let status = isLastFromSeller ? "answered" : "pending";
+
+  // Se essa conversa foi marcada manualmente como resolvida pelo operador
+  // (atendimento antigo, tratado por fora do painel), preserva isso mesmo
+  // numa resincronizacao — a NAO SER que tenha chegado mensagem nova depois
+  // da marcacao, caso em que reabre sozinha (mesma logica de upsertClaim em
+  // claimsSync.js, so que aqui com o status 'resolved_by_operator', que e
+  // DIFERENTE do 'resolved' automatico usado em markConversationResolved).
+  const { rows: existingResolveRows } = await db.query(
+    "SELECT resolved_by_operator_at, resolved_by_operator FROM conversations WHERE pack_id = $1",
+    [String(packId)]
+  );
+  let resolvedByOperatorAt = existingResolveRows[0]?.resolved_by_operator_at || null;
+  let resolvedByOperator = existingResolveRows[0]?.resolved_by_operator || null;
+  const lastMsgDate = messageDate(last);
+  if (resolvedByOperatorAt && lastMsgDate && new Date(lastMsgDate) > new Date(resolvedByOperatorAt)) {
+    resolvedByOperatorAt = null;
+    resolvedByOperator = null;
+  }
+  if (resolvedByOperatorAt) status = "resolved_by_operator";
 
   // Descobre quem e o comprador: o participante que nao e o vendedor.
   let buyerId = null;
   for (const m of messages) {
     const fromId = String(m?.from?.user_id ?? "");
     const toId = String(m?.to?.user_id ?? "");
-    if (fromId && fromId !== String(sellerId)) buyerId = fromId;
-    if (toId && toId !== String(sellerId)) buyerId = buyerId || toId;
+    if (fromId && fromId !== sellerIdStr) buyerId = fromId;
+    if (toId && toId !== sellerIdStr) buyerId = buyerId || toId;
   }
 
   const buyerNickname = packData?.buyer?.nickname || null;
+  const productTitle = orderInfo?.productTitle ?? null;
+  const buyerFullName = orderInfo?.buyerFullName ?? null;
+  const orderTotal = orderInfo && typeof orderInfo.orderTotal === "number" ? orderInfo.orderTotal : null;
+  const orderQuantity = orderInfo && typeof orderInfo.orderQuantity === "number" ? orderInfo.orderQuantity : null;
+  // is_combinar_entrega fica null (nao "false") quando ainda nao
+  // conseguimos os detalhes do pedido — assim nao classificamos errado por
+  // falta de dado, so quando o proprio orderInfo.isCombinarEntrega==false.
+  const isCombinarEntrega =
+    orderInfo && typeof orderInfo.isCombinarEntrega === "boolean" ? orderInfo.isCombinarEntrega : null;
+  // Mesma logica do is_combinar_entrega: fica null (nao "false") quando
+  // ainda nao temos os detalhes do pedido, pra nao reclassificar por engano
+  // uma conversa que ja estava marcada como "ja entregue" antes.
+  const isDelivered = orderInfo && typeof orderInfo.isDelivered === "boolean" ? orderInfo.isDelivered : null;
+  // Mesma logica: fica null (nao mexe no que ja tinha) quando ainda nao
+  // buscamos o envio dessa vez — so os pontos que ja buscam o pedido
+  // completo (ver fetchShippingType) preenchem isso de verdade.
+  const shippingType = orderInfo && orderInfo.shippingType !== undefined ? orderInfo.shippingType : null;
 
-  db.prepare(
+  await db.query(
     `INSERT INTO conversations
-       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, last_message_text, last_message_date, status, updated_at)
-     VALUES (@pack_id, @seller_id, @order_id, @buyer_id, @buyer_nickname, @last_message_text, @last_message_date, @status, datetime('now'))
-     ON CONFLICT(pack_id) DO UPDATE SET
-       order_id = COALESCE(excluded.order_id, conversations.order_id),
-       buyer_id = COALESCE(excluded.buyer_id, conversations.buyer_id),
-       buyer_nickname = COALESCE(excluded.buyer_nickname, conversations.buyer_nickname),
-       last_message_text = excluded.last_message_text,
-       last_message_date = excluded.last_message_date,
-       status = excluded.status,
-       updated_at = datetime('now')`
-  ).run({
-    pack_id: String(packId),
-    seller_id: sellerId,
-    order_id: orderId ? String(orderId) : null,
-    buyer_id: buyerId,
-    buyer_nickname: buyerNickname,
-    last_message_text: last?.text || null,
-    last_message_date: toIso(messageDate(last)),
-    status,
-  });
+       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, order_quantity, is_combinar_entrega, is_delivered, shipping_type, last_message_text, last_message_date, status, resolved_by_operator_at, resolved_by_operator, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
+     ON CONFLICT (pack_id) DO UPDATE SET
+       order_id = EXCLUDED.order_id,
+       buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
+       buyer_nickname = COALESCE(EXCLUDED.buyer_nickname, conversations.buyer_nickname),
+       buyer_full_name = COALESCE(EXCLUDED.buyer_full_name, conversations.buyer_full_name),
+       product_title = COALESCE(EXCLUDED.product_title, conversations.product_title),
+       order_total = COALESCE(EXCLUDED.order_total, conversations.order_total),
+       order_quantity = COALESCE(EXCLUDED.order_quantity, conversations.order_quantity),
+       is_combinar_entrega = COALESCE(EXCLUDED.is_combinar_entrega, conversations.is_combinar_entrega),
+       is_delivered = COALESCE(EXCLUDED.is_delivered, conversations.is_delivered),
+       shipping_type = COALESCE(EXCLUDED.shipping_type, conversations.shipping_type),
+       last_message_text = EXCLUDED.last_message_text,
+       last_message_date = EXCLUDED.last_message_date,
+       status = EXCLUDED.status,
+       resolved_by_operator_at = EXCLUDED.resolved_by_operator_at,
+       resolved_by_operator = EXCLUDED.resolved_by_operator,
+       updated_at = now()`,
+    [
+      String(packId),
+      sellerIdStr,
+      orderId || null,
+      buyerId,
+      buyerNickname,
+      buyerFullName,
+      productTitle,
+      orderTotal,
+      orderQuantity,
+      isCombinarEntrega,
+      isDelivered,
+      shippingType,
+      last?.text || null,
+      messageDate(last),
+      status,
+      resolvedByOperatorAt,
+      resolvedByOperator,
+    ]
+  );
 
-  const insertMsg = db.prepare(
-    `INSERT OR IGNORE INTO messages (pack_id, message_id, direction, author_user_id, text, sent_date)
-     VALUES (?, ?, ?, ?, ?, ?)`
+  const { rows: existingRows } = await db.query(
+    "SELECT message_id FROM messages WHERE pack_id = $1",
+    [String(packId)]
   );
-  // Casa a resposta que o painel gravou de forma otimista (message_id NULL)
-  // com a versao real que agora veio da API, em vez de duplicar a linha.
-  const claimOptimistic = db.prepare(
-    `UPDATE messages SET message_id = @message_id, sent_date = @sent_date
-     WHERE id = (
-       SELECT id FROM messages
-       WHERE pack_id = @pack_id AND message_id IS NULL AND direction = 'out'
-         AND text = @text
-       ORDER BY id ASC LIMIT 1
-     )`
-  );
-
-  const existing = new Set(
-    db
-      .prepare("SELECT message_id FROM messages WHERE pack_id = ? AND message_id IS NOT NULL")
-      .all(String(packId))
-      .map((r) => r.message_id)
-  );
+  const existing = new Set(existingRows.map((r) => r.message_id));
 
   for (const m of messages) {
     const id = m?.id ? String(m.id) : null;
     if (id && existing.has(id)) continue; // ja gravada
     const fromId = String(m?.from?.user_id ?? "");
-    const direction = fromId === String(sellerId) ? "out" : "in";
-    const text = m?.text || null;
-    const sentDate = toIso(messageDate(m));
-
-    if (id && direction === "out" && text) {
-      const claimed = claimOptimistic.run({
-        message_id: id,
-        sent_date: sentDate,
-        pack_id: String(packId),
-        text,
-      });
-      if (claimed.changes > 0) {
-        existing.add(id);
-        continue;
-      }
-    }
-
-    insertMsg.run(String(packId), id, direction, fromId || null, text, sentDate);
-    if (id) existing.add(id);
+    // Anexo que o comprador (ou o vendedor, por fora do painel) mandou
+    // junto com essa mensagem — ex: foto de um produto com defeito. Sem
+    // isso, so o texto ficava gravado e o anexo em si desaparecia (pedido
+    // do usuario: "Nem todas as midia estao sendo importadas"). CONFIRMADO
+    // com JSON cru real (rota /debug/probe-message-attachments) que o campo
+    // NAO se chama "attachments" (esse e so o campo usado pra ENVIAR, no
+    // corpo do POST — ver sendMessage em ml/api.js) e sim
+    // "message_attachments", com uma lista de objetos tipo
+    // { filename, original_filename, type, size, ... } — sem "id" proprio,
+    // o identificador usado pra baixar o arquivo depois e o "filename".
+    await db.query(
+      `INSERT INTO messages (pack_id, message_id, direction, author_user_id, text, attachments, sent_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        String(packId),
+        id,
+        fromId === sellerIdStr ? "out" : "in",
+        fromId || null,
+        m?.text || null,
+        Array.isArray(m?.message_attachments) && m.message_attachments.length
+          ? JSON.stringify(m.message_attachments)
+          : null,
+        messageDate(m),
+      ]
+    );
   }
 }
 
-// Busca dados do pedido (item, valor, envio) e grava na conversa. Best-effort:
-// qualquer falha e ignorada e sera tentada de novo na proxima sincronizacao.
-async function enrichOrder(sellerId, packId) {
-  const conv = db
-    .prepare("SELECT order_id, order_enriched_at FROM conversations WHERE pack_id = ?")
-    .get(String(packId));
-  if (!conv || !conv.order_id) return;
-  // Ja enriquecido nas ultimas 6h -> nao repete (o status de envio muda pouco).
-  if (conv.order_enriched_at && Date.now() - new Date(conv.order_enriched_at).getTime() < 6 * 60 * 60 * 1000) {
-    return;
-  }
+// Grava um pedido de "combinar entrega" que AINDA NAO TEM nenhuma mensagem
+// trocada — acontece quando o comprador compra sem perceber que precisa
+// combinar a entrega, e por isso nunca escreve. O vendedor pediu pra ver
+// esses pedidos tambem (numa lista separada, "Sem contato"), pra poder
+// iniciar a conversa. Diferente de upsertConversationFromPack, aqui nao ha
+// mensagens pra gravar na tabela "messages" — so o pedido em si.
+//
+// O ON CONFLICT so atualiza quando a conversa ja gravada tambem esta como
+// 'no_contact' (ou e um registro novo): se ja existe uma conversa de
+// verdade (pending/answered/blocked) pra esse pack_id, esse UPDATE nao mexe
+// nela — quem manda nesse caso e sempre upsertConversationFromPack.
+async function upsertNoContactOrder(sellerId, packId, order, orderInfo) {
+  const sellerIdStr = String(sellerId);
+  const buyerId = order?.buyer?.id != null ? String(order.buyer.id) : null;
+  const buyerNickname = order?.buyer?.nickname || null;
+  const buyerFullName = orderInfo?.buyerFullName ?? null;
+  const productTitle = orderInfo?.productTitle ?? null;
+  const orderTotal = orderInfo && typeof orderInfo.orderTotal === "number" ? orderInfo.orderTotal : null;
+  const orderQuantity = orderInfo && typeof orderInfo.orderQuantity === "number" ? orderInfo.orderQuantity : null;
 
-  try {
-    const accessToken = await getValidAccessToken(sellerId);
-    const order = await fetchOrder(accessToken, conv.order_id);
+  await db.query(
+    `INSERT INTO conversations
+       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, order_quantity, is_combinar_entrega, last_message_text, last_message_date, status, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, NULL, NULL, 'no_contact', now())
+     ON CONFLICT (pack_id) DO UPDATE SET
+       buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
+       buyer_nickname = COALESCE(EXCLUDED.buyer_nickname, conversations.buyer_nickname),
+       buyer_full_name = COALESCE(EXCLUDED.buyer_full_name, conversations.buyer_full_name),
+       product_title = COALESCE(EXCLUDED.product_title, conversations.product_title),
+       order_total = COALESCE(EXCLUDED.order_total, conversations.order_total),
+       order_quantity = COALESCE(EXCLUDED.order_quantity, conversations.order_quantity),
+       is_combinar_entrega = true,
+       updated_at = now()
+     WHERE conversations.status = 'no_contact'`,
+    [
+      String(packId),
+      sellerIdStr,
+      order?.id != null ? String(order.id) : null,
+      buyerId,
+      buyerNickname,
+      buyerFullName,
+      productTitle,
+      orderTotal,
+      orderQuantity,
+    ]
+  );
+}
 
-    const firstItem = Array.isArray(order?.order_items) ? order.order_items[0] : null;
-    const itemTitle = firstItem?.item?.title || null;
-    const itemQuantity = Array.isArray(order?.order_items)
-      ? order.order_items.reduce((sum, it) => sum + (Number(it?.quantity) || 0), 0)
-      : null;
+// Um pedido ja entregue (mas que NAO e combinar entrega — esse caso ja e
+// tratado por isAlreadyResolved/markConversationResolved acima) que AINDA
+// NAO recebeu mensagem nenhuma. Diferente de "Sem contato" (que e uma aba
+// visivel), essa e uma marcacao interna ('delivered_watch', nunca aparece
+// em nenhuma aba) so pra "lembrar" desse pedido pros proximos ciclos de
+// reconciliacao — ver o passo de reverificacao logo depois do loop
+// principal em reconcileAccount. Sem isso, um pedido assim (encontrado hoje
+// pela busca dedicada tags=delivered) podia "sumir" de novo silenciosamente
+// assim que saisse da janela dessa busca (numa conta de alto volume, isso
+// acontece rapido), mesmo que o comprador so mande a mensagem dias depois.
+async function upsertDeliveredWatchOrder(sellerId, packId, order, orderInfo) {
+  const sellerIdStr = String(sellerId);
+  const buyerId = order?.buyer?.id != null ? String(order.buyer.id) : null;
+  const buyerNickname = order?.buyer?.nickname || null;
+  const buyerFullName = orderInfo?.buyerFullName ?? null;
+  const productTitle = orderInfo?.productTitle ?? null;
+  const orderTotal = orderInfo && typeof orderInfo.orderTotal === "number" ? orderInfo.orderTotal : null;
+  const orderQuantity = orderInfo && typeof orderInfo.orderQuantity === "number" ? orderInfo.orderQuantity : null;
 
-    let shippingStatus = null;
-    const shipmentId = order?.shipping?.id;
-    if (shipmentId) {
-      try {
-        const shipment = await fetchShipment(accessToken, shipmentId);
-        shippingStatus = shipment?.status || null;
-      } catch {
-        // escopo de logistica pode nao estar liberado; ignora
-      }
-    }
-
-    db.prepare(
-      `UPDATE conversations SET
-         item_title = @item_title,
-         item_quantity = @item_quantity,
-         order_total = @order_total,
-         currency = @currency,
-         order_status = @order_status,
-         shipping_status = @shipping_status,
-         order_enriched_at = @order_enriched_at
-       WHERE pack_id = @pack_id`
-    ).run({
-      item_title: itemTitle,
-      item_quantity: itemQuantity,
-      order_total: order?.total_amount ?? null,
-      currency: order?.currency_id || null,
-      order_status: order?.status || null,
-      shipping_status: shippingStatus,
-      order_enriched_at: nowIso(),
-      pack_id: String(packId),
-    });
-  } catch (err) {
-    console.error(`[order] falha ao enriquecer pack ${packId}:`, err.message);
-  }
+  await db.query(
+    `INSERT INTO conversations
+       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, order_quantity, is_combinar_entrega, is_delivered, last_message_text, last_message_date, status, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, true, NULL, NULL, 'delivered_watch', now())
+     ON CONFLICT (pack_id) DO UPDATE SET
+       buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
+       buyer_nickname = COALESCE(EXCLUDED.buyer_nickname, conversations.buyer_nickname),
+       buyer_full_name = COALESCE(EXCLUDED.buyer_full_name, conversations.buyer_full_name),
+       product_title = COALESCE(EXCLUDED.product_title, conversations.product_title),
+       order_total = COALESCE(EXCLUDED.order_total, conversations.order_total),
+       order_quantity = COALESCE(EXCLUDED.order_quantity, conversations.order_quantity),
+       is_delivered = true,
+       updated_at = now()
+     WHERE conversations.status = 'delivered_watch'`,
+    [
+      String(packId),
+      sellerIdStr,
+      order?.id != null ? String(order.id) : null,
+      buyerId,
+      buyerNickname,
+      buyerFullName,
+      productTitle,
+      orderTotal,
+      orderQuantity,
+    ]
+  );
 }
 
 // Puxa uma conversa especifica (usado pelo webhook, que ja sabe o pack_id).
 async function syncPack(sellerId, packId, orderId) {
   const accessToken = await getValidAccessToken(sellerId);
   const packData = await fetchPackMessages(accessToken, packId, sellerId);
-  upsertConversationFromPack(sellerId, packId, packData, orderId);
-  await enrichOrder(sellerId, packId);
+
+  // O webhook normalmente so manda o pack_id, sem order_id. Quando o
+  // pedido nao faz parte de um envio combinado (o caso mais comum, e
+  // exatamente o dos pedidos de "combinar entrega"), pack_id == order_id —
+  // entao usamos o pack_id como palpite de order_id pra buscar os detalhes
+  // (produto, comprador, tipo de entrega). Se falhar, so seguimos sem
+  // esses detalhes extras; a mensagem em si e salva do mesmo jeito.
+  const effectiveOrderId = orderId || packId;
+  let orderInfo = null;
+  try {
+    const order = await fetchOrderById(accessToken, effectiveOrderId);
+    orderInfo = extractOrderInfo(order);
+    orderInfo.shippingType = await fetchShippingType(accessToken, order);
+  } catch (err) {
+    console.warn(
+      `[syncPack] nao consegui buscar detalhes do pedido ${effectiveOrderId}:`,
+      err.status,
+      err.body || err.message
+    );
+  }
+
+  await upsertConversationFromPack(sellerId, packId, packData, effectiveOrderId, orderInfo);
 }
 
-// Varredura de reconciliacao: pergunta ao Mercado Livre quais packs tem
-// mensagem nao lida e sincroniza cada um. Serve de rede de seguranca caso
-// algum webhook se perca.
+// Varredura de reconciliacao: olha os pedidos recentes do vendedor e checa
+// as mensagens de cada um. Serve de rede de seguranca caso algum webhook se
+// perca (ou, com o Render gratuito, enquanto o servico esteve "dormindo" e
+// nao recebeu nenhum webhook).
 async function reconcileAccount(sellerId) {
-  const accessToken = await getValidAccessToken(sellerId);
-  const pending = await fetchPendingRead(accessToken);
+  // IMPORTANTE (bug real, achado numa conta de altissimo volume): o token
+  // de acesso dura poucas horas, e getValidAccessToken() so verifica/renova
+  // ele no MOMENTO em que e chamado. Esta funcao pegava o token UMA UNICA
+  // VEZ aqui em cima e reusava a mesma variavel do inicio ao fim —
+  // inclusive na reverificacao de "entregues em observacao" e na varredura
+  // mes-a-mes (runBackfillStep), que rodam por ULTIMO. Numa conta com
+  // centenas de pedidos pra verificar, essa reconciliacao inteira pode levar
+  // minutos — tempo suficiente pro token vencer NO MEIO do proprio ciclo.
+  // Resultado visto na pratica (log real do usuario): uma sequencia de
+  // "invalid access token" (401) bem no passo de reverificacao.
+  //
+  // Uma primeira correcao chegou a RECONFIRMAR o token proativamente antes
+  // de cada pedido do loop (uma consulta a mais no banco por item) — mas
+  // isso causou uma regressao pior: numa conta de alto volume, a lista de
+  // "entregues em observacao" (watchRows abaixo) so cresce (um pedido so
+  // sai dela quando finalmente recebe mensagem, o que pra muitos nunca
+  // acontece) e pode chegar a milhares de itens depois de meses de uso —
+  // multiplicar isso por uma consulta extra fez o botao "Atualizar" nunca
+  // mais terminar. A correcao certa: NAO reconfirmar nada proativamente;
+  // em vez disso, cada chamada a API arriscada roda via withTokenRetry (ver
+  // ml/tokens.js), que so renova o token — e refaz a chamada uma vez — se
+  // ela realmente falhar com 401. No caminho normal (token valido, a
+  // grande maioria das vezes) isso nao custa nada a mais.
+  let accessToken = await getValidAccessToken(sellerId);
 
-  const items = Array.isArray(pending) ? pending : pending?.results || [];
-  for (const item of items) {
-    const packId = item?.pack_id ?? item?.id;
-    if (!packId) continue;
-    try {
-      const packData = await fetchPackMessages(accessToken, packId, sellerId);
-      upsertConversationFromPack(sellerId, packId, packData, item?.order_id);
-      await enrichOrder(sellerId, packId);
-    } catch (err) {
-      console.error(`[reconcile] falha ao sincronizar pack ${packId}:`, err.message);
+  const orders = await fetchRecentOrders(accessToken, sellerId, {
+    limit: RECENT_ORDERS_LIMIT,
+  });
+  const recentList = Array.isArray(orders?.results) ? orders.results : [];
+
+  // Busca dedicada: todos os pedidos de "combinar entrega" recentes, sem
+  // depender de estarem entre os RECENT_ORDERS_LIMIT pedidos mais recentes
+  // no geral (ver comentario acima de RECENT_ORDERS_LIMIT pra entender o
+  // problema que isso corrige).
+  let noShippingList = [];
+  try {
+    noShippingList = await fetchAllNoShippingOrders(accessToken, sellerId);
+  } catch (err) {
+    console.warn(
+      `[reconcile] falha ao buscar pedidos de combinar entrega (tags=no_shipping) da conta ${sellerId}:`,
+      err.status,
+      err.body || err.message
+    );
+  }
+
+  // Terceira busca dedicada: pedidos com QUALQUER atividade recente (campo
+  // date_last_updated), independente de quando foram criados — cobre o
+  // caso de um pedido antigo (ja entregue ha tempos, por exemplo) que
+  // recebeu uma mensagem nova agora. Ver comentario acima de
+  // fetchAllRecentlyUpdatedOrders pra entender os limites dessa abordagem.
+  let recentlyUpdatedList = [];
+  try {
+    recentlyUpdatedList = await fetchAllRecentlyUpdatedOrders(accessToken, sellerId);
+  } catch (err) {
+    console.warn(
+      `[reconcile] falha ao buscar pedidos com atividade recente (date_last_updated) da conta ${sellerId}:`,
+      err.status,
+      err.body || err.message
+    );
+  }
+
+  let deliveredList = [];
+  try {
+    deliveredList = await fetchAllDeliveredOrders(accessToken, sellerId);
+  } catch (err) {
+    console.warn(
+      `[reconcile] falha ao buscar pedidos entregues (tags=delivered) da conta ${sellerId}:`,
+      err.status,
+      err.body || err.message
+    );
+  }
+
+  // Junta as quatro listas removendo duplicados (um mesmo pedido pode
+  // aparecer em mais de uma busca).
+  const seenIds = new Set(recentList.map((o) => o?.id));
+  const list = [...recentList];
+  for (const order of [...noShippingList, ...recentlyUpdatedList, ...deliveredList]) {
+    if (order?.id != null && !seenIds.has(order.id)) {
+      seenIds.add(order.id);
+      list.push(order);
     }
+  }
+
+  console.log(
+    `[reconcile] conta ${sellerId}: ${recentList.length} pedido(s) recente(s) (de um total de ${
+      orders?.paging?.total ?? "?"
+    }) + ${noShippingList.length} de combinar entrega dedicados + ${recentlyUpdatedList.length} com atividade recente dedicados + ${deliveredList.length} entregues dedicados = ${list.length} pedido(s) a verificar.`
+  );
+
+  let comMensagens = 0;
+  let semContato = 0;
+  let cancelados = 0;
+  let resolvidosSemContato = 0;
+  let emObservacao = 0;
+  // Guarda todo pack_id ja verificado neste ciclo (pela lista de pedidos
+  // acima) — usado logo depois pra saber quais packs da busca dedicada de
+  // "mensagens nao lidas" ja foram cobertos, e quais sao casos que so essa
+  // busca encontrou.
+  const packIdsVerificados = new Set();
+  for (const order of list) {
+    // Pedidos que nao fazem parte de um envio combinado nao tem pack_id
+    // (vem null) — nesse caso o proprio order_id funciona no lugar.
+    const packId = order?.pack_id || order?.id;
+    if (!packId) continue;
+    packIdsVerificados.add(String(packId));
+
+    // Pedido cancelado (normalmente porque foi reembolsado) nao tem mais
+    // entrega nenhuma pra combinar — o usuario pediu pra parar de trazer
+    // esses pro painel. Se ja existia uma conversa gravada desse pedido (de
+    // antes dessa checagem existir), ela e marcada como 'cancelled' pra
+    // sumir das abas Pendentes/Respondidas/Sem contato, sem apagar o
+    // historico do banco.
+    if (order?.status === "cancelled") {
+      cancelados++;
+      try {
+        await markConversationCancelled(packId);
+      } catch (err) {
+        console.warn(`[reconcile] falha ao marcar pedido cancelado ${order?.id} (pack ${packId}):`, err.message);
+      }
+      continue;
+    }
+
+    try {
+      const packResult = await withTokenRetry(sellerId, accessToken, (token) =>
+        fetchPackMessages(token, packId, sellerId)
+      );
+      const packData = packResult.result;
+      accessToken = packResult.accessToken;
+      if (Array.isArray(packData?.messages) && packData.messages.length > 0) {
+        comMensagens++;
+
+        // So busca o detalhe completo do pedido (produto/comprador/tipo de
+        // entrega) pros que realmente tem mensagem — evita gastar chamadas
+        // de API a toa nos outros ~50 pedidos que nao tem nada pendente.
+        let orderInfo = null;
+        try {
+          const orderResult = await withTokenRetry(sellerId, accessToken, (token) => fetchOrderById(token, order?.id));
+          const fullOrder = orderResult.result;
+          accessToken = orderResult.accessToken;
+          orderInfo = extractOrderInfo(fullOrder);
+          orderInfo.shippingType = await fetchShippingType(accessToken, fullOrder);
+        } catch (err) {
+          console.warn(
+            `[reconcile] nao consegui buscar detalhes do pedido ${order?.id}:`,
+            err.status,
+            err.body || err.message
+          );
+        }
+
+        await upsertConversationFromPack(sellerId, packId, packData, order?.id, orderInfo);
+      } else {
+        // Sem mensagem nenhuma ainda. O usuario pediu pra ver tambem os
+        // pedidos de "combinar entrega" nesse estado (tem comprador que
+        // compra sem saber que precisa combinar a entrega, e por isso nunca
+        // escreve) — /orders/search ja devolve o pedido completo (com
+        // "tags"), entao normalmente da pra classificar sem uma chamada
+        // extra a API. So busca o pedido completo de novo se "tags" nao
+        // vier nessa listagem (defensivo, caso a API mude).
+        let orderForInfo = order;
+        if (!Array.isArray(order?.tags)) {
+          try {
+            const orderResult = await withTokenRetry(sellerId, accessToken, (token) => fetchOrderById(token, order?.id));
+            orderForInfo = orderResult.result;
+            accessToken = orderResult.accessToken;
+          } catch (err) {
+            console.warn(
+              `[reconcile] nao consegui buscar detalhes do pedido ${order?.id} (sem tags na listagem):`,
+              err.status,
+              err.body || err.message
+            );
+            orderForInfo = null;
+          }
+        }
+        const orderInfo = orderForInfo ? extractOrderInfo(orderForInfo) : null;
+        if (orderInfo?.isCombinarEntrega) {
+          if (isAlreadyResolved(orderForInfo)) {
+            // Combinar entrega sem nenhuma mensagem, mas que ja foi
+            // entregue/concluido sozinho (ex: Mercado Livre fecha a venda
+            // automaticamente depois de 28 dias sem reclamacao, ou o
+            // comprador confirmou o recebimento por fora) — nao faz
+            // sentido pedir "inicie o contato" pra um pedido que ja
+            // acabou. Se por algum motivo ja tinha entrado como
+            // "no_contact" antes dessa checagem existir, tira das abas.
+            resolvidosSemContato++;
+            await markConversationResolved(packId);
+          } else {
+            semContato++;
+            await upsertNoContactOrder(sellerId, packId, order, orderInfo);
+          }
+        } else if (orderInfo?.isDelivered) {
+          // Pedido ja entregue, nao e combinar entrega, ainda sem mensagem
+          // — guarda so pra reverificar depois (ver upsertDeliveredWatchOrder),
+          // nunca aparece em aba nenhuma.
+          emObservacao++;
+          await upsertDeliveredWatchOrder(sellerId, packId, order, orderInfo);
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[reconcile] falha ao checar mensagens do pedido ${order?.id} (pack ${packId}):`,
+        err.status,
+        err.body || err.message
+      );
+    }
+  }
+
+  // Busca dedicada final: packs com mensagem NAO LIDA, direto do mesmo dado
+  // que alimenta o filtro "Com mensagens não lidas" no painel de Vendas do
+  // Mercado Livre (ver fetchUnreadMessagePacks em ml/api.js). Diferente das
+  // buscas acima (todas baseadas numa JANELA de pedidos por data), essa vem
+  // direto de "tem mensagem esperando resposta" — pega justamente o caso de
+  // um pedido que, por qualquer motivo, ficou fora de todas as janelas mas
+  // ainda assim tem mensagem pendente. So processa de novo os que ainda NAO
+  // foram verificados neste ciclo (os outros ja passaram pelo loop acima).
+  let naoLidasNovas = 0;
+  try {
+    // Reconfirma o token de novo antes dessa etapa (ver comentario no topo
+    // desta funcao) — ela roda so DEPOIS do loop longo acima, entao e um dos
+    // pontos onde o token pode ja ter vencido nesse meio tempo.
+    accessToken = await getValidAccessToken(sellerId);
+    const unreadPacks = await fetchUnreadMessagePacks(accessToken, sellerId);
+    for (const { packId } of unreadPacks) {
+      if (!packId || packIdsVerificados.has(String(packId))) continue;
+      try {
+        await syncPack(sellerId, packId);
+        naoLidasNovas++;
+      } catch (err) {
+        console.warn(
+          `[reconcile] falha ao sincronizar pack com mensagem não lida ${packId} (achado so pela busca dedicada) da conta ${sellerId}:`,
+          err.status,
+          err.body || err.message
+        );
+      }
+    }
+  } catch (err) {
+    console.warn(
+      `[reconcile] falha ao buscar mensagens não lidas (messages/pending_read) da conta ${sellerId}:`,
+      err.status,
+      err.body || err.message
+    );
+  }
+
+  // Reverifica os pedidos "em observacao" (ja entregues, sem mensagem da
+  // ultima vez que foram vistos) usando o pack_id ja guardado — sem
+  // depender de nenhuma busca por lista de pedidos. E esse passo que
+  // garante que, uma vez descoberto UMA VEZ (mesmo que so enquanto ainda
+  // estava dentro da janela da busca dedicada tags=delivered), um pedido
+  // nunca mais "se perde" so por ter envelhecido numa conta de alto volume.
+  const { rows: watchRows } = await db.query(
+    `SELECT pack_id, order_id FROM conversations WHERE seller_id = $1 AND status = 'delivered_watch'`,
+    [sellerId]
+  );
+  let promovidos = 0;
+  for (const watch of watchRows) {
+    // IMPORTANTE: esta lista (watchRows) so cresce com o tempo — um pedido
+    // so sai dela quando finalmente recebe mensagem, o que pra muitos nunca
+    // acontece. Numa conta de alto volume, depois de meses de uso ela pode
+    // ter milhares de itens — por isso NAO reconfirmamos o token
+    // proativamente aqui (isso ja causou uma regressao real: o botao
+    // "Atualizar" ficava girando pra sempre). withTokenRetry so paga o
+    // custo de renovar o token se a chamada realmente falhar com 401.
+    try {
+      const packResult = await withTokenRetry(sellerId, accessToken, (token) =>
+        fetchPackMessages(token, watch.pack_id, sellerId)
+      );
+      const packData = packResult.result;
+      accessToken = packResult.accessToken;
+      if (Array.isArray(packData?.messages) && packData.messages.length > 0) {
+        promovidos++;
+        let orderInfo = null;
+        try {
+          const orderResult = await withTokenRetry(sellerId, accessToken, (token) =>
+            fetchOrderById(token, watch.order_id)
+          );
+          const fullOrder = orderResult.result;
+          accessToken = orderResult.accessToken;
+          orderInfo = extractOrderInfo(fullOrder);
+          orderInfo.shippingType = await fetchShippingType(accessToken, fullOrder);
+        } catch (err) {
+          console.warn(
+            `[reconcile] nao consegui buscar detalhes do pedido em observacao ${watch.order_id}:`,
+            err.status,
+            err.body || err.message
+          );
+        }
+        await upsertConversationFromPack(sellerId, watch.pack_id, packData, watch.order_id, orderInfo);
+      }
+    } catch (err) {
+      console.warn(
+        `[reconcile] falha ao reverificar pedido em observacao ${watch.order_id} (pack ${watch.pack_id}):`,
+        err.status,
+        err.body || err.message
+      );
+    }
+  }
+
+  console.log(
+    `[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens, ${semContato} combinar-entrega sem contato ainda, ${cancelados} cancelado(s) ignorado(s), ${resolvidosSemContato} ja entregue(s)/concluido(s) sem contato ignorado(s), ${emObservacao} entregue(s) em observacao (sem mensagem ainda), ${watchRows.length} em observacao reverificado(s) (${promovidos} ganharam mensagem agora), ${naoLidasNovas} pack(s) resgatado(s) so pela busca de mensagens não lidas.`
+  );
+
+  // Varredura automatica do historico, mes a mes, um pedacinho por vez (ver
+  // runBackfillStep) — e o que garante, com o tempo e sem nenhuma acao
+  // manual, que TODO pedido entregue ou de combinar entrega da conta (nao
+  // so os recentes) acaba sendo checado pelo menos uma vez.
+  try {
+    // Mesma reconfirmacao de token antes desta ultima etapa (a mais tardia
+    // do ciclo inteiro) — ver comentario no topo desta funcao.
+    accessToken = await getValidAccessToken(sellerId);
+    const backfillResult = await runBackfillStep(sellerId, accessToken);
+    if (backfillResult) {
+      console.log(
+        `[backfill] conta ${sellerId}: mes ${backfillResult.mes} (fase ${backfillResult.fase}) — ${backfillResult.processados} pedido(s) checado(s), ${backfillResult.comMensagens} com mensagem.`
+      );
+    }
+  } catch (err) {
+    console.warn(`[backfill] falha na varredura automatica da conta ${sellerId}:`, err.message);
   }
 }
 
+// Uma venda "combinar entrega" que ja foi entregue/concluida sozinha (sem
+// nunca precisar de mensagem) nao tem mais nada pra "combinar" — o
+// vendedor pediu pra essas so aparecerem no painel se o comprador de fato
+// mandar uma mensagem, e nao ficarem poluindo a aba "Sem contato" so
+// porque tecnicamente sao combinar entrega. A tag "delivered" e o sinal
+// que o Mercado Livre usa tanto pra confirmacao manual de entrega quanto
+// pro fechamento automatico da venda apos ~28 dias sem reclamacao.
+function isAlreadyResolved(order) {
+  const tags = Array.isArray(order?.tags) ? order.tags : [];
+  return tags.includes("delivered");
+}
+
+// Marca uma conversa como 'cancelled' se ela ja existir no banco (pedido
+// cancelado/reembolsado) — assim ela some das abas ativas do painel sem
+// perder o historico. Se a conversa nunca foi gravada, nao faz nada (nao
+// tem motivo pra criar uma conversa nova so pra marcar como cancelada).
+async function markConversationCancelled(packId) {
+  await db.query(
+    `UPDATE conversations SET status = 'cancelled', updated_at = now()
+     WHERE pack_id = $1 AND status <> 'cancelled'`,
+    [String(packId)]
+  );
+}
+
+// Mesma ideia de markConversationCancelled, mas so mexe em conversas que
+// estavam como 'no_contact' — um pedido que ja tem mensagem de verdade
+// (pending/answered) nunca deveria ser tocado por essa checagem.
+async function markConversationResolved(packId) {
+  await db.query(
+    `UPDATE conversations SET status = 'resolved', updated_at = now()
+     WHERE pack_id = $1 AND status = 'no_contact'`,
+    [String(packId)]
+  );
+}
+
+// ---------------------------------------------------------------------
+// Varredura automatica do historico, mes a mes (backfill)
+// ---------------------------------------------------------------------
+// As buscas dedicadas acima (no_shipping, atividade recente, delivered) sao
+// todas baseadas em JANELAS (os N mais recentes de algum jeito) — em contas
+// de baixo/medio volume isso basta, mas numa conta gigante (chegamos a ver
+// uma com mais de 168 mil pedidos no total) qualquer janela, por maior que
+// seja, um dia deixa pedidos antigos de fora pra sempre. O usuario pediu
+// uma forma automatica (sem precisar copiar numero de pedido do Mercado
+// Livre pra cá manualmente) de cobrir isso — a solucao e varrer o historico
+// de forma SISTEMATICA, mes a mes, em vez de tentar "adivinhar" quais
+// pedidos antigos podem ter atividade nova.
+//
+// Cada chamada de reconcileAccount avanca esse processo em um pedacinho so
+// (uma pagina de ate BACKFILL_PAGE_SIZE pedidos) — nunca varre um mes
+// inteiro de uma vez, pra nao pesar demais numa unica sincronizacao. O
+// progresso fica salvo na tabela backfill_progress, entao a proxima
+// sincronizacao continua exatamente de onde parou.
+//
+// So faz sentido varrer os pedidos com tag "delivered" (pra achar mensagem
+// de pos-entrega) e "no_shipping" (pra combinar entrega) — os outros tipos
+// de pedido (ainda em transporte, por exemplo) nao sao o problema que essa
+// varredura resolve.
+//
+// Uma vez que um pedido e visto aqui (mesmo sem mensagem ainda), ele fica
+// registrado (upsertDeliveredWatchOrder ou upsertNoContactOrder) e passa a
+// ser reverificado diretamente pelo pack_id daqui pra frente (ver o passo
+// logo apos o loop principal de reconcileAccount) — ou seja, a varredura
+// mes a mes so precisa "descobrir" cada pedido UMA VEZ; depois disso, o
+// mecanismo de observacao cuida do resto pra sempre, sem precisar varrer o
+// mesmo mes de novo.
+//
+// Depois de cobrir BACKFILL_LOOKBACK_MONTHS meses pra tras, o ciclo volta
+// pro mes atual e recomeca — uma varredura continua, nao uma tarefa "unica".
+const BACKFILL_PAGE_SIZE = 50;
+const BACKFILL_LOOKBACK_MONTHS = 36; // ~3 anos de historico
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+// Formata o primeiro instante de um mes (00:00 no horario de Brasilia) no
+// formato que a API do Mercado Livre espera.
+function monthStartParam(year, monthIndex) {
+  return `${year}-${pad2(monthIndex + 1)}-01T00:00:00.000-03:00`;
+}
+
+// Soma (ou subtrai, com delta negativo) meses a um ano/mes, cuidando da
+// virada de ano.
+function shiftMonth(year, monthIndex, delta) {
+  const total = monthIndex + delta;
+  const y = year + Math.floor(total / 12);
+  const m = ((total % 12) + 12) % 12;
+  return { year: y, monthIndex: m };
+}
+
+async function loadBackfillProgress(sellerId) {
+  const { rows } = await db.query(
+    "SELECT cursor_month, cursor_phase, cursor_offset FROM backfill_progress WHERE seller_id = $1",
+    [sellerId]
+  );
+  if (rows[0]) return rows[0];
+
+  // Primeira vez que essa conta e varrida: comeca no mes atual, fase
+  // "delivered", do zero.
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  await db.query(
+    `INSERT INTO backfill_progress (seller_id, cursor_month, cursor_phase, cursor_offset)
+     VALUES ($1, $2, 'delivered', 0)
+     ON CONFLICT (seller_id) DO NOTHING`,
+    [sellerId, start]
+  );
+  return { cursor_month: start, cursor_phase: "delivered", cursor_offset: 0 };
+}
+
+async function saveBackfillProgress(sellerId, cursorMonth, cursorPhase, cursorOffset) {
+  await db.query(
+    `INSERT INTO backfill_progress (seller_id, cursor_month, cursor_phase, cursor_offset, updated_at)
+     VALUES ($1, $2, $3, $4, now())
+     ON CONFLICT (seller_id) DO UPDATE SET
+       cursor_month = EXCLUDED.cursor_month,
+       cursor_phase = EXCLUDED.cursor_phase,
+       cursor_offset = EXCLUDED.cursor_offset,
+       updated_at = now()`,
+    [sellerId, cursorMonth, cursorPhase, cursorOffset]
+  );
+}
+
+async function runBackfillStep(sellerId, accessToken) {
+  const progress = await loadBackfillProgress(sellerId);
+  const monthUsed = progress.cursor_month;
+  const phaseUsed = progress.cursor_phase;
+  const offsetUsed = progress.cursor_offset;
+
+  const year = monthUsed.getUTCFullYear();
+  const monthIndex = monthUsed.getUTCMonth();
+  const from = monthStartParam(year, monthIndex);
+  const nextMonth = shiftMonth(year, monthIndex, 1);
+  const to = monthStartParam(nextMonth.year, nextMonth.monthIndex);
+
+  let data;
+  try {
+    data = await fetchRecentOrders(accessToken, sellerId, {
+      limit: BACKFILL_PAGE_SIZE,
+      offset: offsetUsed,
+      tags: phaseUsed,
+      dateCreatedFrom: from,
+      dateCreatedTo: to,
+    });
+  } catch (err) {
+    console.warn(
+      `[backfill] falha ao buscar (fase ${phaseUsed}, mes ${year}-${pad2(monthIndex + 1)}) da conta ${sellerId}:`,
+      err.status,
+      err.body || err.message
+    );
+    return null;
+  }
+
+  const results = Array.isArray(data?.results) ? data.results : [];
+  const total = data?.paging?.total ?? offsetUsed + results.length;
+
+  let processados = 0;
+  let comMensagens = 0;
+  for (const order of results) {
+    const packId = order?.pack_id || order?.id;
+    if (!packId || order?.status === "cancelled") continue;
+    processados++;
+    try {
+      const packData = await fetchPackMessages(accessToken, packId, sellerId);
+      if (Array.isArray(packData?.messages) && packData.messages.length > 0) {
+        comMensagens++;
+        let orderInfo = null;
+        try {
+          const fullOrder = await fetchOrderById(accessToken, order?.id);
+          orderInfo = extractOrderInfo(fullOrder);
+          orderInfo.shippingType = await fetchShippingType(accessToken, fullOrder);
+        } catch (err) {
+          // Segue sem os detalhes extras — a mensagem em si ja vale a pena gravar.
+        }
+        await upsertConversationFromPack(sellerId, packId, packData, order?.id, orderInfo);
+      } else {
+        const orderInfo = extractOrderInfo(order);
+        if (phaseUsed === "no_shipping" && orderInfo?.isCombinarEntrega) {
+          if (isAlreadyResolved(order)) {
+            await markConversationResolved(packId);
+          } else {
+            await upsertNoContactOrder(sellerId, packId, order, orderInfo);
+          }
+        } else if (phaseUsed === "delivered" && orderInfo?.isDelivered && !orderInfo?.isCombinarEntrega) {
+          await upsertDeliveredWatchOrder(sellerId, packId, order, orderInfo);
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[backfill] falha ao checar pedido ${order?.id} (pack ${packId}):`,
+        err.status,
+        err.body || err.message
+      );
+    }
+  }
+
+  // Decide o proximo passo: continua a mesma pagina/fase/mes, ou avanca.
+  let nextCursorMonth = monthUsed;
+  let nextCursorPhase = phaseUsed;
+  let nextCursorOffset = offsetUsed + results.length;
+
+  if (results.length === 0 || nextCursorOffset >= total) {
+    if (phaseUsed === "delivered") {
+      // Termina a fase "delivered" desse mes, comeca "no_shipping" do
+      // mesmo mes.
+      nextCursorPhase = "no_shipping";
+      nextCursorOffset = 0;
+    } else {
+      // Terminou as duas fases desse mes — vai pro mes anterior.
+      const prevMonth = shiftMonth(year, monthIndex, -1);
+      const now = new Date();
+      const monthsBack =
+        (now.getUTCFullYear() - prevMonth.year) * 12 + (now.getUTCMonth() - prevMonth.monthIndex);
+      if (monthsBack > BACKFILL_LOOKBACK_MONTHS) {
+        // Chegou no limite do historico — volta pro mes atual (ciclo
+        // continuo, nunca "termina" de vez).
+        nextCursorMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      } else {
+        nextCursorMonth = new Date(Date.UTC(prevMonth.year, prevMonth.monthIndex, 1));
+      }
+      nextCursorPhase = "delivered";
+      nextCursorOffset = 0;
+    }
+  }
+
+  await saveBackfillProgress(sellerId, nextCursorMonth, nextCursorPhase, nextCursorOffset);
+
+  return { processados, comMensagens, mes: `${year}-${pad2(monthIndex + 1)}`, fase: phaseUsed };
+}
+
 async function reconcileAllAccounts() {
-  const accounts = db.prepare("SELECT id FROM accounts").all();
+  const { rows: accounts } = await db.query("SELECT id FROM accounts");
+  console.log(
+    `[reconcile] contas conectadas no banco:`,
+    accounts.map((a) => a.id)
+  );
   for (const acc of accounts) {
     try {
       await reconcileAccount(acc.id);
@@ -239,6 +1109,8 @@ module.exports = {
   reconcileAccount,
   reconcileAllAccounts,
   upsertConversationFromPack,
-  enrichOrder,
-  toIso,
+  upsertNoContactOrder,
+  extractOrderInfo,
+  fetchShippingType,
+  runBackfillStep,
 };
