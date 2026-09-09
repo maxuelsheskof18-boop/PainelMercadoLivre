@@ -4,79 +4,310 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Painel de Mensagens - Mercado Livre</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+  <!-- Identificacao leve de quem esta operando o painel (varios atendentes
+       compartilham a mesma senha) — sem cadastro nem senha por pessoa, so
+       pede o nome uma vez por aparelho, pra registrar quem respondeu cada
+       pedido (ver modulo "Histórico"). -->
+  <div id="operator-modal" class="operator-modal hidden">
+    <div class="operator-modal-card">
+      <button type="button" id="operator-modal-close" class="operator-modal-close hidden" title="Fechar">×</button>
+      <div class="operator-modal-icon">🎧</div>
+      <h2>Quem está respondendo?</h2>
+      <p class="muted small">
+        Digite seu nome. Ele vai junto em cada mensagem que você enviar — com o pedido, a data e a hora — pra saber quem atendeu o quê.
+      </p>
+      <form id="operator-modal-form">
+        <input type="text" id="operator-name-input" placeholder="Seu nome" maxlength="60" autocomplete="off" required />
+        <button type="submit" class="btn btn-primary">Começar a atender</button>
+      </form>
+    </div>
+  </div>
+
   <header class="topbar">
-    <h1>Painel de Mensagens</h1>
+    <div class="topbar-brand">
+      <span class="brand-mark">ML</span>
+      <h1>Painel de Mensagens</h1>
+    </div>
     <div class="topbar-actions">
-      <button id="sync-btn" class="ghost" title="Buscar novidades agora">Atualizar</button>
-      <button id="templates-btn" class="ghost" title="Gerenciar respostas rapidas">Respostas rapidas</button>
-      <a href="/connect" class="ghost">+ Conectar conta</a>
+      <button id="sync-btn" class="btn btn-ghost" title="Buscar novidades agora">
+        <span class="btn-icon">⟳</span><span class="btn-label">Atualizar</span>
+      </button>
+      <div class="accounts-dropdown">
+        <button id="accounts-btn" class="btn btn-ghost" title="Ver contas do Mercado Livre conectadas">
+          <span class="btn-icon">👤</span><span class="btn-label">Contas</span><span id="accounts-count" class="tab-count hidden">0</span>
+        </button>
+        <div id="accounts-panel" class="accounts-panel hidden">
+          <div class="accounts-panel-header">Contas do Mercado Livre conectadas</div>
+          <div id="accounts-list" class="accounts-list">
+            <p class="muted small" style="padding: 8px 14px;">Carregando...</p>
+          </div>
+          <a href="/connect" class="btn btn-ghost btn-sm accounts-panel-add">
+            <span class="btn-icon">+</span> Conectar outra conta
+          </a>
+        </div>
+      </div>
+      <button id="freight-account-btn" class="btn btn-ghost" title="Conectar Melhor Envio pra calcular frete">
+        <span class="btn-icon">📦</span><span class="btn-label" id="freight-account-label">Melhor Envio</span>
+      </button>
+      <button id="operator-chip" class="btn btn-ghost" title="Trocar de operador">
+        <span class="btn-icon">🎧</span><span class="btn-label" id="operator-chip-name">Operador</span>
+      </button>
       <button id="bell" class="bell" title="Mensagens pendentes">
         🔔<span id="bell-count" class="badge hidden">0</span>
       </button>
-      <button id="logout-btn" class="ghost">Sair</button>
+      <button id="logout-btn" class="btn btn-ghost btn-icon-only" title="Sair">
+        <span class="btn-icon">⏻</span>
+      </button>
     </div>
   </header>
 
   <main class="layout">
-    <section class="list-pane">
-      <div class="tabs">
-        <button class="tab active" data-status="pending">Pendentes</button>
+    <nav id="module-nav" class="module-nav">
+      <div class="module-nav-items">
+        <button class="module-nav-item active" data-module="messages" title="Mensagens">
+          <span class="module-nav-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+          </span>
+          <span class="module-nav-label">Mensagens</span>
+          <span id="module-badge-messages" class="tab-count module-badge hidden">0</span>
+        </button>
+        <button class="module-nav-item" data-module="claims" title="Reclamações">
+          <span class="module-nav-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </span>
+          <span class="module-nav-label">Reclamações</span>
+          <span id="module-badge-claims" class="tab-count module-badge hidden">0</span>
+        </button>
+        <button class="module-nav-item" data-module="questions" title="Perguntas">
+          <span class="module-nav-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </span>
+          <span class="module-nav-label">Perguntas</span>
+          <span id="module-badge-questions" class="tab-count module-badge hidden">0</span>
+        </button>
+        <button class="module-nav-item" data-module="history" title="Histórico">
+          <span class="module-nav-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+          </span>
+          <span class="module-nav-label">Histórico</span>
+        </button>
+      </div>
+      <button type="button" id="module-nav-toggle" class="module-nav-toggle" title="Recolher menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        <span class="module-nav-toggle-label">Recolher</span>
+      </button>
+    </nav>
+    <section id="list-pane" class="list-pane">
+      <div id="tabs-messages" class="tabs">
+        <button class="tab active" data-status="pending">
+          Pendentes<span id="tab-count-pending" class="tab-count hidden">0</span>
+        </button>
         <button class="tab" data-status="answered">Respondidas</button>
+        <button class="tab" data-status="no_contact" title="Vendas de combinar entrega sem nenhuma mensagem trocada ainda">
+          Sem contato<span id="tab-count-nocontact" class="tab-count hidden">0</span>
+        </button>
+        <button class="tab" data-status="delivered" title="Mensagens recebidas em pedidos já entregues (nota fiscal, dúvidas, etc.)">
+          Entregues<span id="tab-count-delivered" class="tab-count hidden">0</span>
+        </button>
+      </div>
+      <div id="tabs-claims" class="tabs hidden">
+        <button class="tab active" data-claim-status="pending" title="Reclamações aguardando sua resposta">
+          Pendentes<span id="tab-count-claims-pending" class="tab-count hidden">0</span>
+        </button>
+        <button class="tab" data-claim-status="answered">Respondidas</button>
+        <button class="tab" data-claim-status="closed">Fechadas</button>
+      </div>
+      <div id="tabs-questions" class="tabs hidden">
+        <button class="tab active" data-question-status="pending" title="Perguntas aguardando sua resposta">
+          Pendentes<span id="tab-count-questions-pending" class="tab-count hidden">0</span>
+        </button>
+        <button class="tab" data-question-status="answered">Respondidas</button>
+        <!-- Perguntas marcadas manualmente como resolvidas (ex: nao dava
+             pra responder porque o anuncio foi pausado/removido) caem
+             aqui — senao ficariam sem nenhum lugar pra aparecer depois de
+             saírem de Pendentes. -->
+        <button class="tab" data-question-status="closed">Fechadas</button>
+      </div>
+      <div class="filter-bar">
+        <input
+          type="search"
+          id="filter-search"
+          class="filter-search"
+          placeholder="Buscar por comprador, produto ou nº do pedido..."
+        />
+        <div class="filter-row">
+          <select id="filter-seller" class="filter-select" title="Filtrar por loja">
+            <option value="">Todas as lojas</option>
+          </select>
+          <button type="button" id="filter-sort-btn" class="btn btn-ghost btn-sm" title="Alternar ordem por data">
+            <span id="filter-sort-icon">⬇</span> <span id="filter-sort-label">Mais recentes</span>
+          </button>
+        </div>
+        <label class="filter-toggle">
+          <input type="checkbox" id="filter-combinar" />
+          <span>Só "combinar entrega"</span>
+        </label>
+        <label class="filter-toggle">
+          <input type="checkbox" id="filter-only-pending" />
+          <span>Só pendentes (a responder)</span>
+        </label>
       </div>
       <div id="conversation-list" class="conversation-list">
         <p class="muted empty-msg">Carregando...</p>
       </div>
     </section>
 
-    <section class="thread-pane">
-      <div id="thread-empty" class="muted centered">
-        Selecione uma conversa na lista ao lado.
+    <section id="thread-pane" class="thread-pane">
+      <div id="thread-empty" class="muted centered empty-state">
+        <span class="empty-state-icon">💬</span>
+        <p>Selecione uma conversa na lista ao lado.</p>
       </div>
       <div id="thread" class="thread hidden">
         <div class="thread-header">
-          <div>
+          <button id="thread-back" class="btn-back" title="Voltar para a lista">←</button>
+          <div id="thread-avatar" class="avatar avatar-lg"></div>
+          <div class="thread-header-info">
             <strong id="thread-buyer">-</strong>
-            <span id="thread-account" class="muted"></span>
+            <span id="thread-account" class="muted small"></span>
           </div>
-          <div id="thread-order" class="thread-order muted small hidden"></div>
+          <span id="thread-delivery-tag" class="tag tag-delivery hidden">Combinar entrega</span>
+          <span id="thread-delivered-tag" class="tag tag-delivered hidden">Pedido já entregue</span>
+          <span id="thread-shipping-tag" class="tag tag-shipping hidden">-</span>
+          <span id="thread-claim-stage-tag" class="tag tag-claim hidden">-</span>
+          <span id="thread-claim-warning-tag" class="tag tag-claim hidden" title="Este pedido tem uma reclamação aberta na aba Reclamações">⚠ Reclamação aberta</span>
+        </div>
+        <div id="claim-due-banner" class="claim-due-banner hidden"></div>
+        <div id="claim-resolve-banner" class="claim-resolve-banner hidden">
+          <span id="claim-resolve-info" class="claim-resolve-info"></span>
+          <button type="button" id="claim-resolve-btn" class="btn btn-ghost btn-sm hidden">✓ Marcar como resolvido</button>
+        </div>
+        <div id="thread-order-card" class="order-card hidden">
+          <div class="order-card-row">
+            <span class="order-card-icon">📦</span>
+            <div class="order-card-info">
+              <strong id="order-card-product">-</strong>
+              <span id="order-card-meta" class="muted small"></span>
+            </div>
+            <button type="button" id="order-card-copy-btn" class="order-card-copy-btn hidden" title="Copiar número do pedido">📋</button>
+          </div>
+          <!-- Link numa linha propria, separada da linha do titulo/botao de
+               copiar (pedido do usuario: "em um monitor usando no modo
+               retrato nao aparece o link" — numa janela estreita, o texto
+               do anuncio/pedido podia empurrar esse link pra fora do espaco
+               visivel quando ele dividia a mesma linha; numa linha só dele,
+               isso nunca mais acontece, em qualquer largura de tela). -->
+          <a id="order-card-link" href="#" target="_blank" rel="noopener" class="order-card-link">Ver no Mercado Livre ↗</a>
+        </div>
+        <div id="claim-info-card" class="order-card hidden">
+          <div class="order-card-row">
+            <span class="order-card-icon">⚠️</span>
+            <div class="order-card-info">
+              <strong id="claim-info-title">-</strong>
+              <span id="claim-info-meta" class="muted small"></span>
+            </div>
+            <button type="button" id="claim-info-copy-btn" class="order-card-copy-btn hidden" title="Copiar número do pedido">📋</button>
+          </div>
+          <a id="claim-info-link" href="#" target="_blank" rel="noopener" class="order-card-link hidden">Ver no Mercado Livre ↗</a>
+        </div>
+        <div id="evidence-box" class="freight-box hidden">
+          <button type="button" id="evidence-toggle" class="freight-toggle">
+            📮 Enviar comprovante de envio <span id="evidence-toggle-arrow">▾</span>
+          </button>
+          <div id="evidence-form" class="freight-form hidden">
+            <div class="freight-row">
+              <label>Método de envio
+                <select id="evidence-method">
+                  <option value="mail">Correios</option>
+                  <option value="courier">Transportadora</option>
+                  <option value="personal">Entrega pessoal</option>
+                  <option value="email">E-mail (produto digital)</option>
+                </select>
+              </label>
+            </div>
+            <div id="evidence-fields-mail" class="freight-row evidence-fields">
+              <label>Transportadora<input id="evidence-mail-company" placeholder="Correios" /></label>
+              <label>Data de envio<input id="evidence-mail-date" type="date" /></label>
+            </div>
+            <div id="evidence-fields-courier" class="freight-row evidence-fields hidden">
+              <label>Transportadora<input id="evidence-courier-company" /></label>
+              <label>Agência destino<input id="evidence-courier-agency" /></label>
+              <label>Data de envio<input id="evidence-courier-date" type="date" /></label>
+              <label>Nome do destinatário<input id="evidence-courier-receiver" /></label>
+            </div>
+            <div id="evidence-fields-personal" class="freight-row evidence-fields hidden">
+              <label>Data de entrega<input id="evidence-personal-date" type="date" /></label>
+            </div>
+            <div id="evidence-fields-email" class="freight-row evidence-fields hidden">
+              <label>E-mail do destinatário<input id="evidence-email-receiver" type="email" /></label>
+              <label>Data de envio<input id="evidence-email-date" type="date" /></label>
+            </div>
+            <button type="button" id="evidence-send-btn" class="btn btn-primary btn-sm">Enviar comprovante</button>
+            <div id="evidence-results" class="freight-results"></div>
+          </div>
+        </div>
+        <div id="freight-box" class="freight-box hidden">
+          <button type="button" id="freight-toggle" class="freight-toggle">📦 Calcular frete (Melhor Envio) <span id="freight-toggle-arrow">▾</span></button>
+          <div id="freight-form" class="freight-form hidden">
+            <div class="freight-row">
+              <label>CEP destino<input id="freight-cep" placeholder="00000-000" /></label>
+              <label>Peso (kg)<input id="freight-weight" type="number" step="0.01" min="0" value="0.3" /></label>
+              <label title="Valor declarado do produto para o seguro do envio — o Melhor Envio cobra o seguro em cima desse valor, então ele muda o preço do frete.">Valor assegurado (R$)<input id="freight-insurance" type="number" step="0.01" min="0" value="20" /></label>
+            </div>
+            <div class="freight-row">
+              <label>Altura (cm)<input id="freight-height" type="number" min="1" value="4" /></label>
+              <label>Largura (cm)<input id="freight-width" type="number" min="1" value="11" /></label>
+              <label>Comprimento (cm)<input id="freight-length" type="number" min="1" value="16" /></label>
+            </div>
+            <button type="button" id="freight-calc-btn" class="btn btn-primary btn-sm">Calcular frete</button>
+            <!-- So aparece na aba de Perguntas (pedido do usuario) — deixa
+                 reescrever o texto que preenche a resposta ao clicar num
+                 valor de frete calculado, ja que o modelo padrao das
+                 outras telas (mensagens/reclamações) fala de pedido/
+                 pagamento, o que nao existe ainda numa pergunta pre-venda. -->
+            <button type="button" id="freight-template-edit-btn" class="btn btn-ghost btn-sm hidden">✎ Editar modelo da resposta</button>
+            <div id="freight-results" class="freight-results"></div>
+          </div>
         </div>
         <div id="thread-messages" class="thread-messages"></div>
+        <div id="quick-templates" class="quick-templates hidden">
+          <button type="button" id="template-combinar-btn" class="btn btn-ghost btn-sm">
+            📋 Msg: combinar entrega
+          </button>
+        </div>
         <form id="reply-form" class="reply-form">
-          <div class="reply-tools">
-            <select id="template-picker" class="template-picker" title="Inserir resposta rapida">
-              <option value="">Resposta rapida...</option>
-            </select>
-          </div>
-          <div class="reply-row">
-            <textarea id="reply-text" placeholder="Escreva sua resposta..." required></textarea>
-            <button type="submit">Enviar resposta</button>
-          </div>
+          <input type="file" id="reply-attachment" class="hidden" accept=".jpg,.jpeg,.png,.pdf,.txt" />
+          <button type="button" id="reply-attach-btn" class="btn btn-ghost btn-icon-only hidden" title="Anexar arquivo (JPG, PNG, PDF ou TXT)">📎</button>
+          <textarea id="reply-text" placeholder="Escreva sua resposta..." maxlength="350" required></textarea>
+          <button type="submit" class="btn btn-primary">Enviar</button>
         </form>
+        <div class="reply-form-footer">
+          <div id="reply-attachment-name" class="muted small hidden"></div>
+          <span id="reply-char-counter" class="reply-char-counter muted small">0/350</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="history-pane" class="history-pane hidden">
+      <div class="history-header">
+        <h2>Histórico de respostas</h2>
+        <div class="history-filters">
+          <select id="history-operator-filter" title="Filtrar por operador">
+            <option value="">Todos os operadores</option>
+          </select>
+          <input type="date" id="history-from" title="A partir de" />
+          <input type="date" id="history-to" title="Até" />
+          <button type="button" id="history-refresh-btn" class="btn btn-ghost btn-sm" title="Atualizar lista">⟳ Atualizar</button>
+        </div>
+      </div>
+      <div id="history-list" class="history-list">
+        <p class="muted empty-msg">Carregando...</p>
       </div>
     </section>
   </main>
-
-  <div id="templates-modal" class="modal hidden">
-    <div class="modal-card">
-      <div class="modal-head">
-        <h2>Respostas rapidas</h2>
-        <button id="templates-close" class="ghost">Fechar</button>
-      </div>
-      <div id="templates-list" class="templates-list"></div>
-      <form id="template-form" class="template-form">
-        <input type="hidden" id="template-id" />
-        <input type="text" id="template-title" placeholder="Titulo (ex: Prazo de entrega)" required />
-        <textarea id="template-body" placeholder="Texto da resposta" required></textarea>
-        <div class="template-form-actions">
-          <button type="submit" id="template-save">Adicionar</button>
-          <button type="button" id="template-cancel" class="ghost hidden">Cancelar edicao</button>
-        </div>
-      </form>
-    </div>
-  </div>
 
   <script src="/app.js"></script>
 </body>
