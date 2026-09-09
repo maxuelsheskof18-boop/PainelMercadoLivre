@@ -1,241 +1,20 @@
 const state = {
-  module: "messages", // "messages" | "claims" | "questions" | "history" — qual painel (menu lateral) esta ativo
-  status: "pending", // aba dentro do modulo "messages"
-  claimStatus: "pending", // aba dentro do modulo "claims": "pending" | "answered" | "closed"
-  questionStatus: "pending", // aba dentro do modulo "questions": "pending" | "answered"
+  status: "pending",
   selectedPackId: null,
-  selectedClaimId: null, // reclamacao aberta no momento (mutuamente exclusivo com selectedPackId)
-  selectedQuestionId: null, // pergunta aberta no momento (mutuamente exclusivo com os dois acima)
-  pollTimer: null,
-  onlyCombinar: false,
-  onlyPending: false, // "Só pendentes (a responder)" — vale pras duas telas (mensagens e reclamacoes)
-  searchQuery: "",
-  sellerId: "",
-  sort: "recent", // "recent" | "oldest"
-  lastPendingCount: null, // usado pra saber se aumentou (tocar som) sem tocar no primeiro carregamento
-  melhorEnvio: { connected: false, originPostalCode: null },
+  templates: [],
 };
 
 const listEl = document.getElementById("conversation-list");
 const bellCount = document.getElementById("bell-count");
-const moduleNavItems = document.querySelectorAll(".module-nav-item");
-const moduleBadgeMessages = document.getElementById("module-badge-messages");
-const moduleBadgeClaims = document.getElementById("module-badge-claims");
-const moduleBadgeQuestions = document.getElementById("module-badge-questions");
-const tabsMessages = document.getElementById("tabs-messages");
-const tabsClaims = document.getElementById("tabs-claims");
-const tabsQuestions = document.getElementById("tabs-questions");
-const layoutEl = document.querySelector(".layout");
-const moduleNav = document.getElementById("module-nav");
-const moduleNavToggle = document.getElementById("module-nav-toggle");
-const moduleNavToggleLabel = moduleNavToggle ? moduleNavToggle.querySelector(".module-nav-toggle-label") : null;
-const tabCountPending = document.getElementById("tab-count-pending");
-const tabCountNoContact = document.getElementById("tab-count-nocontact");
-const tabCountDelivered = document.getElementById("tab-count-delivered");
-const tabCountClaimsPending = document.getElementById("tab-count-claims-pending");
-const tabCountQuestionsPending = document.getElementById("tab-count-questions-pending");
 const threadEmpty = document.getElementById("thread-empty");
 const threadEl = document.getElementById("thread");
 const threadBuyer = document.getElementById("thread-buyer");
-const threadAvatar = document.getElementById("thread-avatar");
 const threadAccount = document.getElementById("thread-account");
-const orderCard = document.getElementById("thread-order-card");
-const orderCardProduct = document.getElementById("order-card-product");
-const orderCardMeta = document.getElementById("order-card-meta");
-const orderCardLink = document.getElementById("order-card-link");
-const orderCardCopyBtn = document.getElementById("order-card-copy-btn");
-const threadDeliveryTag = document.getElementById("thread-delivery-tag");
-const threadDeliveredTag = document.getElementById("thread-delivered-tag");
-const threadShippingTag = document.getElementById("thread-shipping-tag");
-const threadClaimStageTag = document.getElementById("thread-claim-stage-tag");
-const threadClaimWarningTag = document.getElementById("thread-claim-warning-tag");
-const claimDueBanner = document.getElementById("claim-due-banner");
-const claimInfoCard = document.getElementById("claim-info-card");
-const claimInfoTitle = document.getElementById("claim-info-title");
-const claimInfoMeta = document.getElementById("claim-info-meta");
-const claimInfoLink = document.getElementById("claim-info-link");
-const claimInfoCopyBtn = document.getElementById("claim-info-copy-btn");
-const claimResolveBanner = document.getElementById("claim-resolve-banner");
-const claimResolveInfo = document.getElementById("claim-resolve-info");
-const claimResolveBtn = document.getElementById("claim-resolve-btn");
+const threadOrder = document.getElementById("thread-order");
 const threadMessages = document.getElementById("thread-messages");
 const replyForm = document.getElementById("reply-form");
 const replyText = document.getElementById("reply-text");
-const replyAttachBtn = document.getElementById("reply-attach-btn");
-const replyAttachmentInput = document.getElementById("reply-attachment");
-const replyAttachmentNameEl = document.getElementById("reply-attachment-name");
-const replyCharCounter = document.getElementById("reply-char-counter");
-const filterCombinar = document.getElementById("filter-combinar");
-const filterOnlyPending = document.getElementById("filter-only-pending");
-const filterSearch = document.getElementById("filter-search");
-const filterSeller = document.getElementById("filter-seller");
-const filterSortBtn = document.getElementById("filter-sort-btn");
-const filterSortIcon = document.getElementById("filter-sort-icon");
-const filterSortLabel = document.getElementById("filter-sort-label");
-const threadBackBtn = document.getElementById("thread-back");
-
-const freightAccountBtn = document.getElementById("freight-account-btn");
-const freightAccountLabel = document.getElementById("freight-account-label");
-const freightBox = document.getElementById("freight-box");
-const freightToggle = document.getElementById("freight-toggle");
-const freightToggleArrow = document.getElementById("freight-toggle-arrow");
-const freightForm = document.getElementById("freight-form");
-const freightCep = document.getElementById("freight-cep");
-const freightWeight = document.getElementById("freight-weight");
-const freightHeight = document.getElementById("freight-height");
-const freightWidth = document.getElementById("freight-width");
-const freightLength = document.getElementById("freight-length");
-const freightInsurance = document.getElementById("freight-insurance");
-const freightCalcBtn = document.getElementById("freight-calc-btn");
-const freightResults = document.getElementById("freight-results");
-const freightTemplateEditBtn = document.getElementById("freight-template-edit-btn");
-
-const quickTemplates = document.getElementById("quick-templates");
-const templateCombinarBtn = document.getElementById("template-combinar-btn");
-
-const evidenceBox = document.getElementById("evidence-box");
-const evidenceToggle = document.getElementById("evidence-toggle");
-const evidenceToggleArrow = document.getElementById("evidence-toggle-arrow");
-const evidenceForm = document.getElementById("evidence-form");
-const evidenceMethodSelect = document.getElementById("evidence-method");
-const evidenceSendBtn = document.getElementById("evidence-send-btn");
-const evidenceResults = document.getElementById("evidence-results");
-
-const accountsBtn = document.getElementById("accounts-btn");
-const accountsPanel = document.getElementById("accounts-panel");
-const accountsList = document.getElementById("accounts-list");
-const accountsCount = document.getElementById("accounts-count");
-
-// Identificacao do operador (varias pessoas usando o mesmo login/senha).
-const OPERATOR_STORAGE_KEY = "ml-painel-operator-name";
-const operatorModal = document.getElementById("operator-modal");
-const operatorModalForm = document.getElementById("operator-modal-form");
-const operatorNameInput = document.getElementById("operator-name-input");
-const operatorModalClose = document.getElementById("operator-modal-close");
-const operatorChip = document.getElementById("operator-chip");
-const operatorChipName = document.getElementById("operator-chip-name");
-
-// Modulo "Histórico" (quem respondeu o que, e quando).
-const listPaneEl = document.getElementById("list-pane");
-const threadPaneEl = document.getElementById("thread-pane");
-const historyPane = document.getElementById("history-pane");
-const historyList = document.getElementById("history-list");
-const historyOperatorFilter = document.getElementById("history-operator-filter");
-const historyFrom = document.getElementById("history-from");
-const historyTo = document.getElementById("history-to");
-const historyRefreshBtn = document.getElementById("history-refresh-btn");
-
-// Nao e login: nao ha senha por pessoa, e nao bloqueia nada no servidor —
-// e so uma identificacao pra saber, depois, quem respondeu cada mensagem
-// (mandada junto em cada envio; ver rotas /reply e /evidence no backend).
-function getOperatorName() {
-  try {
-    return localStorage.getItem(OPERATOR_STORAGE_KEY) || "";
-  } catch (e) {
-    return "";
-  }
-}
-
-function setOperatorName(name) {
-  try {
-    localStorage.setItem(OPERATOR_STORAGE_KEY, name);
-  } catch (e) {
-    // sem localStorage: continua funcionando nesta sessao, so nao lembra
-    // da proxima vez que abrir o painel nesse aparelho.
-  }
-  if (operatorChipName) operatorChipName.textContent = name;
-}
-
-function openOperatorModal(mandatory) {
-  operatorNameInput.value = mandatory ? "" : getOperatorName();
-  if (operatorModalClose) operatorModalClose.classList.toggle("hidden", mandatory);
-  operatorModal.classList.remove("hidden");
-  setTimeout(() => operatorNameInput.focus(), 50);
-}
-
-function closeOperatorModal() {
-  operatorModal.classList.add("hidden");
-}
-
-if (operatorModalForm) {
-  operatorModalForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const name = operatorNameInput.value.trim();
-    if (!name) return;
-    setOperatorName(name);
-    closeOperatorModal();
-  });
-}
-if (operatorModalClose) {
-  operatorModalClose.addEventListener("click", () => closeOperatorModal());
-}
-if (operatorChip) {
-  // Deixa trocar de operador a qualquer momento (ex: troca de turno) sem
-  // precisar limpar o navegador.
-  operatorChip.addEventListener("click", () => openOperatorModal(false));
-}
-
-// Ao abrir o painel: se ninguem se identificou ainda neste aparelho, pede o
-// nome antes de liberar o uso (sem senha nenhuma — so essa identificacao).
-const existingOperatorName = getOperatorName();
-if (existingOperatorName) {
-  operatorChipName.textContent = existingOperatorName;
-} else {
-  openOperatorModal(true);
-}
-
-// Prefere o nome real do comprador (quando o Mercado Livre libera esse
-// dado pro pedido); cai pro apelido, e por ultimo pro numero do comprador.
-function buyerLabel(conv) {
-  return conv.buyer_full_name || conv.buyer_nickname || "Comprador #" + (conv.buyer_id || "?");
-}
-
-// Formata um valor numerico como "R$ 149,90". Aceita null/undefined/string
-// (o Postgres devolve NUMERIC como string em JSON) e devolve "" se nao der
-// pra converter, pra nunca mostrar "R$ NaN" na tela.
-function fmtMoney(value) {
-  const n = Number(value);
-  if (value == null || Number.isNaN(n)) return "";
-  return `R$ ${n.toFixed(2).replace(".", ",")}`;
-}
-
-// O Mercado Livre so aceita mensagens de ate 350 caracteres (tanto nas
-// mensagens pos-venda quanto nas reclamacoes) — o campo ja tem maxlength no
-// HTML pra travar a digitacao, isso aqui so atualiza o contadorzinho visual.
-const MAX_MESSAGE_LENGTH = 350;
-function updateReplyCharCounter() {
-  const len = replyText.value.length;
-  replyCharCounter.textContent = `${len}/${MAX_MESSAGE_LENGTH}`;
-  replyCharCounter.classList.toggle("reply-char-counter-max", len >= MAX_MESSAGE_LENGTH);
-  replyCharCounter.classList.toggle(
-    "reply-char-counter-warn",
-    len >= MAX_MESSAGE_LENGTH * 0.9 && len < MAX_MESSAGE_LENGTH
-  );
-}
-replyText.addEventListener("input", updateReplyCharCounter);
-
-// Rotulo da quantidade de itens do pedido (soma de order_items[].quantity),
-// ex: "1 unidade" / "4 unidades" — igual aparece na tela do pedido no
-// Mercado Livre. Devolve "" quando ainda nao temos essa informacao.
-function fmtQuantity(value) {
-  const n = Number(value);
-  if (value == null || !Number.isFinite(n) || n <= 0) return "";
-  return `${n} unidade${n === 1 ? "" : "s"}`;
-}
-
-// ---------- Avatares (gerados, sem precisar de imagem) ----------
-const AVATAR_COLORS = ["#2563eb", "#7c3aed", "#db2777", "#d97706", "#059669", "#0891b2", "#dc2626", "#4f46e5"];
-function avatarColor(seed) {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) hash = seed.charCodeAt(i) + ((hash << 5) - hash);
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
-}
-function avatarInitial(name) {
-  return (name || "?").trim().charAt(0).toUpperCase() || "?";
-}
-function avatarHtml(label, extraClass) {
-  return `<div class="avatar${extraClass ? " " + extraClass : ""}" style="background:${avatarColor(label)}">${avatarInitial(label)}</div>`;
-}
+const templatePicker = document.getElementById("template-picker");
 
 function fmtDate(d) {
   if (!d) return "";
@@ -246,315 +25,57 @@ function fmtDate(d) {
   }
 }
 
-function fmtDateShort(d) {
-  if (!d) return "";
+function fmtMoney(value, currency) {
+  if (value == null) return "";
   try {
-    return new Date(d).toLocaleDateString("pt-BR");
+    return new Intl.NumberFormat("pt-BR", {
+      style: "currency",
+      currency: currency || "BRL",
+    }).format(value);
   } catch {
-    return d;
+    return `${currency || ""} ${value}`.trim();
   }
 }
 
-// ---------- Copiar pra area de transferencia ----------
-// Usado tanto pelo botao "copiar numero do pedido" quanto pelo botao de
-// copiar que aparece do lado de links detectados dentro das mensagens.
-// navigator.clipboard exige contexto seguro (https) — o painel roda em
-// https no Render, mas caimos num fallback via textarea+execCommand pra
-// nao quebrar em nenhum navegador mais antigo.
-async function copyTextToClipboard(text, btnEl) {
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-    }
-    if (btnEl) {
-      const original = btnEl.textContent;
-      btnEl.textContent = "✓";
-      btnEl.classList.add("copied");
-      setTimeout(() => {
-        btnEl.textContent = original;
-        btnEl.classList.remove("copied");
-      }, 1200);
-    }
-  } catch (e) {
-    console.warn("Falha ao copiar pra área de transferência:", e);
-    if (btnEl) alert("Não consegui copiar automaticamente. Texto: " + text);
-  }
-}
+const SHIPPING_LABELS = {
+  pending: "envio pendente",
+  handling: "em preparacao",
+  ready_to_ship: "pronto para envio",
+  shipped: "enviado",
+  delivered: "entregue",
+  not_delivered: "nao entregue",
+  cancelled: "envio cancelado",
+};
 
-// ---------- Detectar link dentro do texto de uma mensagem ----------
-// Pedido do usuario: quando uma mensagem tiver um link no meio do texto
-// (ex: link de rastreio colado pelo comprador ou pelo vendedor), ele deve
-// aparecer clicavel (abre em outra aba) e com um botaozinho de copiar do
-// lado, em vez de aparecer como texto solto e sem nenhuma acao.
-const MESSAGE_URL_REGEX = /(https?:\/\/[^\s]+)/g;
-
-// Recebe um pedaco de texto PURO (sem tags) e devolve um fragment com texto
-// normal + os links detectados virando clicavel+copiavel.
-function linkifyTextFragment(text) {
-  const fragment = document.createDocumentFragment();
-  const str = text || "";
-  let lastIndex = 0;
-  let match;
-  MESSAGE_URL_REGEX.lastIndex = 0;
-  while ((match = MESSAGE_URL_REGEX.exec(str)) !== null) {
-    if (match.index > lastIndex) {
-      fragment.appendChild(document.createTextNode(str.slice(lastIndex, match.index)));
-    }
-    // Tira pontuacao de final de frase (. , ; : ! ? ) etc.) que grudou no
-    // fim do link sem ser parte da URL de verdade.
-    let url = match[0];
-    while (url.length > 0 && /[.,;:!?)\]}'"]$/.test(url)) {
-      url = url.slice(0, -1);
-    }
-
-    const linkSpan = document.createElement("span");
-    linkSpan.className = "msg-link";
-    const a = document.createElement("a");
-    a.href = url;
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.textContent = url;
-    const copyBtn = document.createElement("button");
-    copyBtn.type = "button";
-    copyBtn.className = "msg-link-copy";
-    copyBtn.title = "Copiar link";
-    copyBtn.textContent = "📋";
-    copyBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      copyTextToClipboard(url, copyBtn);
-    });
-    linkSpan.appendChild(a);
-    linkSpan.appendChild(copyBtn);
-    fragment.appendChild(linkSpan);
-
-    lastIndex = match.index + url.length;
+function orderSummary(conv) {
+  const parts = [];
+  if (conv.item_title) {
+    const qty = conv.item_quantity && conv.item_quantity > 1 ? `${conv.item_quantity}x ` : "";
+    parts.push(`${qty}${conv.item_title}`);
   }
-  if (lastIndex < str.length) {
-    fragment.appendChild(document.createTextNode(str.slice(lastIndex)));
+  if (conv.order_total != null) parts.push(fmtMoney(conv.order_total, conv.currency));
+  if (conv.shipping_status) {
+    parts.push(SHIPPING_LABELS[conv.shipping_status] || conv.shipping_status);
   }
-  return fragment;
-}
-
-// Algumas mensagens automaticas do Mercado Livre (ex: o "assistente
-// virtual" das reclamacoes) vem com tags HTML simples tipo <strong> no meio
-// do texto puro, em vez de HTML de verdade — o usuario reparou que essas
-// tags apareciam cruas na tela ("esses strong"). Interpretamos so uma lista
-// pequena de tags de formatacao inofensivas; qualquer outra tag e
-// descartada (fica so o texto de dentro dela) — nunca usamos innerHTML com
-// o texto original, sempre reconstruindo elemento por elemento, ja que esse
-// texto vem de terceiros (comprador/Mercado Livre).
-const ALLOWED_MESSAGE_TAGS = new Set(["STRONG", "B", "EM", "I", "BR", "P", "UL", "OL", "LI"]);
-
-function renderMessageTextWithLinks(container, text) {
-  container.innerHTML = "";
-  const str = text || "";
-  if (!/<[a-z][^>]*>/i.test(str)) {
-    container.appendChild(linkifyTextFragment(str));
-    return;
-  }
-  let doc;
-  try {
-    doc = new DOMParser().parseFromString(str, "text/html");
-  } catch (e) {
-    container.appendChild(linkifyTextFragment(str));
-    return;
-  }
-  function walk(sourceNode, targetParent) {
-    sourceNode.childNodes.forEach((child) => {
-      if (child.nodeType === Node.TEXT_NODE) {
-        targetParent.appendChild(linkifyTextFragment(child.textContent));
-      } else if (child.nodeType === Node.ELEMENT_NODE) {
-        if (ALLOWED_MESSAGE_TAGS.has(child.tagName)) {
-          const el = document.createElement(child.tagName.toLowerCase());
-          walk(child, el);
-          targetParent.appendChild(el);
-        } else {
-          // Tag nao reconhecida: mantem so o conteudo de dentro, sem a tag.
-          walk(child, targetParent);
-        }
-      }
-    });
-  }
-  walk(doc.body, container);
-}
-
-// ---------- Som de notificacao ----------
-// Toca um "ding" curto usando Web Audio, sem precisar de nenhum arquivo de
-// audio externo. Navegadores só liberam som depois de alguma interacao do
-// usuario na pagina (clique, toque) — por isso "destravamos" o contexto de
-// audio no primeiro clique, pra os sons automaticos (do polling) tocarem
-// sem problema depois.
-let audioCtx = null;
-function getAudioCtx() {
-  if (!audioCtx) {
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return null;
-    audioCtx = new Ctx();
-  }
-  return audioCtx;
-}
-document.addEventListener(
-  "click",
-  () => {
-    const ctx = getAudioCtx();
-    if (ctx && ctx.state === "suspended") ctx.resume();
-  },
-  { once: true }
-);
-
-function playNotificationSound() {
-  try {
-    const ctx = getAudioCtx();
-    if (!ctx) return;
-    const now = ctx.currentTime;
-    [
-      [880, now, 0.11],
-      [1320, now + 0.11, 0.16],
-    ].forEach(([freq, start, dur]) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "sine";
-      osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(0.25, start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(start);
-      osc.stop(start + dur + 0.05);
-    });
-  } catch (e) {
-    console.warn("Nao foi possivel tocar o som de notificacao:", e);
-  }
-}
-
-// Se a sessao do painel expirou (ou ficou invalida por algum motivo), o
-// servidor responde 401. Em vez de deixar a tela travada ou dar erro de
-// "JSON invalido" tentando ler uma pagina de login como se fosse dado,
-// manda direto pra tela de login de novo.
-function handleSessionExpired(res) {
-  if (res.status === 401) {
-    window.location.href = "/login.html";
-    return true;
-  }
-  return false;
+  if (conv.order_id) parts.push(`pedido ${conv.order_id}`);
+  return parts.join(" · ");
 }
 
 async function loadPendingCount() {
   const res = await fetch("/api/pending-count");
-  if (handleSessionExpired(res)) return;
   if (!res.ok) return;
   const data = await res.json();
-
   if (data.pending > 0) {
-    tabCountPending.textContent = data.pending;
-    tabCountPending.classList.remove("hidden");
-  } else {
-    tabCountPending.classList.add("hidden");
-  }
-
-  if (data.noContact > 0) {
-    tabCountNoContact.textContent = data.noContact;
-    tabCountNoContact.classList.remove("hidden");
-  } else {
-    tabCountNoContact.classList.add("hidden");
-  }
-
-  if (data.delivered > 0) {
-    tabCountDelivered.textContent = data.delivered;
-    tabCountDelivered.classList.remove("hidden");
-  } else {
-    tabCountDelivered.classList.add("hidden");
-  }
-
-  if (data.claims > 0) {
-    tabCountClaimsPending.textContent = data.claims;
-    tabCountClaimsPending.classList.remove("hidden");
-  } else {
-    tabCountClaimsPending.classList.add("hidden");
-  }
-
-  if (data.questions > 0) {
-    tabCountQuestionsPending.textContent = data.questions;
-    tabCountQuestionsPending.classList.remove("hidden");
-  } else {
-    tabCountQuestionsPending.classList.add("hidden");
-  }
-
-  // Os badges dos itens do menu lateral (modulos) somam tudo que precisa de
-  // acao dentro de cada um, pra dar pra ver de relance qual dos painéis tem
-  // coisa pendente sem precisar entrar em nenhum deles.
-  const messagesPending = data.pending + data.delivered;
-  if (messagesPending > 0) {
-    moduleBadgeMessages.textContent = messagesPending;
-    moduleBadgeMessages.classList.remove("hidden");
-  } else {
-    moduleBadgeMessages.classList.add("hidden");
-  }
-
-  if (data.claims > 0) {
-    moduleBadgeClaims.textContent = data.claims;
-    moduleBadgeClaims.classList.remove("hidden");
-  } else {
-    moduleBadgeClaims.classList.add("hidden");
-  }
-
-  if (data.questions > 0) {
-    moduleBadgeQuestions.textContent = data.questions;
-    moduleBadgeQuestions.classList.remove("hidden");
-  } else {
-    moduleBadgeQuestions.classList.add("hidden");
-  }
-
-  // O sino conta tudo que ainda precisa de resposta do vendedor — inclui as
-  // mensagens de pedidos ja entregues (aba "Entregues"), as reclamacoes e as
-  // perguntas no anuncio aguardando resposta, que tambem sao coisa
-  // pendente, so que em categorias separadas.
-  const totalPending = data.pending + data.delivered + (data.claims || 0) + (data.questions || 0);
-  if (totalPending > 0) {
-    bellCount.textContent = totalPending;
+    bellCount.textContent = data.pending;
     bellCount.classList.remove("hidden");
   } else {
     bellCount.classList.add("hidden");
   }
-
-  // Toca o som so quando o numero de pendencias SOBE em relacao a ultima
-  // vez que checamos (ou seja, chegou mensagem nova) — nunca no primeiro
-  // carregamento da pagina (lastPendingCount ainda null) nem quando o
-  // numero cai (conversa foi respondida).
-  if (state.lastPendingCount !== null && totalPending > state.lastPendingCount) {
-    playNotificationSound();
-  }
-  state.lastPendingCount = totalPending;
-}
-
-// Rotulo do status em portugues, usado na mensagem de "lista vazia".
-function statusLabel(status) {
-  if (status === "no_contact") return "sem contato ainda";
-  if (status === "answered") return "respondida";
-  if (status === "delivered") return "de pedido já entregue";
-  return "pendente";
 }
 
 async function loadConversations() {
   listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
-  const params = new URLSearchParams({ status: state.status, sort: state.sort });
-  if (state.onlyCombinar) params.set("combinar", "1");
-  if (state.onlyPending) params.set("onlyPending", "1");
-  if (state.sellerId) params.set("sellerId", state.sellerId);
-  if (state.searchQuery) params.set("q", state.searchQuery);
-
-  const res = await fetch(`/api/conversations?${params.toString()}`);
-  if (handleSessionExpired(res)) return;
+  const res = await fetch(`/api/conversations?status=${state.status}`);
   if (!res.ok) {
     listEl.innerHTML = '<p class="muted empty-msg">Erro ao carregar.</p>';
     return;
@@ -562,1691 +83,275 @@ async function loadConversations() {
   const items = await res.json();
 
   if (items.length === 0) {
-    const label = state.onlyPending ? "a responder" : statusLabel(state.status);
-    const msg = state.onlyCombinar
-      ? `Nenhuma conversa de "combinar entrega" ${label}.`
-      : `Nenhuma conversa ${label}.`;
-    listEl.innerHTML = `<p class="muted empty-msg">${msg}</p>`;
+    listEl.textContent = "";
+    const p = document.createElement("p");
+    p.className = "muted empty-msg";
+    p.textContent = `Nenhuma conversa ${state.status === "pending" ? "pendente" : "respondida"}.`;
+    listEl.appendChild(p);
     return;
   }
 
-  listEl.innerHTML = "";
+  listEl.textContent = "";
   for (const conv of items) {
     const div = document.createElement("div");
-    const isUnread = conv.status === "pending" || conv.status === "no_contact";
     div.className =
-      "conversation-item" +
-      (conv.pack_id === state.selectedPackId ? " selected" : "") +
-      (isUnread ? " unread" : "");
-    const label = buyerLabel(conv);
-    const preview = conv.last_message_text
-      ? conv.last_message_text.slice(0, 90)
-      : conv.status === "no_contact"
-      ? "Nenhuma mensagem trocada ainda — inicie o contato"
-      : "";
-    div.innerHTML = `
-      ${avatarHtml(label)}
-      <div class="ci-body">
-        <div class="ci-top">
-          <span class="ci-buyer">${label}</span>
-          <span class="ci-store">${conv.seller_nickname || ""}</span>
-        </div>
-        ${conv.product_title ? `<div class="ci-product">${conv.product_title}</div>` : ""}
-        <div class="ci-preview">${preview}</div>
-        <div class="ci-bottom">
-          <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · #${conv.order_id}` : ""}${fmtMoney(conv.order_total) ? ` · ${fmtMoney(conv.order_total)}` : ""}${fmtQuantity(conv.order_quantity) ? ` · ${fmtQuantity(conv.order_quantity)}` : ""}</span>
-          ${conv.is_delivered ? '<span class="tag tag-delivered">Pedido já entregue</span>' : conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
-          ${conv.shipping_type ? `<span class="tag tag-shipping">${conv.shipping_type}</span>` : ""}
-          ${conv.has_open_claim ? '<span class="tag tag-claim" title="Este pedido tem uma reclamação aberta na aba Reclamações">⚠ Reclamação aberta</span>' : ""}
-        </div>
-      </div>
-    `;
+      "conversation-item" + (conv.pack_id === state.selectedPackId ? " selected" : "");
+
+    const top = document.createElement("div");
+    top.className = "ci-top";
+    const name = document.createElement("strong");
+    name.textContent = conv.buyer_nickname || "Comprador #" + (conv.buyer_id || "?");
+    const store = document.createElement("span");
+    store.className = "muted small";
+    store.textContent = conv.seller_nickname || "";
+    top.append(name, store);
+
+    const preview = document.createElement("div");
+    preview.className = "ci-preview muted";
+    preview.textContent = (conv.last_message_text || "").slice(0, 90);
+
+    const date = document.createElement("div");
+    date.className = "ci-date muted small";
+    date.textContent = fmtDate(conv.last_message_date);
+
+    div.append(top, preview);
+    if (conv.item_title) {
+      const item = document.createElement("div");
+      item.className = "ci-item muted small";
+      item.textContent = conv.item_title;
+      div.appendChild(item);
+    }
+    div.appendChild(date);
+
     div.addEventListener("click", () => openThread(conv));
     listEl.appendChild(div);
   }
 }
 
-// ---------- Reclamacoes (Central de Resolucoes/mediacao) ----------
-// Sistema SEPARADO das conversas de mensagens pos-venda acima — tem seu
-// proprio endpoint (/api/claims), formato de dado e regras (ver
-// backend/claimsSync.js e backend/ml/claimsApi.js).
-const CLAIM_TYPE_LABELS = {
-  mediations: "Mediação",
-  cancel_purchase: "Cancelamento de compra",
-  return: "Devolução",
-  cancel_sale: "Cancelamento de venda",
-};
-const CLAIM_STAGE_LABELS = {
-  claim: "Reclamação",
-  dispute: "Em mediação (Mercado Livre)",
-  recontact: "Recontato",
-  none: "Reclamação",
-};
-
-function claimTypeLabel(claim) {
-  return CLAIM_TYPE_LABELS[claim.type] || claim.type || "Reclamação";
-}
-function claimStageLabel(claim) {
-  return CLAIM_STAGE_LABELS[claim.stage] || claim.stage || "Reclamação";
-}
-
-function loadList() {
-  if (state.module === "claims") return loadClaims();
-  if (state.module === "questions") return loadQuestions();
-  return loadConversations();
-}
-
-async function loadClaims() {
-  listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
-  const params = new URLSearchParams({ status: state.claimStatus });
-  if (state.onlyPending) params.set("onlyPending", "1");
-  if (state.sellerId) params.set("sellerId", state.sellerId);
-  if (state.searchQuery) params.set("q", state.searchQuery);
-
-  const res = await fetch(`/api/claims?${params.toString()}`);
-  if (handleSessionExpired(res)) return;
-  if (!res.ok) {
-    listEl.innerHTML = '<p class="muted empty-msg">Erro ao carregar.</p>';
-    return;
-  }
-  const items = await res.json();
-
-  if (items.length === 0) {
-    const label = state.onlyPending
-      ? "a responder"
-      : state.claimStatus === "closed"
-      ? "fechada"
-      : state.claimStatus === "answered"
-      ? "respondida"
-      : "pendente";
-    listEl.innerHTML = `<p class="muted empty-msg">Nenhuma reclamação ${label}.</p>`;
-    return;
-  }
-
-  listEl.innerHTML = "";
-  for (const claim of items) {
-    const div = document.createElement("div");
-    const isUnread = claim.local_status === "pending";
-    div.className =
-      "conversation-item" +
-      (claim.claim_id === state.selectedClaimId ? " selected" : "") +
-      (isUnread ? " unread" : "");
-    const label = claim.buyer_full_name || "Comprador #" + (claim.buyer_id || "?");
-    const preview = claim.last_message_text
-      ? claim.last_message_text.slice(0, 90)
-      : "Reclamação aberta — nenhuma mensagem trocada ainda";
-    div.innerHTML = `
-      ${avatarHtml(label)}
-      <div class="ci-body">
-        <div class="ci-top">
-          <span class="ci-buyer">${label}</span>
-          <span class="ci-store">${claim.seller_nickname || ""}</span>
-        </div>
-        ${claim.product_title ? `<div class="ci-product">${claim.product_title}</div>` : ""}
-        <div class="ci-preview">${preview}</div>
-        <div class="ci-bottom">
-          <span class="ci-date">${fmtDate(claim.last_message_date)}${claim.order_id ? ` · #${claim.order_id}` : ""}</span>
-          ${claim.shipping_type ? `<span class="tag tag-shipping">${claim.shipping_type}</span>` : ""}
-          <span class="tag tag-claim">${claimTypeLabel(claim)}</span>
-        </div>
-      </div>
-    `;
-    div.addEventListener("click", () => openClaimThread(claim));
-    listEl.appendChild(div);
-  }
-}
-
-function renderClaimThreadInfo(claim) {
-  const label = claim.buyer_full_name || "Comprador #" + (claim.buyer_id || "?");
-  threadBuyer.textContent = label;
-  threadAvatar.innerHTML = "";
-  threadAvatar.style.background = avatarColor(label);
-  threadAvatar.textContent = avatarInitial(label);
-  const accountBits = [];
-  if (claim.seller_nickname) accountBits.push(`Loja: ${claim.seller_nickname}`);
-  if (claim.order_id) accountBits.push(`Pedido #${claim.order_id}`);
-  threadAccount.textContent = accountBits.join(" · ");
-
-  // Tags/atalhos das conversas de mensagens nao fazem sentido aqui — exceto
-  // o tipo de envio (Flex/Agência/etc.), que existe pras duas coisas.
-  threadDeliveryTag.classList.add("hidden");
-  threadDeliveredTag.classList.add("hidden");
-  threadClaimWarningTag.classList.add("hidden");
-  threadShippingTag.textContent = claim.shipping_type || "-";
-  threadShippingTag.classList.toggle("hidden", !claim.shipping_type);
-  quickTemplates.classList.add("hidden");
-  freightBox.classList.add("hidden");
-  freightTemplateEditBtn.classList.add("hidden");
-  orderCard.classList.add("hidden");
-
-  threadClaimStageTag.textContent = claimStageLabel(claim);
-  threadClaimStageTag.classList.remove("hidden");
-
-  if (claim.mandatory_action && claim.due_date) {
-    claimDueBanner.textContent = `⏰ Ação necessária até ${fmtDate(claim.due_date)} — responda ou envie o que for pedido antes do prazo.`;
-    claimDueBanner.classList.remove("hidden");
-  } else {
-    claimDueBanner.classList.add("hidden");
-  }
-
-  // Botao "marcar como resolvido" (pedido do usuario, pra reclamacoes
-  // antigas ja tratadas por fora do painel): so faz sentido oferecer
-  // enquanto ela ainda esta pendente/respondida por aqui. Uma vez fechada,
-  // se foi por essa marcacao manual mostra so a informacao (sem botao); se
-  // fechou pelo motivo normal (Mercado Livre/comprador), nem mostra o
-  // banner.
-  claimResolveBtn.dataset.claimId = claim.claim_id;
-  delete claimResolveBtn.dataset.packId;
-  delete claimResolveBtn.dataset.questionId;
-  if (claim.local_status === "closed") {
-    if (claim.resolved_by_operator_at) {
-      claimResolveInfo.textContent = `✓ Marcada como resolvida manualmente${
-        claim.resolved_by_operator ? ` por ${claim.resolved_by_operator}` : ""
-      } em ${fmtDate(claim.resolved_by_operator_at)}.`;
-      claimResolveBanner.classList.remove("hidden");
-      claimResolveBtn.classList.add("hidden");
-    } else {
-      claimResolveBanner.classList.add("hidden");
-    }
-  } else {
-    claimResolveInfo.textContent = "Já resolveu isso por fora do painel?";
-    claimResolveBanner.classList.remove("hidden");
-    claimResolveBtn.classList.remove("hidden");
-  }
-
-  claimInfoCard.classList.remove("hidden");
-  claimInfoTitle.textContent = claim.product_title || claimTypeLabel(claim);
-  const metaBits = [claimTypeLabel(claim)];
-  if (claim.reason_id) metaBits.push(`Motivo: ${claim.reason_id}`);
-  if (claim.order_id) metaBits.push(`Pedido #${claim.order_id}`);
-  const totalLabel = fmtMoney(claim.order_total);
-  if (totalLabel) metaBits.push(totalLabel);
-  const claimQtyLabel = fmtQuantity(claim.order_quantity);
-  if (claimQtyLabel) metaBits.push(claimQtyLabel);
-  claimInfoMeta.textContent = metaBits.join(" · ");
-  if (claim.order_id) {
-    claimInfoLink.href = `https://www.mercadolivre.com.br/vendas/${claim.order_id}/detalhe`;
-    claimInfoLink.classList.remove("hidden");
-    claimInfoCopyBtn.dataset.orderId = claim.order_id;
-    claimInfoCopyBtn.classList.remove("hidden");
-  } else {
-    claimInfoLink.classList.add("hidden");
-    claimInfoCopyBtn.classList.add("hidden");
-  }
-
-  evidenceBox.classList.remove("hidden");
-  evidenceForm.classList.add("hidden");
-  evidenceToggleArrow.textContent = "▾";
-  evidenceResults.innerHTML = "";
-
-  replyAttachBtn.classList.remove("hidden");
-  replyAttachBtn.title = "Anexar arquivo (JPG, PNG, PDF ou TXT, até 5MB)";
-  replyAttachmentInput.value = "";
-  replyAttachmentNameEl.classList.add("hidden");
-}
-
-// Cada anexo trocado numa reclamacao (foto/video que o comprador manda como
-// evidencia) vem no campo "attachments" da mensagem — um id/"filename" que
-// so serve pra baixar o arquivo pela rota do painel (que repassa a chamada
-// autenticada pro Mercado Livre, ver GET /claims/:claimId/attachments/:id/
-// download em routes/claims.js). Pode vir como string solta ou como objeto
-// com original_filename/filename, dependendo do formato exato devolvido.
-function renderClaimMessageAttachments(container, attachments, claimId) {
-  for (const att of attachments) {
-    const id = typeof att === "string" ? att : att.filename || att.id || att.attachment_id;
-    if (!id) continue;
-    const label = typeof att === "string" ? att : att.original_filename || att.filename || "arquivo anexado";
-    const a = document.createElement("a");
-    a.href = `/api/claims/${encodeURIComponent(claimId)}/attachments/${encodeURIComponent(id)}/download`;
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.className = "msg-attachment-link";
-    a.textContent = `📎 ${label}`;
-    container.appendChild(a);
-  }
-}
-
-function renderClaimMessages(messages, claimId) {
-  threadMessages.innerHTML = "";
-  if (messages.length === 0) {
-    threadMessages.innerHTML =
-      '<p class="muted centered">Nenhuma mensagem trocada ainda nesta reclamação.</p>';
-    return;
-  }
-  for (const m of messages) {
-    const div = document.createElement("div");
-    div.className = "msg " + (m.sender_role === "respondent" ? "msg-out" : "msg-in");
-    const roleLabel =
-      m.sender_role === "respondent" ? "Você" : m.sender_role === "mediator" ? "Mercado Livre" : "Comprador";
-    const hasAttachments = Array.isArray(m.attachments) && m.attachments.length > 0;
-    div.innerHTML = `<div class="msg-text"></div>${
-      hasAttachments ? '<div class="msg-attachments"></div>' : ""
-    }<div class="msg-date">${roleLabel} · ${fmtDate(m.sent_date)}</div>`;
-    renderMessageTextWithLinks(div.querySelector(".msg-text"), m.message);
-    if (hasAttachments) {
-      renderClaimMessageAttachments(div.querySelector(".msg-attachments"), m.attachments, claimId);
-    }
-    threadMessages.appendChild(div);
-  }
-  threadMessages.scrollTop = threadMessages.scrollHeight;
-}
-
-async function loadClaimMessages(claimId) {
-  const res = await fetch(`/api/claims/${encodeURIComponent(claimId)}/messages`);
-  if (handleSessionExpired(res)) return false;
-  if (!res.ok) {
-    threadMessages.innerHTML = '<p class="muted">Erro ao carregar as mensagens.</p>';
-    return false;
-  }
-  const data = await res.json();
-  if (data.claim) renderClaimThreadInfo(data.claim);
-  renderClaimMessages(data.messages || [], claimId);
-  return true;
-}
-
-async function openClaimThread(claim) {
-  state.selectedClaimId = claim.claim_id;
-  state.selectedPackId = null;
-  state.selectedQuestionId = null;
+async function openThread(conv) {
+  state.selectedPackId = conv.pack_id;
   document.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
 
   threadEmpty.classList.add("hidden");
   threadEl.classList.remove("hidden");
-  renderClaimThreadInfo(claim);
+  threadBuyer.textContent = conv.buyer_nickname || "Comprador #" + (conv.buyer_id || "?");
+  threadAccount.textContent = conv.seller_nickname ? `Loja: ${conv.seller_nickname}` : "";
+
+  const summary = orderSummary(conv);
+  if (summary) {
+    threadOrder.textContent = summary;
+    threadOrder.classList.remove("hidden");
+  } else {
+    threadOrder.classList.add("hidden");
+  }
+
   threadMessages.innerHTML = '<p class="muted">Carregando mensagens...</p>';
-  replyForm.dataset.mode = "claim";
-  replyForm.dataset.claimId = claim.claim_id;
-  delete replyForm.dataset.packId;
-  openMobileThread();
+  replyForm.dataset.packId = conv.pack_id;
 
-  await loadClaimMessages(claim.claim_id);
-  await loadClaims();
-}
+  const res = await fetch(`/api/conversations/${encodeURIComponent(conv.pack_id)}/messages`);
+  const messages = await res.json();
 
-// ---------- Perguntas (duvidas no anuncio, antes da compra) ----------
-// Sistema SEPARADO tanto das conversas de mensagens quanto das reclamacoes
-// acima — pedido do usuario ("Ate perguntas nos anuncio tambem queria que
-// puxasse que sao as duvidas antes da compra"), construido "igual mensagem
-// mas com nova categoria de duvidas". Diferenca importante: uma pergunta
-// tem no maximo UMA resposta (nao e uma conversa de ida-e-volta), entao a
-// "thread" dela e sempre so um ou dois balõezinhos (pergunta + resposta).
-async function loadQuestions() {
-  listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
-  const params = new URLSearchParams({ status: state.questionStatus });
-  if (state.onlyPending) params.set("onlyPending", "1");
-  if (state.sellerId) params.set("sellerId", state.sellerId);
-  if (state.searchQuery) params.set("q", state.searchQuery);
-
-  const res = await fetch(`/api/questions?${params.toString()}`);
-  if (handleSessionExpired(res)) return;
-  if (!res.ok) {
-    // Tenta mostrar o motivo exato do erro (ver routes/questions.js) em vez
-    // de so "Erro ao carregar." — ajuda a diagnosticar sem precisar abrir
-    // nada tecnico (ex: tabela nova que ainda nao foi criada no banco).
-    const detail = await res.json().catch(() => null);
-    listEl.innerHTML = `<p class="muted empty-msg">Erro ao carregar as perguntas.${
-      detail?.detail ? `<br><span class="small">${detail.detail}</span>` : ""
-    }</p>`;
-    return;
-  }
-  const items = await res.json();
-
-  if (items.length === 0) {
-    const label = state.onlyPending
-      ? "a responder"
-      : state.questionStatus === "closed"
-      ? "fechada"
-      : state.questionStatus === "answered"
-      ? "respondida"
-      : "pendente";
-    listEl.innerHTML = `<p class="muted empty-msg">Nenhuma pergunta ${label}.</p>`;
-    return;
-  }
-
-  listEl.innerHTML = "";
-  for (const question of items) {
-    const div = document.createElement("div");
-    const isUnread = question.local_status === "pending";
-    div.className =
-      "conversation-item" +
-      (question.question_id === state.selectedQuestionId ? " selected" : "") +
-      (isUnread ? " unread" : "");
-    const label = question.buyer_nickname || "Comprador #" + (question.buyer_id || "?");
-    const preview = question.question_text || "";
-    // Quando o mesmo comprador fez mais de uma pergunta (ver agrupamento em
-    // GET /questions no backend), mostra quantas ao lado do nome — pedido do
-    // usuario ("se e o mesmo numero deixar as mensagens uma abaixo da
-    // outra"), pra ficar claro que ha mais de uma mensagem escondida ali
-    // dentro antes mesmo de abrir.
-    const grupoTotal = Number(question.grupo_total) || 1;
-    const grupoBadge = grupoTotal > 1 ? `<span class="ci-group-count">${grupoTotal} perguntas</span>` : "";
-    div.innerHTML = `
-      ${avatarHtml(label)}
-      <div class="ci-body">
-        <div class="ci-top">
-          <span class="ci-buyer">${label}</span>
-          <span class="ci-store">${question.seller_nickname || ""}</span>
-        </div>
-        ${question.item_title ? `<div class="ci-product">${question.item_title}</div>` : ""}
-        <div class="ci-preview">${preview}</div>
-        <div class="ci-bottom">
-          <span class="ci-date">${fmtDate(question.question_date)}</span>
-          ${grupoBadge}
-          <span class="tag tag-question">Pergunta</span>
-        </div>
-      </div>
-    `;
-    div.addEventListener("click", () => openQuestionThread(question));
-    listEl.appendChild(div);
-  }
-}
-
-function renderQuestionThreadInfo(question) {
-  const label = question.buyer_nickname || "Comprador #" + (question.buyer_id || "?");
-  threadBuyer.textContent = label;
-  threadAvatar.innerHTML = "";
-  threadAvatar.style.background = avatarColor(label);
-  threadAvatar.textContent = avatarInitial(label);
-  const accountBits = [];
-  if (question.seller_nickname) accountBits.push(`Loja: ${question.seller_nickname}`);
-  threadAccount.textContent = accountBits.join(" · ");
-
-  // Elementos que so fazem sentido pras outras duas telas (pedido/entrega,
-  // reclamacao) — sempre escondidos numa pergunta.
-  threadDeliveryTag.classList.add("hidden");
-  threadDeliveredTag.classList.add("hidden");
-  threadShippingTag.classList.add("hidden");
-  threadClaimStageTag.classList.add("hidden");
-  threadClaimWarningTag.classList.add("hidden");
-  claimDueBanner.classList.add("hidden");
-  claimInfoCard.classList.add("hidden");
-  evidenceBox.classList.add("hidden");
-  quickTemplates.classList.add("hidden");
-
-  // Calculadora de frete tambem aqui (pedido do usuario: varias perguntas
-  // sao literalmente "quanto custa o frete pro meu CEP?") — so aparece se o
-  // Melhor Envio ja foi conectado, igual nas outras duas telas. Como uma
-  // pergunta pre-venda nao tem pedido nem CEP de destino conhecido, o CEP
-  // sempre comeca vazio (digitado na hora) e o "valor assegurado" ja vem
-  // preenchido com o preco do anuncio, quando conhecido (ver item_price em
-  // questionsSync.js) — o vendedor ainda pode trocar antes de calcular.
-  freightBox.classList.toggle("hidden", !state.melhorEnvio.connected);
-  freightForm.classList.add("hidden");
-  freightToggleArrow.textContent = "▾";
-  freightResults.innerHTML = "";
-  freightCep.value = "";
-  // So aqui (Perguntas) o modelo da resposta e editavel — ver
-  // freightTemplateEditBtn/buildFreightMessage (pedido do usuario).
-  freightTemplateEditBtn.classList.toggle("hidden", !state.melhorEnvio.connected);
-  const itemPriceValue = Number(question.item_price);
-  freightInsurance.value = Number.isFinite(itemPriceValue) && itemPriceValue > 0 ? itemPriceValue.toFixed(2) : "20";
-
-  // "Marcar como resolvido" tambem pra perguntas (pedido do usuario) —
-  // cobre o caso de uma pergunta que o Mercado Livre nunca vai deixar
-  // responder de verdade (ex: erro real visto pelo vendedor "Item must be
-  // active", quando o anuncio foi pausado/removido depois da pergunta):
-  // sem isso, ela ficaria pendente pra sempre, sem nenhum jeito de tirar da
-  // aba de pendentes. Mesmo padrao visual das outras duas telas (ver
-  // renderClaimThreadInfo/renderThreadInfo). O alvo exato (dataset.questionId)
-  // e reajustado logo depois, em loadQuestionMessages, pra apontar pra
-  // pergunta pendente certa quando o comprador tiver mais de uma agrupada
-  // aqui — aqui so decide SE o banner aparece, a partir do status da
-  // pergunta representante desta entrada.
-  claimResolveBtn.dataset.questionId = question.question_id;
-  delete claimResolveBtn.dataset.claimId;
-  delete claimResolveBtn.dataset.packId;
-  if (question.local_status === "closed") {
-    if (question.resolved_by_operator_at) {
-      claimResolveInfo.textContent = `✓ Marcada como resolvida manualmente${
-        question.resolved_by_operator ? ` por ${question.resolved_by_operator}` : ""
-      } em ${fmtDate(question.resolved_by_operator_at)}.`;
-      claimResolveBanner.classList.remove("hidden");
-      claimResolveBtn.classList.add("hidden");
-    } else {
-      // Fechada pelo proprio Mercado Livre (ex: prazo esgotado sem
-      // resposta, nao por acao manual aqui) — nada a mostrar.
-      claimResolveBanner.classList.add("hidden");
-    }
-  } else {
-    claimResolveInfo.textContent = "Não deu pra responder (ex: anúncio pausado ou removido)?";
-    claimResolveBanner.classList.remove("hidden");
-    claimResolveBtn.classList.remove("hidden");
-  }
-
-  // Sem anexo em resposta de pergunta (a API do Mercado Livre nao documenta
-  // suporte a isso, diferente de mensagens/reclamacoes).
-  replyAttachBtn.classList.add("hidden");
-  replyAttachmentInput.value = "";
-  replyAttachmentNameEl.classList.add("hidden");
-
-  // Reaproveita o card de "pedido" pra mostrar o anuncio que a pergunta e
-  // sobre — mesma ideia (titulo + link), so que apontando pro anuncio em
-  // vez de pro pedido.
-  //
-  // O Mercado Livre esta bloqueando (do lado dele, por seguranca contra
-  // raspagem de dados — ver /api/debug/probe-item-batch) a busca automatica
-  // do titulo/link do anuncio pra algumas contas, entao "item_permalink"
-  // pode continuar vazio mesmo depois da correcao dos endpoints. Nesse
-  // caso, ainda montamos um link direto pro anuncio a partir so do
-  // "item_id" (formato conhecido: produto.mercadolivre.com.br/MLB-NUMERO) —
-  // ele nao mostra o titulo aqui no painel, mas o operador consegue abrir o
-  // anuncio de verdade num clique (no navegador dele, sem passar pelo mesmo
-  // bloqueio, ja que ai e um acesso normal de pessoa, nao do nosso servidor).
-  if (question.item_title || question.item_id) {
-    orderCard.classList.remove("hidden");
-    orderCardProduct.textContent = question.item_title || "Anúncio não identificado (clique no link pra ver)";
-    orderCardMeta.textContent = question.item_id ? `Anúncio ${question.item_id}` : "";
-    const fallbackItemUrl = question.item_id
-      ? `https://produto.mercadolivre.com.br/${question.item_id.replace(/^([A-Z]+)(\d+)$/, "$1-$2")}`
-      : null;
-    const itemLinkHref = question.item_permalink || fallbackItemUrl;
-    if (itemLinkHref) {
-      orderCardLink.href = itemLinkHref;
-      orderCardLink.classList.remove("hidden");
-    } else {
-      orderCardLink.classList.add("hidden");
-    }
-    if (question.item_id) {
-      orderCardCopyBtn.dataset.orderId = question.item_id;
-      orderCardCopyBtn.classList.remove("hidden");
-    } else {
-      orderCardCopyBtn.classList.add("hidden");
-    }
-  } else {
-    orderCard.classList.add("hidden");
-  }
-}
-
-function renderQuestionMessages(messages) {
-  threadMessages.innerHTML = "";
-  if (messages.length === 0) {
-    threadMessages.innerHTML = '<p class="muted centered">Pergunta sem texto.</p>';
-    return;
-  }
-  for (const m of messages) {
-    // Quando essa "conversa" na verdade junta varias perguntas separadas do
-    // mesmo comprador (ver agrupamento no backend), mostra de qual anuncio
-    // se trata antes da pergunta, so quando muda em relacao a anterior —
-    // ajuda a nao confundir perguntas sobre produtos diferentes.
-    if (m.itemLabel) {
-      const label = document.createElement("div");
-      label.className = "msg-item-label";
-      label.textContent = m.itemLabel;
-      threadMessages.appendChild(label);
-    }
-    const div = document.createElement("div");
-    div.className = "msg " + (m.sender_role === "respondent" ? "msg-out" : "msg-in");
-    const roleLabel = m.sender_role === "respondent" ? "Você" : "Comprador";
-    div.innerHTML = `<div class="msg-text"></div><div class="msg-date">${roleLabel} · ${fmtDate(m.sent_date)}</div>`;
-    renderMessageTextWithLinks(div.querySelector(".msg-text"), m.message);
-    threadMessages.appendChild(div);
-  }
-  threadMessages.scrollTop = threadMessages.scrollHeight;
-}
-
-async function loadQuestionMessages(questionId) {
-  const res = await fetch(`/api/questions/${encodeURIComponent(questionId)}`);
-  if (handleSessionExpired(res)) return false;
-  if (!res.ok) {
-    threadMessages.innerHTML = '<p class="muted">Erro ao carregar a pergunta.</p>';
-    return false;
-  }
-  const data = await res.json();
-  if (data.question) renderQuestionThreadInfo(data.question);
-  renderQuestionMessages(data.messages || []);
-  // Se esse comprador tiver mais de uma pergunta pendente juntas nessa
-  // mesma tela, responde/resolve a mais recente delas (a API do Mercado
-  // Livre so aceita responder uma pergunta por vez) — ver
-  // replyTargetQuestionId no backend (GET /questions/:questionId).
-  const targetQuestionId = data.replyTargetQuestionId || questionId;
-  replyForm.dataset.questionId = targetQuestionId;
-  claimResolveBtn.dataset.questionId = targetQuestionId;
-  return true;
-}
-
-async function openQuestionThread(question) {
-  state.selectedQuestionId = question.question_id;
-  state.selectedPackId = null;
-  state.selectedClaimId = null;
-  document.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
-
-  threadEmpty.classList.add("hidden");
-  threadEl.classList.remove("hidden");
-  renderQuestionThreadInfo(question);
-  threadMessages.innerHTML = '<p class="muted">Carregando...</p>';
-  replyForm.dataset.mode = "question";
-  replyForm.dataset.questionId = question.question_id;
-  delete replyForm.dataset.packId;
-  delete replyForm.dataset.claimId;
-  openMobileThread();
-
-  await loadQuestionMessages(question.question_id);
-  await loadQuestions();
-}
-
-async function submitQuestionReply() {
-  const questionId = replyForm.dataset.questionId;
-  const text = replyText.value.trim();
-  if (!questionId || !text) return;
-
-  const btn = replyForm.querySelector('button[type="submit"]');
-  btn.disabled = true;
-  try {
-    const res = await fetch(`/api/questions/${encodeURIComponent(questionId)}/reply`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, operatorName: getOperatorName() }),
-    });
-    if (handleSessionExpired(res)) return;
-    const data = await res.json();
-    if (!res.ok) {
-      const detail = typeof data.detail === "string" ? data.detail : "";
-      alert((data.error || "Falha ao enviar a resposta.") + (detail ? `\n\nMotivo: ${detail}` : ""));
-      return;
-    }
-    replyText.value = "";
-    updateReplyCharCounter();
-    if (questionId === state.selectedQuestionId) {
-      await loadQuestionMessages(questionId);
-    }
-    await Promise.all([loadQuestions(), loadPendingCount()]);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-// Copiar o numero do pedido (pedido do usuario) — funciona igual nos dois
-// cards (mensagens e reclamacoes), o numero fica guardado no data-order-id
-// de cada botao (ver renderThreadInfo/renderClaimThreadInfo).
-orderCardCopyBtn.addEventListener("click", () => {
-  if (orderCardCopyBtn.dataset.orderId) copyTextToClipboard(orderCardCopyBtn.dataset.orderId, orderCardCopyBtn);
-});
-claimInfoCopyBtn.addEventListener("click", () => {
-  if (claimInfoCopyBtn.dataset.orderId) copyTextToClipboard(claimInfoCopyBtn.dataset.orderId, claimInfoCopyBtn);
-});
-
-// "Marcar como resolvido" (pedido do usuario, estendido tambem pras
-// mensagens normais e agora pras perguntas: "quero em tudo") — pra
-// reclamacoes/conversas/perguntas antigas que ja foram tratadas por fora do
-// painel (ou, no caso de pergunta, que nunca vao poder ser respondidas de
-// verdade — ex: "Item must be active") e que, por isso, nunca vao
-// fechar/mudar de status sozinhas. Confirma antes (acao nao tem volta facil
-// pela UI) e manda pro endpoint certo dependendo do modo da thread aberta
-// (ver POST /claims/:claimId/mark-resolved em routes/claims.js, POST
-// /conversations/:packId/mark-resolved em routes/conversations.js e POST
-// /questions/:questionId/mark-resolved em routes/questions.js).
-claimResolveBtn.addEventListener("click", async () => {
-  const mode = replyForm.dataset.mode; // "claim" | "conversation" | "question"
-  const id =
-    mode === "claim"
-      ? claimResolveBtn.dataset.claimId
-      : mode === "question"
-      ? claimResolveBtn.dataset.questionId
-      : claimResolveBtn.dataset.packId;
-  if (!id) return;
-  const confirmMsg =
-    mode === "claim"
-      ? "Marcar esta reclamação como resolvida? Ela vai sair de Pendentes/Respondidas e ir para Fechadas."
-      : mode === "question"
-      ? "Marcar esta pergunta como resolvida? Ela vai sair de Pendentes/Respondidas e ir para Fechadas."
-      : "Marcar esta conversa como resolvida? Ela vai sair de Pendentes/Respondidas/Entregues.";
-  if (!confirm(confirmMsg)) return;
-
-  claimResolveBtn.disabled = true;
-  try {
-    const endpoint =
-      mode === "claim"
-        ? `/api/claims/${encodeURIComponent(id)}/mark-resolved`
-        : mode === "question"
-        ? `/api/questions/${encodeURIComponent(id)}/mark-resolved`
-        : `/api/conversations/${encodeURIComponent(id)}/mark-resolved`;
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ operatorName: getOperatorName() }),
-    });
-    if (handleSessionExpired(res)) return;
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      alert(data.error || "Falha ao marcar como resolvida.");
-      return;
-    }
-    if (mode === "claim") {
-      if (id === state.selectedClaimId) await loadClaimMessages(id);
-      await Promise.all([loadClaims(), loadPendingCount()]);
-    } else if (mode === "question") {
-      // Compara com a pergunta REPRESENTANTE aberta na tela (state.selectedQuestionId),
-      // nao com "id" (que pode ser uma pergunta diferente dentro do mesmo
-      // grupo — ver replyTargetQuestionId) — e a representante que decide
-      // se a thread aberta precisa recarregar.
-      if (state.selectedQuestionId) await loadQuestionMessages(state.selectedQuestionId);
-      await Promise.all([loadQuestions(), loadPendingCount()]);
-    } else {
-      if (id === state.selectedPackId) await loadThreadMessages(id);
-      await Promise.all([loadConversations(), loadPendingCount()]);
-    }
-  } finally {
-    claimResolveBtn.disabled = false;
-  }
-});
-
-replyAttachBtn.addEventListener("click", () => replyAttachmentInput.click());
-replyAttachmentInput.addEventListener("change", () => {
-  const f = replyAttachmentInput.files[0];
-  if (f) {
-    replyAttachmentNameEl.textContent = `📎 ${f.name} (${Math.ceil(f.size / 1024)} KB)`;
-    replyAttachmentNameEl.classList.remove("hidden");
-  } else {
-    replyAttachmentNameEl.classList.add("hidden");
-  }
-});
-
-async function submitClaimReply() {
-  const claimId = replyForm.dataset.claimId;
-  const text = replyText.value.trim();
-  if (!claimId || !text) return;
-  if (text.length > MAX_MESSAGE_LENGTH) {
-    alert(`Mensagem muito longa (${text.length} caracteres). O Mercado Livre só aceita até ${MAX_MESSAGE_LENGTH} caracteres — divida em mais de uma mensagem.`);
-    return;
-  }
-
-  const btn = replyForm.querySelector('button[type="submit"]');
-  btn.disabled = true;
-  try {
-    const formData = new FormData();
-    formData.set("text", text);
-    formData.set("operatorName", getOperatorName());
-    if (replyAttachmentInput.files[0]) {
-      formData.set("file", replyAttachmentInput.files[0]);
-    }
-    const res = await fetch(`/api/claims/${encodeURIComponent(claimId)}/reply`, {
-      method: "POST",
-      body: formData,
-    });
-    if (handleSessionExpired(res)) return;
-    const data = await res.json();
-    if (!res.ok) {
-      const detail = typeof data.detail === "string" ? data.detail : "";
-      alert((data.error || "Falha ao enviar a mensagem.") + (detail ? `\n\nMotivo: ${detail}` : ""));
-      return;
-    }
-    replyText.value = "";
-    updateReplyCharCounter();
-    replyAttachmentInput.value = "";
-    replyAttachmentNameEl.classList.add("hidden");
-    if (claimId === state.selectedClaimId) {
-      await loadClaimMessages(claimId);
-    }
-    await Promise.all([loadClaims(), loadPendingCount()]);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-// Converte um valor de <input type="date"> ("AAAA-MM-DD") pro formato ISO
-// 8601 com horario que a API de evidencias espera, usando meio-dia no
-// horario de Brasilia (o horario exato do dia nao importa pra essa
-// finalidade, so a data).
-function toEvidenceDateParam(dateStr) {
-  if (!dateStr) return null;
-  return `${dateStr}T12:00:00.000-03:00`;
-}
-
-evidenceToggle.addEventListener("click", () => {
-  const willShow = evidenceForm.classList.contains("hidden");
-  evidenceForm.classList.toggle("hidden", !willShow);
-  evidenceToggleArrow.textContent = willShow ? "▴" : "▾";
-});
-
-evidenceMethodSelect.addEventListener("change", () => {
-  document.querySelectorAll(".evidence-fields").forEach((el) => el.classList.add("hidden"));
-  const target = document.getElementById(`evidence-fields-${evidenceMethodSelect.value}`);
-  if (target) target.classList.remove("hidden");
-});
-
-evidenceSendBtn.addEventListener("click", async () => {
-  const claimId = state.selectedClaimId;
-  if (!claimId) return;
-  const method = evidenceMethodSelect.value;
-  const payload = { shipping_method: method, operatorName: getOperatorName() };
-
-  if (method === "mail") {
-    payload.shipping_company_name = document.getElementById("evidence-mail-company").value.trim();
-    payload.date_shipped = toEvidenceDateParam(document.getElementById("evidence-mail-date").value);
-  } else if (method === "courier") {
-    payload.shipping_company_name = document.getElementById("evidence-courier-company").value.trim();
-    payload.destination_agency = document.getElementById("evidence-courier-agency").value.trim();
-    payload.date_shipped = toEvidenceDateParam(document.getElementById("evidence-courier-date").value);
-    payload.receiver_name = document.getElementById("evidence-courier-receiver").value.trim();
-  } else if (method === "personal") {
-    payload.date_delivered = toEvidenceDateParam(document.getElementById("evidence-personal-date").value);
-  } else if (method === "email") {
-    payload.receiver_email = document.getElementById("evidence-email-receiver").value.trim();
-    payload.date_shipped = toEvidenceDateParam(document.getElementById("evidence-email-date").value);
-  }
-
-  evidenceSendBtn.disabled = true;
-  evidenceResults.innerHTML = '<p class="freight-msg muted">Enviando...</p>';
-  try {
-    const res = await fetch(`/api/claims/${encodeURIComponent(claimId)}/evidence`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (handleSessionExpired(res)) return;
-    const data = await res.json();
-    if (!res.ok) {
-      evidenceResults.innerHTML = `<p class="freight-msg freight-error">${data.error || "Falha ao enviar o comprovante."}</p>`;
-      return;
-    }
-    evidenceResults.innerHTML = '<p class="freight-msg">Comprovante enviado!</p>';
-    await loadClaimMessages(claimId);
-  } catch (e) {
-    evidenceResults.innerHTML = '<p class="freight-msg freight-error">Falha ao enviar o comprovante.</p>';
-  } finally {
-    evidenceSendBtn.disabled = false;
-  }
-});
-
-function openMobileThread() {
-  document.body.classList.add("thread-open");
-}
-function closeMobileThread() {
-  document.body.classList.remove("thread-open");
-}
-
-// Preenche o cabecalho e o card de detalhes do pedido a partir de um
-// objeto de conversa. Chamada duas vezes: uma na hora (com o dado que ja
-// tinhamos na lista) e outra depois que a resposta do servidor chega
-// (que pode ter enriquecido produto/comprador/tipo de entrega na hora).
-function renderThreadInfo(conv) {
-  const label = buyerLabel(conv);
-  threadBuyer.textContent = label;
-  threadAvatar.innerHTML = "";
-  threadAvatar.style.background = avatarColor(label);
-  threadAvatar.textContent = avatarInitial(label);
-  const accountBits = [];
-  if (conv.seller_nickname) accountBits.push(`Loja: ${conv.seller_nickname}`);
-  if (conv.order_id) accountBits.push(`Pedido #${conv.order_id}`);
-  threadAccount.textContent = accountBits.join(" · ");
-  threadDeliveryTag.classList.toggle("hidden", !conv.is_combinar_entrega);
-  threadDeliveredTag.classList.toggle("hidden", !conv.is_delivered);
-  threadShippingTag.textContent = conv.shipping_type || "-";
-  threadShippingTag.classList.toggle("hidden", !conv.shipping_type);
-  // O atalho da mensagem padrao de "combinar entrega" so faz sentido pra
-  // pedidos classificados assim — nos outros, fica escondido.
-  quickTemplates.classList.toggle("hidden", !conv.is_combinar_entrega);
-  // Avisa aqui em Mensagens quando o MESMO pedido tem uma reclamacao aberta
-  // na aba Reclamacoes (ver has_open_claim em GET /conversations e GET
-  // /conversations/:packId/messages) — pedido do usuario: uma venda de
-  // "combinar entrega" com reclamacao aberta nao pode passar despercebida
-  // so porque o vendedor estava olhando a aba de Mensagens.
-  threadClaimWarningTag.classList.toggle("hidden", !conv.has_open_claim);
-
-  // Elementos que so existem pra reclamacoes (ver renderClaimThreadInfo) —
-  // sempre escondidos numa conversa de mensagens normal.
-  threadClaimStageTag.classList.add("hidden");
-  claimDueBanner.classList.add("hidden");
-  claimInfoCard.classList.add("hidden");
-  evidenceBox.classList.add("hidden");
-
-  // Botao "marcar como resolvido" (pedido do usuario: "quero em tudo", ou
-  // seja tambem nas mensagens normais, nao so nas reclamacoes) — mesmo
-  // banner/botao compartilhado com renderClaimThreadInfo, ja que uma thread
-  // nunca e as duas coisas ao mesmo tempo. So faz sentido oferecer enquanto
-  // a conversa ainda esta pendente/respondida; se ja foi marcada
-  // manualmente mostra so a informacao (sem botao); pros outros status
-  // (bloqueada/cancelada/sem contato/resolvida automaticamente por
-  // combinar-entrega entregue) nem mostra o banner.
-  claimResolveBtn.dataset.packId = conv.pack_id;
-  delete claimResolveBtn.dataset.claimId;
-  delete claimResolveBtn.dataset.questionId;
-  if (conv.status === "resolved_by_operator") {
-    claimResolveInfo.textContent = `✓ Marcada como resolvida manualmente${
-      conv.resolved_by_operator ? ` por ${conv.resolved_by_operator}` : ""
-    } em ${fmtDate(conv.resolved_by_operator_at)}.`;
-    claimResolveBanner.classList.remove("hidden");
-    claimResolveBtn.classList.add("hidden");
-  } else if (conv.status === "pending" || conv.status === "answered") {
-    claimResolveInfo.textContent = "Já resolveu isso por fora do painel?";
-    claimResolveBanner.classList.remove("hidden");
-    claimResolveBtn.classList.remove("hidden");
-  } else {
-    claimResolveBanner.classList.add("hidden");
-  }
-
-  // Anexar arquivo tambem e permitido numa mensagem normal (pedido do
-  // usuario) — o botao e compartilhado com a tela de reclamacoes, so limpa
-  // a selecao anterior ao trocar de conversa.
-  replyAttachBtn.classList.remove("hidden");
-  replyAttachBtn.title = "Anexar arquivo (JPG, PNG, PDF ou TXT, até 25MB)";
-  replyAttachmentInput.value = "";
-  replyAttachmentNameEl.classList.add("hidden");
-
-  if (conv.product_title || conv.order_id) {
-    orderCard.classList.remove("hidden");
-    orderCardProduct.textContent = conv.product_title || "Produto nao identificado";
-    const orderMetaBits = [];
-    if (conv.order_id) orderMetaBits.push(`Pedido #${conv.order_id}`);
-    const orderTotalLabel = fmtMoney(conv.order_total);
-    if (orderTotalLabel) orderMetaBits.push(orderTotalLabel);
-    const orderQtyLabel = fmtQuantity(conv.order_quantity);
-    if (orderQtyLabel) orderMetaBits.push(orderQtyLabel);
-    orderCardMeta.textContent = orderMetaBits.join(" · ");
-    if (conv.order_id) {
-      orderCardLink.href = `https://www.mercadolivre.com.br/vendas/${conv.order_id}/detalhe`;
-      orderCardLink.classList.remove("hidden");
-      orderCardCopyBtn.dataset.orderId = conv.order_id;
-      orderCardCopyBtn.classList.remove("hidden");
-    } else {
-      orderCardLink.classList.add("hidden");
-      orderCardCopyBtn.classList.add("hidden");
-    }
-  } else {
-    orderCard.classList.add("hidden");
-  }
-
-  // A caixa de calcular frete so aparece se o Melhor Envio ja foi
-  // conectado. Toda vez que abre uma conversa (ou troca de conversa), a
-  // caixa comeca fechada e limpa — o CEP de destino e sempre digitado na
-  // hora, ja que nao vem estruturado do Mercado Livre pra pedidos de
-  // "combinar entrega". O "valor assegurado" ja vem preenchido com o valor
-  // da venda (pedido do usuario: o Melhor Envio cobra o seguro em cima
-  // desse valor, e isso muda o preco do frete) — o vendedor ainda pode
-  // trocar antes de calcular, se quiser.
-  freightBox.classList.toggle("hidden", !state.melhorEnvio.connected);
-  freightForm.classList.add("hidden");
-  freightToggleArrow.textContent = "▾";
-  freightResults.innerHTML = "";
-  // O modelo editavel de resposta (ver freightTemplateEditBtn) so faz
-  // sentido na aba de Perguntas — aqui (mensagens) usa sempre o modelo de
-  // pos-venda padrao, sem opcao de editar.
-  freightTemplateEditBtn.classList.add("hidden");
-  freightCep.value = "";
-  const orderTotalValue = Number(conv.order_total);
-  freightInsurance.value = Number.isFinite(orderTotalValue) && orderTotalValue > 0 ? orderTotalValue.toFixed(2) : "20";
-}
-
-async function loadMelhorEnvioStatus() {
-  try {
-    const res = await fetch("/api/melhorenvio/status");
-    if (handleSessionExpired(res)) return;
-    if (!res.ok) return;
-    state.melhorEnvio = await res.json();
-  } catch (e) {
-    console.warn("Nao foi possivel checar o status do Melhor Envio:", e);
-    return;
-  }
-
-  if (state.melhorEnvio.connected) {
-    freightAccountLabel.textContent = "Melhor Envio ✓";
-    freightAccountBtn.classList.add("btn-connected");
-    freightAccountBtn.title = "Melhor Envio conectado — clique pra ver/editar o CEP de origem";
-  } else {
-    freightAccountLabel.textContent = "Melhor Envio";
-    freightAccountBtn.classList.remove("btn-connected");
-    freightAccountBtn.title = "Conectar Melhor Envio pra calcular frete";
-  }
-
-  // Se a conversa atual ja estiver aberta, atualiza a visibilidade da caixa
-  // de frete sem precisar reabrir a conversa.
-  if (!threadEl.classList.contains("hidden")) {
-    freightBox.classList.toggle("hidden", !state.melhorEnvio.connected);
-  }
-}
-
-// Lista as contas do Mercado Livre ja conectadas (o usuario perguntou como
-// saber isso — antes so dava pra perceber pelo nome da loja em cada
-// conversa). Atualiza o numero no botao e, se o painel estiver aberto,
-// tambem a lista detalhada.
-async function loadAccounts() {
-  const res = await fetch("/api/accounts");
-  if (handleSessionExpired(res)) return [];
-  if (!res.ok) return [];
-  const accounts = await res.json();
-
-  if (accounts.length > 0) {
-    accountsCount.textContent = accounts.length;
-    accountsCount.classList.remove("hidden");
-  } else {
-    accountsCount.classList.add("hidden");
-  }
-
-  if (accounts.length === 0) {
-    accountsList.innerHTML =
-      '<p class="muted small" style="padding: 10px 14px;">Nenhuma conta conectada ainda.</p>';
-  } else {
-    accountsList.innerHTML = accounts
-      .map(
-        (a) => `
-      <div class="account-row">
-        <span class="account-row-name">${a.nickname || a.id}</span>
-        <span class="account-row-since">Conectada em ${fmtDateShort(a.created_at)}</span>
-      </div>`
-      )
-      .join("");
-  }
-
-  // Popula o filtro de "loja" na lista de conversas, preservando a opcao
-  // ja selecionada (se ainda existir depois de recarregar).
-  const previousSelection = filterSeller.value;
-  filterSeller.innerHTML =
-    '<option value="">Todas as lojas</option>' +
-    accounts.map((a) => `<option value="${a.id}">${a.nickname || a.id}</option>`).join("");
-  if (accounts.some((a) => String(a.id) === previousSelection)) {
-    filterSeller.value = previousSelection;
-  }
-
-  return accounts;
-}
-
-accountsBtn.addEventListener("click", async () => {
-  const willShow = accountsPanel.classList.contains("hidden");
-  accountsPanel.classList.toggle("hidden", !willShow);
-  if (willShow) await loadAccounts();
-});
-
-// Fecha o painel se o usuario clicar em qualquer outro lugar da tela.
-document.addEventListener("click", (e) => {
-  if (!accountsPanel.classList.contains("hidden") && !e.target.closest(".accounts-dropdown")) {
-    accountsPanel.classList.add("hidden");
-  }
-});
-
-freightAccountBtn.addEventListener("click", async () => {
-  if (!state.melhorEnvio.connected) {
-    window.location.href = "/melhorenvio/connect";
-    return;
-  }
-  const current = state.melhorEnvio.originPostalCode || "";
-  const novo = prompt(
-    "CEP de origem (de onde os pacotes saem) pra calcular o frete no Melhor Envio:",
-    current
-  );
-  if (novo === null) return; // cancelou
-  await fetch("/api/melhorenvio/settings", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ originPostalCode: novo.trim() }),
-  });
-  await loadMelhorEnvioStatus();
-});
-
-freightToggle.addEventListener("click", () => {
-  const willShow = freightForm.classList.contains("hidden");
-  freightForm.classList.toggle("hidden", !willShow);
-  freightToggleArrow.textContent = willShow ? "▴" : "▾";
-});
-
-freightCalcBtn.addEventListener("click", async () => {
-  const toPostalCode = freightCep.value.trim();
-  if (!toPostalCode) {
-    freightResults.innerHTML = '<p class="freight-msg freight-error">Informe o CEP de destino.</p>';
-    return;
-  }
-
-  freightCalcBtn.disabled = true;
-  freightResults.innerHTML = '<p class="freight-msg muted">Calculando...</p>';
-  try {
-    const res = await fetch("/api/melhorenvio/calculate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        toPostalCode,
-        weight: freightWeight.value,
-        height: freightHeight.value,
-        width: freightWidth.value,
-        length: freightLength.value,
-        insuranceValue: freightInsurance.value,
-      }),
-    });
-    if (handleSessionExpired(res)) return;
-    const data = await res.json();
-    if (!res.ok) {
-      freightResults.innerHTML = `<p class="freight-msg freight-error">${data.error || "Falha ao calcular o frete."}</p>`;
-      return;
-    }
-    if (!data.options || data.options.length === 0) {
-      freightResults.innerHTML = '<p class="freight-msg muted">Nenhuma opcao de frete encontrada pra esse CEP/pacote.</p>';
-      return;
-    }
-    freightResults.innerHTML = data.options
-      .map(
-        (o) => `
-      <div class="freight-option" data-price="${o.price}" data-delivery="${o.deliveryTime ?? ""}" title="Clique para preencher a mensagem com esse valor">
-        <span class="freight-option-name">${o.company ? o.company + " — " : ""}${o.name}</span>
-        <span class="freight-option-time muted">${o.deliveryTime ? o.deliveryTime + " dia(s) util" : ""}</span>
-        <span class="freight-option-price">R$ ${o.price.toFixed(2).replace(".", ",")}</span>
-        <span class="freight-option-hint">usar ➜</span>
-      </div>`
-      )
-      .join("");
-  } catch (e) {
-    freightResults.innerHTML = '<p class="freight-msg freight-error">Falha ao calcular o frete.</p>';
-  } finally {
-    freightCalcBtn.disabled = false;
-  }
-});
-
-// Margem que o vendedor cobra em cima do valor cotado no Melhor Envio, em
-// escalonamento por faixa de preco (pedido explicitamente pelo vendedor):
-//   - ate R$ 50,00 de frete: soma R$ 10,00 fixos
-//   - de R$ 50,01 ate R$ 100,00: soma 20% do valor do frete
-//   - acima de R$ 100,00: soma 15% do valor do frete
-// O valor final (ja com a margem) e o que entra na mensagem pro comprador.
-function applyFreightMarkup(basePrice) {
-  if (basePrice <= 50) return basePrice + 10;
-  if (basePrice <= 100) return basePrice * 1.2;
-  return basePrice * 1.15;
-}
-
-function pluralDias(n) {
-  const num = Number(n);
-  if (!num || Number.isNaN(num)) return "";
-  return num === 1 ? "1 dia útil" : `${num} dias úteis`;
-}
-
-// Mensagem padrao que o vendedor usa pra avisar o comprador do frete
-// combinado, nas telas de MENSAGENS/RECLAMACOES (pos-venda: ja existe um
-// pedido, so falta o comprador pagar o frete combinado). Os campos "Prazo
-// de entrega" e "Valor" vem da cotacao clicada (com a margem ja aplicada no
-// valor).
-function buildFreightMessagePosVenda({ prazo, valor }) {
-  return `Calculamos o frete para o seu endereço:
-- Prazo de entrega: ${prazo}
-- Valor: ${valor}
-Para fazer o pagamento verifique as opções disponíveis nos detalhes da compra ou confira o atalho nas mensagens do chat (Se disponível)
-ATENÇÃO: Esperamos sua confirmação de pagamento`;
-}
-
-// Modelo da mensagem usada SO na aba de Perguntas (pedido do usuario:
-// "so na tela das perguntas gostaria de altera a resposta padrao") —
-// separado do modelo de mensagens/reclamacoes porque uma pergunta e
-// PRE-venda (ainda nao existe pedido nem pagamento a confirmar, entao o
-// texto de pos-venda acima nao faz sentido aqui). Editavel pelo proprio
-// vendedor (botao "✎ editar modelo" no card de frete), guardado no
-// navegador (localStorage) — assim cada um pode escrever do jeito que
-// preferir, sem precisar pedir alteracao no codigo. "{prazo}" e "{valor}"
-// sao trocados pelos valores calculados na hora de usar.
-const FREIGHT_TEMPLATE_QUESTION_KEY = "ml-painel-freight-template-question";
-const DEFAULT_FREIGHT_TEMPLATE_QUESTION =
-  "O frete para o seu CEP fica em {valor}, com prazo de entrega de {prazo}. Qualquer dúvida, estou à disposição!";
-
-function getFreightTemplateQuestion() {
-  try {
-    return localStorage.getItem(FREIGHT_TEMPLATE_QUESTION_KEY) || DEFAULT_FREIGHT_TEMPLATE_QUESTION;
-  } catch {
-    // sem localStorage: so usa o padrao, sem quebrar nada.
-    return DEFAULT_FREIGHT_TEMPLATE_QUESTION;
-  }
-}
-
-// Monta a mensagem final a partir da cotacao clicada, usando o modelo certo
-// pra tela aberta no momento (Perguntas usa o modelo editavel acima;
-// Mensagens/Reclamações usam o modelo de pos-venda, sem alteracao).
-function buildFreightMessage({ deliveryTime, finalPrice }) {
-  const prazo = pluralDias(deliveryTime);
-  const valor = fmtMoney(finalPrice);
-  if (replyForm.dataset.mode === "question") {
-    return getFreightTemplateQuestion().replaceAll("{prazo}", prazo).replaceAll("{valor}", valor);
-  }
-  return buildFreightMessagePosVenda({ prazo, valor });
-}
-
-// Botao "✎ editar modelo" (so aparece na aba de Perguntas — ver
-// toggle no fim de renderQuestionThreadInfo) — deixa o vendedor reescrever
-// o texto que e inserido ao clicar numa cotacao de frete.
-freightTemplateEditBtn.addEventListener("click", () => {
-  const atual = getFreightTemplateQuestion();
-  const novo = prompt(
-    'Como o painel deve preencher a resposta ao clicar num valor de frete (nas Perguntas)?\n\nUse "{valor}" e "{prazo}" onde quiser que entrem o preço e o prazo calculados.',
-    atual
-  );
-  if (novo === null || !novo.trim()) return; // cancelou ou deixou vazio
-  try {
-    localStorage.setItem(FREIGHT_TEMPLATE_QUESTION_KEY, novo);
-  } catch {
-    // sem localStorage: so nao persiste entre sessoes, sem quebrar nada.
-  }
-});
-
-// Clicar numa cotacao ja calculada preenche a caixa de resposta com a
-// mensagem padrao (com a margem escalonada ja aplicada) e fecha a
-// calculadora — assim o vendedor so confere e clica "Enviar", e a tela
-// volta a mostrar a conversa inteira (sem a calculadora ocupando espaco).
-freightResults.addEventListener("click", (e) => {
-  const optionEl = e.target.closest(".freight-option");
-  if (!optionEl) return;
-
-  const basePrice = Number(optionEl.dataset.price);
-  if (!basePrice || Number.isNaN(basePrice)) return;
-  const finalPrice = applyFreightMarkup(basePrice);
-
-  replyText.value = buildFreightMessage({
-    deliveryTime: optionEl.dataset.delivery,
-    finalPrice,
-  });
-  updateReplyCharCounter();
-  replyText.focus();
-
-  // Fecha a calculadora: o espaco todo volta pra conversa, que e o que o
-  // vendedor precisa ver agora pra conferir e enviar a mensagem.
-  freightForm.classList.add("hidden");
-  freightToggleArrow.textContent = "▾";
-});
-
-// Pacote padrao (peso/altura/largura/comprimento) pra calculadora de frete
-// (pedido do usuario: "colocar peso e medidas cadastrado de uma forma que
-// so clicar ele se auto preenche sozinho") — assim que o vendedor digita
-// as medidas do pacote que ele mais usa UMA vez, elas ficam salvas no
-// navegador (localStorage) e continuam pre-preenchidas sozinhas em toda
-// conversa/pergunta seguinte, inclusive depois de fechar e abrir o painel
-// de novo (antes, eram sempre os mesmos 4 valores fixos no HTML, que so
-// duravam emquanto a pagina nao era recarregada).
-const FREIGHT_DEFAULTS_KEY = "ml-painel-freight-defaults";
-function loadFreightDefaults() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(FREIGHT_DEFAULTS_KEY) || "null");
-    if (!saved) return;
-    if (saved.weight) freightWeight.value = saved.weight;
-    if (saved.height) freightHeight.value = saved.height;
-    if (saved.width) freightWidth.value = saved.width;
-    if (saved.length) freightLength.value = saved.length;
-  } catch {
-    // sem localStorage: so continua com os valores padrao do HTML.
-  }
-}
-function saveFreightDefaults() {
-  try {
-    localStorage.setItem(
-      FREIGHT_DEFAULTS_KEY,
-      JSON.stringify({
-        weight: freightWeight.value,
-        height: freightHeight.value,
-        width: freightWidth.value,
-        length: freightLength.value,
-      })
-    );
-  } catch {
-    // sem localStorage: so nao persiste entre sessoes, sem quebrar nada.
-  }
-}
-[freightWeight, freightHeight, freightWidth, freightLength].forEach((el) =>
-  el.addEventListener("change", saveFreightDefaults)
-);
-
-// Mensagem padrao explicando a modalidade "combinar entrega" (retirada ou
-// entrega com frete a parte) pro comprador que ainda nao sabe como
-// prosseguir. Fixa, sem calculo nenhum — o vendedor pediu pra ter um atalho
-// que preenche isso na hora, principalmente pros pedidos da aba "Sem
-// contato" (que nunca receberam mensagem nenhuma).
-const COMBINAR_ENTREGA_TEMPLATE = `Olá! Você comprou na modalidade *Combinar entrega com o vendedor*.
-Você pode:
-1. Retirar grátis no CEP 03055-000,Brás próximo ao Templo de Salomão; ou
-2. Receber no seu endereço, com frete à parte.
-Para cotação:
-Cep:
-N°:
-Rua:
-telefone:
-Cpf:
-Atendimento: seg. a sex., das 9h às 18h.
-Qualquer duvida estamos a disposição.`;
-
-templateCombinarBtn.addEventListener("click", () => {
-  // So confirma antes de sobrescrever se ja tem algo digitado — assim nao
-  // se perde uma resposta que o vendedor ja estava escrevendo por engano.
-  if (replyText.value.trim() && !confirm("Isso vai substituir o texto que voce ja escreveu. Continuar?")) {
-    return;
-  }
-  replyText.value = COMBINAR_ENTREGA_TEMPLATE;
-  updateReplyCharCounter();
-  replyText.focus();
-});
-
-// Anexo que o COMPRADOR manda numa mensagem pos-venda (ex: foto de um
-// produto com defeito) vem no campo "attachments" da propria mensagem — um
-// id/"filename" que so serve pra baixar o arquivo pela rota do painel (que
-// repassa a chamada autenticada pro Mercado Livre, ver GET
-// /conversations/:packId/attachments/:id/download em routes/conversations.js).
-// Mesmo formato/funcao de renderClaimMessageAttachments (reclamacoes), so
-// que apontando pra rota de mensagens normais — pedido do usuario: "Nem
-// todas as midia estao sendo importadas".
-function renderMessageAttachments(container, attachments, packId) {
-  for (const att of attachments) {
-    const id = typeof att === "string" ? att : att.filename || att.id || att.attachment_id;
-    if (!id) continue;
-    const label = typeof att === "string" ? att : att.original_filename || att.filename || "arquivo anexado";
-    const a = document.createElement("a");
-    a.href = `/api/conversations/${encodeURIComponent(packId)}/attachments/${encodeURIComponent(id)}/download`;
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.className = "msg-attachment-link";
-    a.textContent = `📎 ${label}`;
-    container.appendChild(a);
-  }
-}
-
-function renderMessages(messages, packId) {
-  threadMessages.innerHTML = "";
-  if (messages.length === 0) {
-    threadMessages.innerHTML =
-      '<p class="muted centered">Nenhuma mensagem trocada ainda. Escreva abaixo pra iniciar o contato.</p>';
-    return;
-  }
+  threadMessages.textContent = "";
   for (const m of messages) {
     const div = document.createElement("div");
     div.className = "msg " + (m.direction === "out" ? "msg-out" : "msg-in");
-    const hasIncomingAttachments = Array.isArray(m.attachments) && m.attachments.length > 0;
-    div.innerHTML = `<div class="msg-text"></div>${
-      m.attachment_name ? '<div class="msg-attachment"></div>' : ""
-    }${
-      hasIncomingAttachments ? '<div class="msg-attachments"></div>' : ""
-    }<div class="msg-date">${fmtDate(m.sent_date)}</div>`;
-    renderMessageTextWithLinks(div.querySelector(".msg-text"), m.text);
-    if (m.attachment_name) {
-      div.querySelector(".msg-attachment").textContent = `📎 ${m.attachment_name}`;
-    }
-    if (hasIncomingAttachments) {
-      renderMessageAttachments(div.querySelector(".msg-attachments"), m.attachments, packId);
-    }
+    const textDiv = document.createElement("div");
+    textDiv.className = "msg-text";
+    textDiv.textContent = m.text || "";
+    const dateDiv = document.createElement("div");
+    dateDiv.className = "msg-date muted small";
+    dateDiv.textContent = fmtDate(m.sent_date);
+    div.append(textDiv, dateDiv);
     threadMessages.appendChild(div);
   }
   threadMessages.scrollTop = threadMessages.scrollHeight;
-}
 
-// Busca as mensagens (e o resto dos dados) de uma conversa e atualiza a
-// tela do chat que ja esta aberta — usada tanto ao abrir uma conversa
-// quanto para atualizar a mesma conversa depois de enviar uma resposta
-// (sem fechar/trocar de tela, como um chat de verdade).
-async function loadThreadMessages(packId) {
-  const res = await fetch(`/api/conversations/${encodeURIComponent(packId)}/messages`);
-  if (handleSessionExpired(res)) return false;
-  if (!res.ok) {
-    threadMessages.innerHTML = '<p class="muted">Erro ao carregar as mensagens.</p>';
-    return false;
-  }
-  const data = await res.json();
-
-  // O servidor pode ter descoberto produto/comprador/tipo de entrega na
-  // hora (conversa antiga que ainda nao tinha esses dados) — atualiza o
-  // cabecalho com essa versao mais completa.
-  if (data.conversation) renderThreadInfo(data.conversation);
-
-  renderMessages(data.messages || [], packId);
-  return true;
-}
-
-async function openThread(conv) {
-  state.selectedPackId = conv.pack_id;
-  state.selectedClaimId = null;
-  state.selectedQuestionId = null;
-  document.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
-
-  threadEmpty.classList.add("hidden");
-  threadEl.classList.remove("hidden");
-  renderThreadInfo(conv);
-  threadMessages.innerHTML = '<p class="muted">Carregando mensagens...</p>';
-  replyForm.dataset.mode = "conversation";
-  replyForm.dataset.packId = conv.pack_id;
-  delete replyForm.dataset.claimId;
-  openMobileThread();
-
-  await loadThreadMessages(conv.pack_id);
   await loadConversations();
 }
 
-threadBackBtn.addEventListener("click", () => {
-  closeMobileThread();
-});
-
 replyForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-
-  if (replyForm.dataset.mode === "claim") {
-    await submitClaimReply();
-    return;
-  }
-  if (replyForm.dataset.mode === "question") {
-    await submitQuestionReply();
-    return;
-  }
-
   const packId = replyForm.dataset.packId;
   const text = replyText.value.trim();
   if (!packId || !text) return;
-  if (text.length > MAX_MESSAGE_LENGTH) {
-    alert(`Mensagem muito longa (${text.length} caracteres). O Mercado Livre só aceita até ${MAX_MESSAGE_LENGTH} caracteres — divida em mais de uma mensagem.`);
-    return;
-  }
 
   const btn = replyForm.querySelector('button[type="submit"]');
   btn.disabled = true;
   try {
-    const formData = new FormData();
-    formData.set("text", text);
-    formData.set("operatorName", getOperatorName());
-    if (replyAttachmentInput.files[0]) {
-      formData.set("file", replyAttachmentInput.files[0]);
-    }
     const res = await fetch(`/api/conversations/${encodeURIComponent(packId)}/reply`, {
       method: "POST",
-      body: formData,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
     });
-    if (handleSessionExpired(res)) return;
     const data = await res.json();
     if (!res.ok) {
-      if (data.blocked) {
-        // Bloqueio permanente (reembolso, mediacao encerrada, etc.) — o
-        // servidor ja marcou essa conversa como "blocked" no banco, entao
-        // ela nao aparece mais em Pendentes nem Respondidas. Avisa e fecha
-        // a tela do chat, em vez de deixar o usuario tentando de novo a toa.
-        alert(
-          `Este pedido foi bloqueado pelo Mercado Livre para novas mensagens (${
-            data.blockReasonLabel || data.blockReason || "motivo nao informado"
-          }) e foi removido da lista de pendentes.`
-        );
-        threadEl.classList.add("hidden");
-        threadEmpty.classList.remove("hidden");
-        state.selectedPackId = null;
-        closeMobileThread();
-        await Promise.all([loadConversations(), loadPendingCount()]);
-        return;
-      }
-      const detail = typeof data.detail === "string" ? data.detail : "";
-      alert((data.error || "Falha ao enviar a mensagem.") + (detail ? `\n\nMotivo: ${detail}` : ""));
+      alert(data.error || "Falha ao enviar a mensagem.");
       return;
     }
     replyText.value = "";
-    updateReplyCharCounter();
-    replyAttachmentInput.value = "";
-    replyAttachmentNameEl.classList.add("hidden");
-    // Continua na mesma conversa (igual um chat de verdade), so atualizando
-    // as mensagens e a lista ao lado — nao fecha nem volta pra tela inicial.
-    if (packId === state.selectedPackId) {
-      await loadThreadMessages(packId);
-    }
+    templatePicker.value = "";
+    threadEl.classList.add("hidden");
+    threadEmpty.classList.remove("hidden");
+    state.selectedPackId = null;
     await Promise.all([loadConversations(), loadPendingCount()]);
   } finally {
     btn.disabled = false;
   }
 });
 
-const filterCombinarToggle = filterCombinar.closest(".filter-toggle");
-
-// Menu lateral: alterna entre o modulo de Mensagens (conversas pos-venda), o
-// de Reclamacoes (cada um com sua propria barra de abas por baixo — ver
-// #tabs-messages/#tabs-claims) e o de Histórico (relatorio de largura
-// inteira, sem lista+conversa — ver #history-pane). "Só combinar entrega" e
-// a ordenacao so existem pra mensagens.
-moduleNavItems.forEach((btn) => {
-  btn.addEventListener("click", () => {
-    moduleNavItems.forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    state.module = btn.dataset.module;
-    const isMessages = state.module === "messages";
-    const isClaims = state.module === "claims";
-    const isQuestions = state.module === "questions";
-    const isHistory = state.module === "history";
-
-    tabsMessages.classList.toggle("hidden", !isMessages);
-    tabsClaims.classList.toggle("hidden", !isClaims);
-    tabsQuestions.classList.toggle("hidden", !isQuestions);
-    filterCombinarToggle.classList.toggle("hidden", !isMessages);
-    filterSortBtn.classList.toggle("hidden", !isMessages);
-
-    listPaneEl.classList.toggle("hidden", isHistory);
-    threadPaneEl.classList.toggle("hidden", isHistory);
-    historyPane.classList.toggle("hidden", !isHistory);
-
-    if (isHistory) {
-      populateOperatorFilter();
-      loadHistory();
-    } else {
-      loadList();
-    }
-  });
-});
-
-document.querySelectorAll("#tabs-questions .tab").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    document.querySelectorAll("#tabs-questions .tab").forEach((t) => t.classList.remove("active"));
-    tab.classList.add("active");
-    state.questionStatus = tab.dataset.questionStatus;
-    loadList();
-  });
-});
-
-// ---------- Histórico de respostas ----------
-const HISTORY_TYPE_LABELS = { message: "Mensagem", claim: "Reclamação", question: "Pergunta" };
-
-// Agrupa a lista de respostas por operador — em vez de uma lista unica
-// enorme rolando a tela (reclamacao do usuario), cada operador vira uma
-// secao que abre/fecha, com o total de respostas dele no cabecalho. A ordem
-// dos grupos segue a ordem de chegada das linhas (que ja vem mais recentes
-// primeiro do servidor), entao quem respondeu mais recentemente aparece
-// primeiro.
-function groupHistoryByOperator(rows) {
-  const groups = new Map();
-  for (const r of rows) {
-    const key = r.operator_name || "-";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(r);
-  }
-  return groups;
+// --- Respostas rapidas (templates) ------------------------------------------
+async function loadTemplates() {
+  const res = await fetch("/api/templates");
+  if (!res.ok) return;
+  state.templates = await res.json();
+  renderTemplatePicker();
 }
 
-function renderHistory(rows) {
-  if (!rows.length) {
-    historyList.innerHTML =
-      '<p class="muted empty-msg">Nenhuma resposta registrada ainda com esses filtros.</p>';
+function renderTemplatePicker() {
+  templatePicker.textContent = "";
+  const first = document.createElement("option");
+  first.value = "";
+  first.textContent = "Resposta rapida...";
+  templatePicker.appendChild(first);
+  for (const t of state.templates) {
+    const opt = document.createElement("option");
+    opt.value = String(t.id);
+    opt.textContent = t.title;
+    templatePicker.appendChild(opt);
+  }
+}
+
+templatePicker.addEventListener("change", () => {
+  const t = state.templates.find((x) => String(x.id) === templatePicker.value);
+  if (!t) return;
+  const current = replyText.value;
+  replyText.value = current && !current.endsWith("\n") ? `${current}\n${t.body}` : current + t.body;
+  replyText.focus();
+});
+
+const modal = document.getElementById("templates-modal");
+const templatesList = document.getElementById("templates-list");
+const templateForm = document.getElementById("template-form");
+const tId = document.getElementById("template-id");
+const tTitle = document.getElementById("template-title");
+const tBody = document.getElementById("template-body");
+const tSave = document.getElementById("template-save");
+const tCancel = document.getElementById("template-cancel");
+
+function renderTemplatesList() {
+  templatesList.textContent = "";
+  if (state.templates.length === 0) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "Nenhuma resposta rapida ainda.";
+    templatesList.appendChild(p);
     return;
   }
+  for (const t of state.templates) {
+    const row = document.createElement("div");
+    row.className = "template-row";
+    const info = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = t.title;
+    const body = document.createElement("div");
+    body.className = "muted small";
+    body.textContent = t.body;
+    info.append(title, body);
 
-  const groups = groupHistoryByOperator(rows);
-  // Um unico grupo (ex: filtro de operador ja aplicado) comeca aberto —
-  // varios grupos comecam fechados, pra ver so a lista de nomes e quantos
-  // cada um respondeu antes de entrar nos detalhes.
-  const singleGroup = groups.size === 1;
+    const actions = document.createElement("div");
+    actions.className = "template-row-actions";
+    const edit = document.createElement("button");
+    edit.className = "ghost";
+    edit.textContent = "Editar";
+    edit.addEventListener("click", () => startEdit(t));
+    const del = document.createElement("button");
+    del.className = "ghost";
+    del.textContent = "Excluir";
+    del.addEventListener("click", () => removeTemplate(t.id));
+    actions.append(edit, del);
 
-  historyList.innerHTML = Array.from(groups.entries())
-    .map(([operator, groupRows], gi) => {
-      const rowsHtml = groupRows
-        .map(
-          (r) => `
-        <div class="history-row">
-          <div class="history-row-main">
-            <span class="tag ${r.type === "claim" ? "tag-claim" : r.type === "question" ? "tag-question" : "tag-shipping"}">${
-            HISTORY_TYPE_LABELS[r.type] || r.type
-          }</span>
-          </div>
-          <div class="history-row-meta muted small">
-            ${r.order_id ? `Pedido #${r.order_id} · ` : ""}${r.buyer_name || "Comprador"}${
-            r.seller_nickname ? ` · ${r.seller_nickname}` : ""
-          } · ${fmtDate(r.sent_date)}
-          </div>
-          <div class="history-row-text"></div>
-        </div>
-      `
-        )
-        .join("");
-      return `
-      <details class="history-group"${singleGroup ? " open" : ""} data-group-index="${gi}">
-        <summary class="history-group-summary">
-          <span class="history-operator-name"></span>
-          <span class="history-group-count">${groupRows.length}</span>
-        </summary>
-        <div class="history-group-rows">${rowsHtml}</div>
-      </details>
-    `;
-    })
-    .join("");
-
-  // Nome do operador (no cabecalho de cada grupo) e texto de cada mensagem
-  // sao preenchidos via textContent (nao interpolados no HTML acima) porque
-  // vem de digitacao livre.
-  const groupEls = historyList.querySelectorAll(".history-group");
-  Array.from(groups.entries()).forEach(([operator, groupRows], gi) => {
-    groupEls[gi].querySelector(".history-operator-name").textContent = operator;
-    const rowEls = groupEls[gi].querySelectorAll(".history-row-text");
-    groupRows.forEach((r, i) => {
-      rowEls[i].textContent = r.text || "";
-    });
-  });
-}
-
-async function populateOperatorFilter() {
-  try {
-    const res = await fetch("/api/operators");
-    if (!res.ok) return;
-    const names = await res.json();
-    const current = historyOperatorFilter.value;
-    historyOperatorFilter.innerHTML = "";
-    const optAll = document.createElement("option");
-    optAll.value = "";
-    optAll.textContent = "Todos os operadores";
-    historyOperatorFilter.appendChild(optAll);
-    for (const name of names) {
-      const opt = document.createElement("option");
-      opt.value = name;
-      opt.textContent = name;
-      historyOperatorFilter.appendChild(opt);
-    }
-    historyOperatorFilter.value = current;
-  } catch (e) {
-    // sem lista de operadores pro filtro nao impede o resto de funcionar
+    row.append(info, actions);
+    templatesList.appendChild(row);
   }
 }
 
-async function loadHistory() {
-  historyList.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
-
-  const params = new URLSearchParams();
-  if (historyOperatorFilter.value) params.set("operator", historyOperatorFilter.value);
-  if (historyFrom.value) params.set("from", historyFrom.value);
-  if (historyTo.value) params.set("to", historyTo.value);
-
-  try {
-    const res = await fetch(`/api/operator-log?${params.toString()}`);
-    if (handleSessionExpired(res)) return;
-    if (!res.ok) {
-      historyList.innerHTML = '<p class="muted">Erro ao carregar o histórico.</p>';
-      return;
-    }
-    const data = await res.json();
-    renderHistory(data.rows || []);
-  } catch (e) {
-    historyList.innerHTML = '<p class="muted">Erro ao carregar o histórico.</p>';
-  }
+function startEdit(t) {
+  tId.value = String(t.id);
+  tTitle.value = t.title;
+  tBody.value = t.body;
+  tSave.textContent = "Salvar alteracoes";
+  tCancel.classList.remove("hidden");
 }
 
-if (historyRefreshBtn) historyRefreshBtn.addEventListener("click", () => loadHistory());
-if (historyOperatorFilter) historyOperatorFilter.addEventListener("change", () => loadHistory());
-if (historyFrom) historyFrom.addEventListener("change", () => loadHistory());
-if (historyTo) historyTo.addEventListener("change", () => loadHistory());
-
-// Menu lateral recolhivel: so afeta telas grandes (no celular o CSS ignora
-// essas classes e mantem a barra horizontal de sempre). A preferencia fica
-// salva no navegador pra o vendedor nao ter que recolher de novo toda vez
-// que abrir o painel.
-function applyNavCollapsed(collapsed) {
-  if (moduleNav) moduleNav.classList.toggle("collapsed", collapsed);
-  if (layoutEl) layoutEl.classList.toggle("nav-collapsed", collapsed);
-  if (moduleNavToggle) moduleNavToggle.title = collapsed ? "Expandir menu" : "Recolher menu";
-  if (moduleNavToggleLabel) moduleNavToggleLabel.textContent = collapsed ? "Expandir" : "Recolher";
+function resetTemplateForm() {
+  tId.value = "";
+  tTitle.value = "";
+  tBody.value = "";
+  tSave.textContent = "Adicionar";
+  tCancel.classList.add("hidden");
 }
 
-let navCollapsed = false;
-try {
-  navCollapsed = localStorage.getItem("ml-painel-nav-collapsed") === "1";
-} catch (e) {
-  // navegador sem localStorage (raro) — so segue com o menu expandido
+async function removeTemplate(id) {
+  if (!confirm("Excluir esta resposta rapida?")) return;
+  await fetch(`/api/templates/${id}`, { method: "DELETE" });
+  await loadTemplates();
+  renderTemplatesList();
 }
-applyNavCollapsed(navCollapsed);
 
-if (moduleNavToggle) {
-  moduleNavToggle.addEventListener("click", () => {
-    navCollapsed = !navCollapsed;
-    applyNavCollapsed(navCollapsed);
-    try {
-      localStorage.setItem("ml-painel-nav-collapsed", navCollapsed ? "1" : "0");
-    } catch (e) {
-      // sem localStorage: so nao persiste entre sessoes, sem quebrar nada
-    }
+templateForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const payload = { title: tTitle.value.trim(), body: tBody.value.trim() };
+  if (!payload.title || !payload.body) return;
+  const editing = tId.value;
+  const res = await fetch(editing ? `/api/templates/${editing}` : "/api/templates", {
+    method: editing ? "PUT" : "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
-}
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    alert(data.error || "Falha ao salvar.");
+    return;
+  }
+  resetTemplateForm();
+  await loadTemplates();
+  renderTemplatesList();
+});
 
-document.querySelectorAll("#tabs-messages .tab").forEach((tab) => {
+tCancel.addEventListener("click", resetTemplateForm);
+
+document.getElementById("templates-btn").addEventListener("click", () => {
+  renderTemplatesList();
+  resetTemplateForm();
+  modal.classList.remove("hidden");
+});
+document.getElementById("templates-close").addEventListener("click", () => {
+  modal.classList.add("hidden");
+});
+modal.addEventListener("click", (e) => {
+  if (e.target === modal) modal.classList.add("hidden");
+});
+
+// --- Abas, sync, logout, sino ---------------------------------------------
+document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
-    document.querySelectorAll("#tabs-messages .tab").forEach((t) => t.classList.remove("active"));
+    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
     tab.classList.add("active");
     state.status = tab.dataset.status;
-    loadList();
+    loadConversations();
   });
-});
-
-document.querySelectorAll("#tabs-claims .tab").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    document.querySelectorAll("#tabs-claims .tab").forEach((t) => t.classList.remove("active"));
-    tab.classList.add("active");
-    state.claimStatus = tab.dataset.claimStatus;
-    loadList();
-  });
-});
-
-filterCombinar.addEventListener("change", () => {
-  state.onlyCombinar = filterCombinar.checked;
-  loadList();
-});
-
-if (filterOnlyPending) {
-  filterOnlyPending.addEventListener("change", () => {
-    state.onlyPending = filterOnlyPending.checked;
-    loadList();
-  });
-}
-
-// Busca livre: espera o usuario parar de digitar (300ms) antes de recarregar
-// a lista, pra nao mandar uma requisicao a cada letra.
-let searchDebounceTimer = null;
-filterSearch.addEventListener("input", () => {
-  clearTimeout(searchDebounceTimer);
-  searchDebounceTimer = setTimeout(() => {
-    state.searchQuery = filterSearch.value.trim();
-    loadList();
-  }, 300);
-});
-
-filterSeller.addEventListener("change", () => {
-  state.sellerId = filterSeller.value;
-  loadList();
-});
-
-filterSortBtn.addEventListener("click", () => {
-  state.sort = state.sort === "recent" ? "oldest" : "recent";
-  if (state.sort === "oldest") {
-    filterSortIcon.textContent = "⬆";
-    filterSortLabel.textContent = "Mais antigas";
-  } else {
-    filterSortIcon.textContent = "⬇";
-    filterSortLabel.textContent = "Mais recentes";
-  }
-  loadList();
 });
 
 document.getElementById("sync-btn").addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;
-  const label = btn.querySelector(".btn-label");
-  if (label) label.textContent = "Atualizando...";
+  btn.textContent = "Atualizando...";
   try {
-    // O mesmo botao atualiza conversas E reclamacoes — /api/sync ja
-    // sincroniza as duas coisas do lado do servidor.
     await fetch("/api/sync", { method: "POST" });
-    await Promise.all([loadList(), loadPendingCount()]);
+    await Promise.all([loadConversations(), loadPendingCount()]);
   } finally {
     btn.disabled = false;
-    if (label) label.textContent = "Atualizar";
+    btn.textContent = "Atualizar";
   }
 });
 
@@ -2256,32 +361,14 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
 });
 
 document.getElementById("bell").addEventListener("click", () => {
-  document.querySelector('.module-nav-item[data-module="messages"]').click();
-  document.querySelector('#tabs-messages .tab[data-status="pending"]').click();
+  document.querySelector('.tab[data-status="pending"]').click();
 });
 
-// Carga inicial + verificacao periodica (sem precisar de webhook/servidor
-// mandando nada pro navegador: o proprio navegador pergunta de tempos em
-// tempos enquanto a aba estiver aberta).
-loadFreightDefaults();
-loadList();
+// Carga inicial + verificacao periodica.
+loadConversations();
 loadPendingCount();
-loadAccounts();
-loadMelhorEnvioStatus().then(() => {
-  // Acabou de voltar do OAuth do Melhor Envio (?me_connected=1) e ainda nao
-  // tem CEP de origem configurado — pede de uma vez, pra nao precisar
-  // lembrar de clicar no botao depois.
-  const params = new URLSearchParams(window.location.search);
-  if (params.get("me_connected") === "1") {
-    window.history.replaceState({}, "", window.location.pathname);
-    if (state.melhorEnvio.connected && !state.melhorEnvio.originPostalCode) {
-      freightAccountBtn.click();
-    } else {
-      alert("Melhor Envio conectado!");
-    }
-  }
-});
+loadTemplates();
 setInterval(loadPendingCount, 20000);
 setInterval(() => {
-  if (!state.selectedPackId && !state.selectedClaimId) loadList();
+  if (!state.selectedPackId) loadConversations();
 }, 30000);
