@@ -9,10 +9,32 @@
 
 const API_BASE = "https://api.mercadolibre.com";
 
+// Nenhuma chamada a uma API externa deve poder travar pra sempre — ja
+// aconteceu na pratica de o botao "Atualizar" do painel ficar girando
+// indefinidamente porque uma chamada ao Mercado Livre simplesmente nunca
+// respondia nem dava erro (o fetch nativo do Node nao tem timeout por
+// padrao). Com esse limite, uma chamada travada falha depois de 20s (tempo
+// de sobra pra uma API que normalmente responde em menos de 1s) em vez de
+// travar a reconciliacao inteira — o item falha, fica registrado no log, e
+// o painel segue pro proximo em vez de nunca mais terminar.
+const REQUEST_TIMEOUT_MS = 20_000;
+
 async function mlFetch(path, accessToken, options = {}) {
-  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
-  const res = await fetch(url, {
+  const base = path.startsWith("http") ? path : `${API_BASE}${path}`;
+
+  // A API de mensagens pos-venda e uma das mais antigas do Mercado Livre e,
+  // segundo a documentacao oficial, espera o token como query string
+  // (?access_token=...) em vez do cabecalho Authorization moderno usado
+  // pelo resto da API. Mandamos dos dois jeitos ao mesmo tempo — nao tem
+  // custo mandar os dois, e isso cobre qualquer uma das duas exigencias.
+  const url = new URL(base);
+  if (!url.searchParams.has("access_token")) {
+    url.searchParams.set("access_token", accessToken);
+  }
+
+  const res = await fetch(url.toString(), {
     ...options,
+    signal: options.signal || AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",
@@ -37,9 +59,46 @@ async function mlFetch(path, accessToken, options = {}) {
   return data;
 }
 
-// Lista os packs/pedidos com mensagens nao lidas para essa conta.
-async function fetchPendingRead(accessToken) {
-  return mlFetch(`/messages/pending_read?role=seller`, accessToken);
+// Lista os packs/pedidos com mensagens NAO LIDAS pra essa conta — o mesmo
+// dado que aparece no proprio painel de Vendas do Mercado Livre no filtro
+// "Com mensagens não lidas". Usamos isso como mais uma rede de seguranca na
+// reconciliacao (ver reconcileAccount em sync.js): as outras buscas dedicadas
+// (no_shipping, delivered, atividade recente) sao todas baseadas em JANELAS
+// de pedidos, e um pedido pode cair fora de todas elas numa conta de alto
+// volume mesmo tendo mensagem nao lida esperando resposta — esse endpoint
+// resolve isso porque nao depende de nenhuma janela, e sim exatamente do que
+// o Mercado Livre ja sabe estar pendente de leitura.
+//
+// CORRIGIDO: a versao anterior usava "/marketplace/messages/unread" — um
+// endpoint documentado em global-selling.mercadolibre.com (sufixo "-gs" =
+// "Global Selling", o programa de venda TRANSFRONTEIRICA do Mercado Livre,
+// bem diferente de uma conta comum brasileira). Pra uma conta normal (nao
+// participante do Global Selling), esse endpoint sempre falhava com 403
+// "Invalid caller.id" — silenciosamente (so um aviso no log a cada ciclo),
+// entao essa "rede de seguranca" nunca funcionou de verdade, pra nenhuma
+// conta, desde que foi criada. Isso explica pedidos "atrasado"/"pronta para
+// enviar" (ainda nao despachados) com mensagem nao lida que nao apareciam no
+// painel mesmo estando visiveis no proprio painel de Vendas do Mercado
+// Livre — essa era a unica busca capaz de resgatar esses casos.
+//
+// Endpoint certo pra conta comum (confirmado em developers.mercadolivre.com.br
+// /pt_br/mensagens-post-venda, secao "mensagens ainda nao lidas" — mesmo
+// dominio/doc das outras chamadas de mensagens deste arquivo, SEM o prefixo
+// "/marketplace" e sem precisar de seller_id/user_id na URL, ja que a
+// identidade vem do proprio token):
+// GET /messages/pending_read?role=seller
+// Resposta: { user_id: N, results: [ { resource: "/packs/{pack_id}/sellers/{seller_id}", count: N }, ... ] }
+async function fetchUnreadMessagePacks(accessToken, sellerId) {
+  const data = await mlFetch(`/messages/pending_read?role=seller`, accessToken);
+  const results = Array.isArray(data?.results) ? data.results : [];
+  // "resource" vem como "/packs/{pack_id}" ou "/packs/{pack_id}/sellers/{seller_id}"
+  // dependendo da origem — extrai so o id do pack, ignorando o resto.
+  return results
+    .map((r) => {
+      const match = /\/packs\/(\w+)/.exec(r?.resource || "");
+      return match ? { packId: match[1], count: r?.count ?? null } : null;
+    })
+    .filter(Boolean);
 }
 
 // Busca a conversa completa de um pedido (pack).
@@ -50,12 +109,158 @@ async function fetchPackMessages(accessToken, packId, sellerId) {
   );
 }
 
+// Busca pedidos recentes do vendedor (API de Orders, bem mais estavel/
+// documentada que a de mensagens — confirmamos por teste real que ela
+// funciona quando o "listar mensagens pendentes" nao funciona). Cada
+// pedido devolve "pack_id" (as vezes null, quando o pedido nao faz parte
+// de um envio combinado — nesse caso usa-se o proprio order_id) e "id"
+// (o order_id).
+//
+// "tags" (opcional) filtra so pedidos com aquela tag — ex: "no_shipping"
+// pra pegar direto os pedidos de "combinar entrega", sem depender de eles
+// estarem entre os N pedidos mais recentes gerais (ver uso em sync.js).
+// "offset" (opcional) pagina alem dos primeiros resultados.
+// "dateLastUpdatedFrom"/"dateLastUpdatedTo" (opcional) filtram por
+// order.date_last_updated — a API documenta esse campo separado de
+// date_created, o que permite achar pedidos ANTIGOS que tiveram alguma
+// atividade recente (ex: status mudou, ou — na esperanca que o campo
+// reflita isso tambem — uma mensagem nova chegou), mesmo que o pedido em
+// si nao esteja entre os mais recentes por data de criacao (ver uso em
+// sync.js).
+// "dateCreatedFrom"/"dateCreatedTo" (opcional) filtram por
+// order.date_created — usado pra varrer o historico MES A MES (ver
+// runBackfillStep em sync.js): em vez de tentar achar pedidos antigos
+// "adivinhando" por atividade recente, isso deixa varrer sistematicamente
+// um mes inteiro de cada vez, garantindo que todo pedido daquele mes seja
+// checado pelo menos uma vez, nao importa o quao antigo.
+async function fetchRecentOrders(
+  accessToken,
+  sellerId,
+  { limit = 50, offset = 0, tags, dateLastUpdatedFrom, dateLastUpdatedTo, dateCreatedFrom, dateCreatedTo } = {}
+) {
+  const params = new URLSearchParams({
+    seller: sellerId,
+    sort: "date_desc",
+    limit: String(limit),
+    offset: String(offset),
+  });
+  if (tags) params.set("tags", tags);
+  if (dateLastUpdatedFrom) params.set("order.date_last_updated.from", dateLastUpdatedFrom);
+  if (dateLastUpdatedTo) params.set("order.date_last_updated.to", dateLastUpdatedTo);
+  if (dateCreatedFrom) params.set("order.date_created.from", dateCreatedFrom);
+  if (dateCreatedTo) params.set("order.date_created.to", dateCreatedTo);
+  return mlFetch(`/orders/search?${params.toString()}`, accessToken);
+}
+
+// Busca o detalhe completo de um pedido (inclui o campo "shipping.id").
+async function fetchOrderById(accessToken, orderId) {
+  return mlFetch(`/orders/${orderId}`, accessToken);
+}
+
+// Busca o detalhe completo de um envio — e aqui que vem o campo que
+// identifica o TIPO de entrega (ex: se e "a combinar com o comprador").
+async function fetchShipment(accessToken, shipmentId) {
+  return mlFetch(`/shipments/${shipmentId}`, accessToken);
+}
+
+// Busca os dados publicos de um USUARIO (ex: o nome/nickname de um
+// comprador) — a pergunta pre-venda so traz o buyer_id, sem o nickname (ver
+// backend/questionsSync.js). Endpoint diferente do /items (que o Mercado
+// Livre bloqueia pra este servidor por seguranca anti-raspagem — ver
+// PA_UNAUTHORIZED_RESULT_FROM_POLICIES/PolicyAgent nos comentarios de
+// fetchItemsByIds abaixo e no debug/probe-item-batch): /users/{id} e um
+// endpoint muito mais basico/estavel (o mesmo tipo de chamada que /users/me
+// ja faz, e essa sempre funcionou mesmo quando /items estava bloqueado) —
+// mas como nunca foi testado pra um usuario QUALQUER (so pra "me"), o
+// backfill que usa isso (backfillMissingBuyerNicknames, em
+// questionsSync.js) e construido pra nao quebrar nada mesmo se acabar
+// tambem bloqueado: se falhar, o nome do comprador so continua aparecendo
+// como "Comprador #ID" (mesmo comportamento de hoje), sem erro visivel.
+async function fetchUserById(accessToken, userId) {
+  return mlFetch(`/users/${userId}`, accessToken);
+}
+
+// Busca o detalhe de um ANUNCIO (titulo, link publico) — usado pelas
+// perguntas pre-venda (ver backend/questionsSync.js), ja que a pergunta em
+// si so traz o item_id, sem o titulo do produto.
+async function fetchItemById(accessToken, itemId) {
+  return mlFetch(`/items/${itemId}`, accessToken);
+}
+
+// Busca varios ANUNCIOS de uma vez (endpoint "multiget", confirmado na
+// documentacao oficial: developers.mercadolivre.com.br/en_us/items-and-searches
+// — "GET /items?ids=id1,id2,...&attributes=...", no maximo 20 ids por
+// chamada, resposta em formato "verbo" onde cada posicao do array tem
+// {code, body} em vez do item direto). Usado pra buscar titulo/link de
+// MUITAS perguntas de uma vez so (varias perguntas costumam ser sobre o
+// mesmo anuncio) em vez de uma chamada por pergunta — ver
+// backend/questionsSync.js.
+const ITEMS_MULTIGET_CHUNK_SIZE = 20;
+
+async function fetchItemsByIds(accessToken, itemIds) {
+  const uniqueIds = [...new Set((itemIds || []).filter(Boolean).map(String))];
+  const byId = {};
+  for (let i = 0; i < uniqueIds.length; i += ITEMS_MULTIGET_CHUNK_SIZE) {
+    const chunk = uniqueIds.slice(i, i + ITEMS_MULTIGET_CHUNK_SIZE);
+    if (chunk.length === 0) continue;
+    const params = new URLSearchParams({ ids: chunk.join(","), attributes: "id,title,permalink,price" });
+    let entries;
+    try {
+      entries = await mlFetch(`/items?${params.toString()}`, accessToken);
+    } catch (err) {
+      // Token vencido no meio do lote: deixa subir pra quem chamou poder
+      // renovar e tentar de novo (ver withTokenRetry em ml/tokens.js) — sem
+      // isso, um 401 aqui so seria registrado como aviso e o lote inteiro
+      // (e os seguintes) falharia silenciosamente ate o proximo ciclo.
+      if (err?.status === 401) throw err;
+      console.warn("[items] falha ao buscar lote de anuncios:", err.status, err.body || err.message);
+      continue;
+    }
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      const item = entry?.body;
+      if (entry?.code === 200 && item?.id != null) {
+        byId[String(item.id)] = {
+          title: item.title || null,
+          permalink: item.permalink || null,
+          price: Number.isFinite(item.price) ? item.price : null,
+        };
+      }
+    }
+  }
+  return byId;
+}
+
 // Segue um link de recurso vindo de um webhook (ex: "/messages/packs/123/sellers/456").
 async function fetchResource(accessToken, resourcePath) {
   return mlFetch(resourcePath, accessToken);
 }
 
+// Extrai pack_id (e seller_id, quando presente) de um "resource" devolvido
+// pela API do Mercado Livre. O formato muda dependendo de onde ele vem:
+//   - webhook de notificacao:        "/messages/packs/{pack_id}/sellers/{seller_id}"
+//   - GET /messages/pending_read:    "/packs/{pack_id}/sellers/{seller_id}"
+//   - GET /messages/packs (novo):    "/packs/{pack_id}" (sem "/sellers/...")
+// O regex captura so o pack_id como obrigatorio; o seller_id, quando vem
+// no resource, e capturado a parte (pode nao existir).
+function parsePackResource(resource) {
+  const match = /packs\/([^/?]+)(?:\/sellers\/([^/?]+))?/i.exec(resource || "");
+  if (!match) return null;
+  return { packId: match[1], sellerId: match[2] || null };
+}
+
 // Envia uma resposta numa conversa.
+//
+// Diferente do GET (que so precisa do access_token), a documentacao oficial
+// do POST de mensagens pos-venda tambem exige a identificacao da PROPRIA
+// APLICACAO: o parametro "application_id" na URL e o cabecalho "X-Client-Id",
+// ambos com o client_id da aplicacao (o mesmo ML_CLIENT_ID usado no OAuth).
+// Isso ja foi adicionado, mas mesmo assim o Mercado Livre continuou
+// respondendo 404 "resource not found" em producao — entao tambem
+// adicionamos "?tag=post_sale" na URL, igual ao GET (fetchPackMessages),
+// que e o unico que sabidamente funciona pra essa conta. A hipotese e que,
+// sem essa tag, o Mercado Livre nao acha o pack como um recurso de mensagem
+// pos-venda (pode existir mais de um "tipo" de pack/conversa com o mesmo id).
 async function sendMessage({
   accessToken,
   packId,
@@ -63,16 +268,118 @@ async function sendMessage({
   buyerId,
   sellerEmail,
   text,
+  attachmentIds,
 }) {
-  return mlFetch(`/messages/packs/${packId}/sellers/${sellerId}`, accessToken, {
+  const clientId = process.env.ML_CLIENT_ID;
+  const params = new URLSearchParams({ tag: "post_sale" });
+  if (clientId) params.set("application_id", clientId);
+  const path = `/messages/packs/${packId}/sellers/${sellerId}?${params.toString()}`;
+
+  console.log(`[sendMessage] chamando POST ${path}`);
+
+  // Importante (documentado pelo Mercado Livre): quando nao ha anexo, a
+  // chave "attachments" precisa ficar TOTALMENTE FORA do JSON — mandar um
+  // array vazio nao e a mesma coisa e pode quebrar o envio. Por isso o
+  // spread condicional abaixo.
+  return mlFetch(path, accessToken, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(clientId ? { "X-Client-Id": clientId } : {}),
+    },
     body: JSON.stringify({
       from: { user_id: String(sellerId), ...(sellerEmail ? { email: sellerEmail } : {}) },
       to: { user_id: String(buyerId) },
       text,
+      ...(attachmentIds && attachmentIds.length ? { attachments: attachmentIds } : {}),
     }),
   });
+}
+
+// Envia um ANEXO (foto, PDF, etc. — ate 25MB, JPG/PNG/PDF/TXT) pra ser
+// referenciado numa mensagem pos-venda logo em seguida (ver sendMessage
+// acima). Mesmo padrao de backend/ml/claimsApi.js::uploadClaimAttachment,
+// so que num endpoint diferente e com limite de tamanho maior — a API de
+// reclamacoes e a de mensagens pos-venda sao sistemas separados no Mercado
+// Livre, cada uma com seu proprio endpoint de upload.
+async function uploadMessageAttachment(accessToken, buffer, filename, mimetype) {
+  const form = new FormData();
+  form.set("file", new Blob([buffer], { type: mimetype || "application/octet-stream" }), filename);
+
+  const url = new URL(`${API_BASE}/messages/attachments`);
+  url.searchParams.set("access_token", accessToken);
+
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    // Upload pode legitimamente demorar mais que uma chamada normal (arquivo
+    // ate 25MB) — timeout mais generoso que REQUEST_TIMEOUT_MS, mas ainda
+    // finito, pelo mesmo motivo (nunca travar pra sempre).
+    signal: AbortSignal.timeout(60_000),
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: form,
+  });
+
+  const text = await res.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { raw: text };
+  }
+
+  if (!res.ok) {
+    const err = new Error(`Mercado Livre API ${res.status} ao enviar anexo de mensagem`);
+    err.status = res.status;
+    err.body = data;
+    throw err;
+  }
+  return data;
+}
+
+// Baixa o ARQUIVO de um anexo trocado numa mensagem pos-venda — o comprador
+// as vezes manda foto (ex: "veio errado, olha a foto") junto com o texto, e
+// ate agora o painel so guardava/mostrava o texto, ignorando esse anexo por
+// completo (pedido do usuario: "Nem todas as midia estao sendo
+// importadas"). O identificador do anexo (o "filename" gerado pelo Mercado
+// Livre, ex: "163262277_c442f9b8-....jpeg") vem do campo "message_attachments"
+// de cada mensagem (ver upsertConversationFromPack em sync.js) —
+// CONFIRMADO com JSON cru real via rota /debug/probe-message-attachments,
+// depois que uma primeira tentativa usando o campo "attachments" (nome
+// usado so no corpo do POST pra ENVIAR anexo, ver sendMessage acima) se
+// mostrou errada em producao. "?tag=post_sale" incluido
+// por seguranca, ja que TODAS as outras chamadas desse mesmo endpoint de
+// mensagens pos-venda (GET e POST) precisam dele pra o Mercado Livre achar
+// o recurso certo (ver comentario em sendMessage acima e em
+// fetchPackMessages). Devolve o arquivo cru (buffer) + content-type, pra a
+// rota do painel repassar pro navegador sem expor o access_token.
+async function fetchMessageAttachmentFile(accessToken, attachmentId) {
+  const url = new URL(`${API_BASE}/messages/attachments/${attachmentId}`);
+  url.searchParams.set("tag", "post_sale");
+  url.searchParams.set("access_token", accessToken);
+
+  const res = await fetch(url.toString(), {
+    signal: AbortSignal.timeout(60_000),
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!res.ok) {
+    let body;
+    try {
+      body = await res.json();
+    } catch {
+      body = await res.text().catch(() => null);
+    }
+    const err = new Error(`Mercado Livre API ${res.status} ao baixar anexo de mensagem`);
+    err.status = res.status;
+    err.body = body;
+    throw err;
+  }
+
+  const arrayBuffer = await res.arrayBuffer();
+  return {
+    buffer: Buffer.from(arrayBuffer),
+    contentType: res.headers.get("content-type") || "application/octet-stream",
+  };
 }
 
 // Dados basicos do usuario autenticado (usado logo apos o OAuth para
@@ -81,25 +388,19 @@ async function fetchMe(accessToken) {
   return mlFetch(`/users/me`, accessToken);
 }
 
-// Dados de um pedido: item comprado, quantidade, valor total, status e
-// referencia do envio.
-async function fetchOrder(accessToken, orderId) {
-  return mlFetch(`/orders/${orderId}`, accessToken);
-}
-
-// Status de um envio (shipment). Depende do escopo de logistica estar
-// liberado no app; se nao estiver, o Mercado Livre devolve 403 e o chamador
-// simplesmente ignora.
-async function fetchShipment(accessToken, shipmentId) {
-  return mlFetch(`/shipments/${shipmentId}`, accessToken);
-}
-
 module.exports = {
-  fetchPendingRead,
+  fetchUnreadMessagePacks,
   fetchPackMessages,
-  fetchResource,
-  sendMessage,
-  fetchMe,
-  fetchOrder,
+  fetchRecentOrders,
+  fetchOrderById,
   fetchShipment,
+  fetchItemById,
+  fetchItemsByIds,
+  fetchUserById,
+  fetchResource,
+  parsePackResource,
+  sendMessage,
+  uploadMessageAttachment,
+  fetchMessageAttachmentFile,
+  fetchMe,
 };
