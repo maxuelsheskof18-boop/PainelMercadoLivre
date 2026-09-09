@@ -545,8 +545,67 @@ function statusLabel(status) {
   return "pendente";
 }
 
-async function loadConversations() {
-  listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
+// Atualiza a lista da esquerda SEM recriar tudo do zero a cada carregamento
+// (pedido do usuario: "nao e para carregar varias vezes a pagina"). Compara a
+// lista nova com o que ja esta na tela por uma chave (pack_id/claim_id/
+// question_id): reaproveita os itens que nao mudaram, so mexe no DOM dos que
+// mudaram, insere os novos na posicao certa e remove os que sairam — tudo
+// preservando a posicao da rolagem. Cada "entry" e
+//   { key, className, html, onClick }.
+function patchList(entries, emptyMsg) {
+  // Primeiro carregamento (ou lista que estava mostrando "Carregando..."/
+  // mensagem de vazia): nao ha itens com data-key pra reaproveitar.
+  const firstPaint = !listEl.querySelector("[data-key]");
+
+  if (entries.length === 0) {
+    listEl.innerHTML = `<p class="muted empty-msg">${emptyMsg}</p>`;
+    return;
+  }
+
+  const prevScroll = listEl.scrollTop;
+
+  // Tira qualquer no que nao seja um item com chave (ex: o <p> de "Carregando").
+  for (const el of Array.from(listEl.children)) {
+    if (!el.dataset || !el.dataset.key) el.remove();
+  }
+
+  const existing = new Map();
+  for (const el of Array.from(listEl.children)) existing.set(el.dataset.key, el);
+
+  const usedKeys = new Set();
+  entries.forEach((entry, i) => {
+    usedKeys.add(entry.key);
+    let el = existing.get(entry.key);
+    if (!el) {
+      el = document.createElement("div");
+      el.dataset.key = entry.key;
+    }
+    if (el.className !== entry.className) el.className = entry.className;
+    if (el.__html !== entry.html) {
+      el.innerHTML = entry.html;
+      el.__html = entry.html;
+    }
+    // onclick (propriedade, nao addEventListener) — sempre a versao mais nova,
+    // sem empilhar handlers antigos com dados desatualizados.
+    el.onclick = entry.onClick;
+
+    const atPos = listEl.children[i];
+    if (atPos !== el) listEl.insertBefore(el, atPos || null);
+  });
+
+  for (const [key, el] of existing) {
+    if (!usedKeys.has(key)) el.remove();
+  }
+
+  // So mexe na rolagem se ja tinha lista antes (num primeiro carregamento
+  // deixa no topo, como sempre foi).
+  if (!firstPaint) listEl.scrollTop = prevScroll;
+}
+
+async function loadConversations({ silent = false } = {}) {
+  if (!silent && !listEl.querySelector("[data-key]")) {
+    listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
+  }
   const params = new URLSearchParams({ status: state.status, sort: state.sort });
   if (state.onlyCombinar) params.set("combinar", "1");
   if (state.onlyPending) params.set("onlyPending", "1");
@@ -556,35 +615,31 @@ async function loadConversations() {
   const res = await fetch(`/api/conversations?${params.toString()}`);
   if (handleSessionExpired(res)) return;
   if (!res.ok) {
-    listEl.innerHTML = '<p class="muted empty-msg">Erro ao carregar.</p>';
+    if (!silent) listEl.innerHTML = '<p class="muted empty-msg">Erro ao carregar.</p>';
     return;
   }
   const items = await res.json();
 
-  if (items.length === 0) {
-    const label = state.onlyPending ? "a responder" : statusLabel(state.status);
-    const msg = state.onlyCombinar
-      ? `Nenhuma conversa de "combinar entrega" ${label}.`
-      : `Nenhuma conversa ${label}.`;
-    listEl.innerHTML = `<p class="muted empty-msg">${msg}</p>`;
-    return;
-  }
+  const emptyLabel = state.onlyPending ? "a responder" : statusLabel(state.status);
+  const emptyMsg = state.onlyCombinar
+    ? `Nenhuma conversa de "combinar entrega" ${emptyLabel}.`
+    : `Nenhuma conversa ${emptyLabel}.`;
 
-  listEl.innerHTML = "";
-  for (const conv of items) {
-    const div = document.createElement("div");
+  const entries = items.map((conv) => {
     const isUnread = conv.status === "pending" || conv.status === "no_contact";
-    div.className =
-      "conversation-item" +
-      (conv.pack_id === state.selectedPackId ? " selected" : "") +
-      (isUnread ? " unread" : "");
     const label = buyerLabel(conv);
     const preview = conv.last_message_text
       ? conv.last_message_text.slice(0, 90)
       : conv.status === "no_contact"
       ? "Nenhuma mensagem trocada ainda — inicie o contato"
       : "";
-    div.innerHTML = `
+    return {
+      key: String(conv.pack_id),
+      className:
+        "conversation-item" +
+        (conv.pack_id === state.selectedPackId ? " selected" : "") +
+        (isUnread ? " unread" : ""),
+      html: `
       ${avatarHtml(label)}
       <div class="ci-body">
         <div class="ci-top">
@@ -600,10 +655,12 @@ async function loadConversations() {
           ${conv.has_open_claim ? '<span class="tag tag-claim" title="Este pedido tem uma reclamação aberta na aba Reclamações">⚠ Reclamação aberta</span>' : ""}
         </div>
       </div>
-    `;
-    div.addEventListener("click", () => openThread(conv));
-    listEl.appendChild(div);
-  }
+    `,
+      onClick: () => openThread(conv),
+    };
+  });
+
+  patchList(entries, emptyMsg);
 }
 
 // ---------- Reclamacoes (Central de Resolucoes/mediacao) ----------
@@ -630,14 +687,16 @@ function claimStageLabel(claim) {
   return CLAIM_STAGE_LABELS[claim.stage] || claim.stage || "Reclamação";
 }
 
-function loadList() {
-  if (state.module === "claims") return loadClaims();
-  if (state.module === "questions") return loadQuestions();
-  return loadConversations();
+function loadList(opts) {
+  if (state.module === "claims") return loadClaims(opts);
+  if (state.module === "questions") return loadQuestions(opts);
+  return loadConversations(opts);
 }
 
-async function loadClaims() {
-  listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
+async function loadClaims({ silent = false } = {}) {
+  if (!silent && !listEl.querySelector("[data-key]")) {
+    listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
+  }
   const params = new URLSearchParams({ status: state.claimStatus });
   if (state.onlyPending) params.set("onlyPending", "1");
   if (state.sellerId) params.set("sellerId", state.sellerId);
@@ -646,40 +705,36 @@ async function loadClaims() {
   const res = await fetch(`/api/claims?${params.toString()}`);
   if (handleSessionExpired(res)) return;
   if (!res.ok) {
-    listEl.innerHTML = '<p class="muted empty-msg">Erro ao carregar.</p>';
+    if (!silent) listEl.innerHTML = '<p class="muted empty-msg">Erro ao carregar.</p>';
     return;
   }
   const items = await res.json();
 
-  if (items.length === 0) {
-    const label = state.onlyPending
-      ? "a responder"
-      : state.claimStatus === "closed"
-      ? "fechada"
-      : state.claimStatus === "answered"
-      ? "respondida"
-      : "pendente";
-    listEl.innerHTML = `<p class="muted empty-msg">Nenhuma reclamação ${label}.</p>`;
-    return;
-  }
+  const label = state.onlyPending
+    ? "a responder"
+    : state.claimStatus === "closed"
+    ? "fechada"
+    : state.claimStatus === "answered"
+    ? "respondida"
+    : "pendente";
 
-  listEl.innerHTML = "";
-  for (const claim of items) {
-    const div = document.createElement("div");
+  const entries = items.map((claim) => {
     const isUnread = claim.local_status === "pending";
-    div.className =
-      "conversation-item" +
-      (claim.claim_id === state.selectedClaimId ? " selected" : "") +
-      (isUnread ? " unread" : "");
-    const label = claim.buyer_full_name || "Comprador #" + (claim.buyer_id || "?");
+    const clabel = claim.buyer_full_name || "Comprador #" + (claim.buyer_id || "?");
     const preview = claim.last_message_text
       ? claim.last_message_text.slice(0, 90)
       : "Reclamação aberta — nenhuma mensagem trocada ainda";
-    div.innerHTML = `
-      ${avatarHtml(label)}
+    return {
+      key: "claim:" + claim.claim_id,
+      className:
+        "conversation-item" +
+        (claim.claim_id === state.selectedClaimId ? " selected" : "") +
+        (isUnread ? " unread" : ""),
+      html: `
+      ${avatarHtml(clabel)}
       <div class="ci-body">
         <div class="ci-top">
-          <span class="ci-buyer">${label}</span>
+          <span class="ci-buyer">${clabel}</span>
           <span class="ci-store">${claim.seller_nickname || ""}</span>
         </div>
         ${claim.product_title ? `<div class="ci-product">${claim.product_title}</div>` : ""}
@@ -690,10 +745,12 @@ async function loadClaims() {
           <span class="tag tag-claim">${claimTypeLabel(claim)}</span>
         </div>
       </div>
-    `;
-    div.addEventListener("click", () => openClaimThread(claim));
-    listEl.appendChild(div);
-  }
+    `,
+      onClick: () => openClaimThread(claim),
+    };
+  });
+
+  patchList(entries, `Nenhuma reclamação ${label}.`);
 }
 
 function renderClaimThreadInfo(claim) {
@@ -806,40 +863,42 @@ function renderClaimMessageAttachments(container, attachments, claimId) {
   }
 }
 
-function renderClaimMessages(messages, claimId) {
-  threadMessages.innerHTML = "";
-  if (messages.length === 0) {
-    threadMessages.innerHTML =
-      '<p class="muted centered">Nenhuma mensagem trocada ainda nesta reclamação.</p>';
-    return;
+function buildClaimMessageBubble(m, claimId) {
+  const div = document.createElement("div");
+  div.className = "msg " + (m.sender_role === "respondent" ? "msg-out" : "msg-in");
+  const roleLabel =
+    m.sender_role === "respondent" ? "Você" : m.sender_role === "mediator" ? "Mercado Livre" : "Comprador";
+  const hasAttachments = Array.isArray(m.attachments) && m.attachments.length > 0;
+  div.innerHTML = `<div class="msg-text"></div>${
+    hasAttachments ? '<div class="msg-attachments"></div>' : ""
+  }<div class="msg-date">${roleLabel} · ${fmtDate(m.sent_date)}</div>`;
+  renderMessageTextWithLinks(div.querySelector(".msg-text"), m.message);
+  if (hasAttachments) {
+    renderClaimMessageAttachments(div.querySelector(".msg-attachments"), m.attachments, claimId);
   }
-  for (const m of messages) {
-    const div = document.createElement("div");
-    div.className = "msg " + (m.sender_role === "respondent" ? "msg-out" : "msg-in");
-    const roleLabel =
-      m.sender_role === "respondent" ? "Você" : m.sender_role === "mediator" ? "Mercado Livre" : "Comprador";
-    const hasAttachments = Array.isArray(m.attachments) && m.attachments.length > 0;
-    div.innerHTML = `<div class="msg-text"></div>${
-      hasAttachments ? '<div class="msg-attachments"></div>' : ""
-    }<div class="msg-date">${roleLabel} · ${fmtDate(m.sent_date)}</div>`;
-    renderMessageTextWithLinks(div.querySelector(".msg-text"), m.message);
-    if (hasAttachments) {
-      renderClaimMessageAttachments(div.querySelector(".msg-attachments"), m.attachments, claimId);
-    }
-    threadMessages.appendChild(div);
-  }
-  threadMessages.scrollTop = threadMessages.scrollHeight;
+  return div;
 }
 
-async function loadClaimMessages(claimId) {
+function renderClaimMessages(messages, claimId) {
+  renderMessagesInto(
+    threadMessages,
+    messages,
+    "claim:" + claimId,
+    (m) => buildClaimMessageBubble(m, claimId),
+    '<p class="muted centered">Nenhuma mensagem trocada ainda nesta reclamação.</p>'
+  );
+}
+
+async function loadClaimMessages(claimId, { silent = false } = {}) {
   const res = await fetch(`/api/claims/${encodeURIComponent(claimId)}/messages`);
   if (handleSessionExpired(res)) return false;
   if (!res.ok) {
-    threadMessages.innerHTML = '<p class="muted">Erro ao carregar as mensagens.</p>';
+    if (!silent) threadMessages.innerHTML = '<p class="muted">Erro ao carregar as mensagens.</p>';
     return false;
   }
   const data = await res.json();
-  if (data.claim) renderClaimThreadInfo(data.claim);
+  if (String(claimId) !== String(state.selectedClaimId)) return false;
+  if (!silent && data.claim) renderClaimThreadInfo(data.claim);
   renderClaimMessages(data.messages || [], claimId);
   return true;
 }
@@ -870,8 +929,10 @@ async function openClaimThread(claim) {
 // mas com nova categoria de duvidas". Diferenca importante: uma pergunta
 // tem no maximo UMA resposta (nao e uma conversa de ida-e-volta), entao a
 // "thread" dela e sempre so um ou dois balõezinhos (pergunta + resposta).
-async function loadQuestions() {
-  listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
+async function loadQuestions({ silent = false } = {}) {
+  if (!silent && !listEl.querySelector("[data-key]")) {
+    listEl.innerHTML = '<p class="muted empty-msg">Carregando...</p>';
+  }
   const params = new URLSearchParams({ status: state.questionStatus });
   if (state.onlyPending) params.set("onlyPending", "1");
   if (state.sellerId) params.set("sellerId", state.sellerId);
@@ -884,47 +945,40 @@ async function loadQuestions() {
     // de so "Erro ao carregar." — ajuda a diagnosticar sem precisar abrir
     // nada tecnico (ex: tabela nova que ainda nao foi criada no banco).
     const detail = await res.json().catch(() => null);
-    listEl.innerHTML = `<p class="muted empty-msg">Erro ao carregar as perguntas.${
-      detail?.detail ? `<br><span class="small">${detail.detail}</span>` : ""
-    }</p>`;
+    if (!silent) {
+      listEl.innerHTML = `<p class="muted empty-msg">Erro ao carregar as perguntas.${
+        detail?.detail ? `<br><span class="small">${detail.detail}</span>` : ""
+      }</p>`;
+    }
     return;
   }
   const items = await res.json();
 
-  if (items.length === 0) {
-    const label = state.onlyPending
-      ? "a responder"
-      : state.questionStatus === "closed"
-      ? "fechada"
-      : state.questionStatus === "answered"
-      ? "respondida"
-      : "pendente";
-    listEl.innerHTML = `<p class="muted empty-msg">Nenhuma pergunta ${label}.</p>`;
-    return;
-  }
+  const label = state.onlyPending
+    ? "a responder"
+    : state.questionStatus === "closed"
+    ? "fechada"
+    : state.questionStatus === "answered"
+    ? "respondida"
+    : "pendente";
 
-  listEl.innerHTML = "";
-  for (const question of items) {
-    const div = document.createElement("div");
+  const entries = items.map((question) => {
     const isUnread = question.local_status === "pending";
-    div.className =
-      "conversation-item" +
-      (question.question_id === state.selectedQuestionId ? " selected" : "") +
-      (isUnread ? " unread" : "");
-    const label = question.buyer_nickname || "Comprador #" + (question.buyer_id || "?");
+    const qlabel = question.buyer_nickname || "Comprador #" + (question.buyer_id || "?");
     const preview = question.question_text || "";
-    // Quando o mesmo comprador fez mais de uma pergunta (ver agrupamento em
-    // GET /questions no backend), mostra quantas ao lado do nome — pedido do
-    // usuario ("se e o mesmo numero deixar as mensagens uma abaixo da
-    // outra"), pra ficar claro que ha mais de uma mensagem escondida ali
-    // dentro antes mesmo de abrir.
     const grupoTotal = Number(question.grupo_total) || 1;
     const grupoBadge = grupoTotal > 1 ? `<span class="ci-group-count">${grupoTotal} perguntas</span>` : "";
-    div.innerHTML = `
-      ${avatarHtml(label)}
+    return {
+      key: "question:" + question.question_id,
+      className:
+        "conversation-item" +
+        (question.question_id === state.selectedQuestionId ? " selected" : "") +
+        (isUnread ? " unread" : ""),
+      html: `
+      ${avatarHtml(qlabel)}
       <div class="ci-body">
         <div class="ci-top">
-          <span class="ci-buyer">${label}</span>
+          <span class="ci-buyer">${qlabel}</span>
           <span class="ci-store">${question.seller_nickname || ""}</span>
         </div>
         ${question.item_title ? `<div class="ci-product">${question.item_title}</div>` : ""}
@@ -935,10 +989,12 @@ async function loadQuestions() {
           <span class="tag tag-question">Pergunta</span>
         </div>
       </div>
-    `;
-    div.addEventListener("click", () => openQuestionThread(question));
-    listEl.appendChild(div);
-  }
+    `,
+      onClick: () => openQuestionThread(question),
+    };
+  });
+
+  patchList(entries, `Nenhuma pergunta ${label}.`);
 }
 
 function renderQuestionThreadInfo(question) {
@@ -1827,51 +1883,111 @@ function renderMessageAttachments(container, attachments, packId) {
   }
 }
 
-function renderMessages(messages, packId) {
-  threadMessages.innerHTML = "";
+// Assinatura de uma lista de mensagens — muda quando alguma mensagem e
+// adicionada ou alterada. Serve pra decidir, no refresh automatico, se ha o
+// que atualizar (e se da pra so ACRESCENTAR as novas em vez de redesenhar a
+// conversa inteira, que e o que fazia a tela "piscar").
+function threadMsgSig(messages) {
+  return messages
+    .map((m, i) => m.id || m.message_id || `${i}:${m.direction || m.sender_role}:${m.sent_date}:${(m.text || m.message || "").length}`)
+    .join("|");
+}
+
+function buildMessageBubble(m, packId) {
+  const div = document.createElement("div");
+  div.className = "msg " + (m.direction === "out" ? "msg-out" : "msg-in");
+  const hasIncomingAttachments = Array.isArray(m.attachments) && m.attachments.length > 0;
+  div.innerHTML = `<div class="msg-text"></div>${
+    m.attachment_name ? '<div class="msg-attachment"></div>' : ""
+  }${
+    hasIncomingAttachments ? '<div class="msg-attachments"></div>' : ""
+  }<div class="msg-date">${fmtDate(m.sent_date)}</div>`;
+  renderMessageTextWithLinks(div.querySelector(".msg-text"), m.text);
+  if (m.attachment_name) {
+    div.querySelector(".msg-attachment").textContent = `📎 ${m.attachment_name}`;
+  }
+  if (hasIncomingAttachments) {
+    renderMessageAttachments(div.querySelector(".msg-attachments"), m.attachments, packId);
+  }
+  return div;
+}
+
+// Desenho "estilo WhatsApp": na primeira vez (ou ao trocar de conversa)
+// desenha tudo; nas atualizacoes seguintes, se nada mudou nao mexe no DOM, e
+// se so chegou mensagem nova, ACRESCENTA so os balõezinhos novos — mantendo a
+// posicao da rolagem (a nao ser que voce ja esteja no fim, ai desce junto).
+function renderMessagesInto(container, messages, ctxId, buildFn, emptyHtml) {
+  const key = String(ctxId);
+  const sameThread = container.__key === key;
+  const sig = threadMsgSig(messages);
+  const nearBottom =
+    container.scrollHeight - container.scrollTop - container.clientHeight < 90;
+
   if (messages.length === 0) {
-    threadMessages.innerHTML =
-      '<p class="muted centered">Nenhuma mensagem trocada ainda. Escreva abaixo pra iniciar o contato.</p>';
+    container.innerHTML = emptyHtml;
+    container.__key = key;
+    container.__sig = "";
+    container.__count = 0;
     return;
   }
-  for (const m of messages) {
-    const div = document.createElement("div");
-    div.className = "msg " + (m.direction === "out" ? "msg-out" : "msg-in");
-    const hasIncomingAttachments = Array.isArray(m.attachments) && m.attachments.length > 0;
-    div.innerHTML = `<div class="msg-text"></div>${
-      m.attachment_name ? '<div class="msg-attachment"></div>' : ""
-    }${
-      hasIncomingAttachments ? '<div class="msg-attachments"></div>' : ""
-    }<div class="msg-date">${fmtDate(m.sent_date)}</div>`;
-    renderMessageTextWithLinks(div.querySelector(".msg-text"), m.text);
-    if (m.attachment_name) {
-      div.querySelector(".msg-attachment").textContent = `📎 ${m.attachment_name}`;
-    }
-    if (hasIncomingAttachments) {
-      renderMessageAttachments(div.querySelector(".msg-attachments"), m.attachments, packId);
-    }
-    threadMessages.appendChild(div);
+
+  if (sameThread && sig === container.__sig) return; // nada mudou
+
+  const grew =
+    sameThread &&
+    container.__count > 0 &&
+    messages.length > container.__count &&
+    sig.startsWith(container.__sig + "|");
+
+  if (grew) {
+    for (const m of messages.slice(container.__count)) container.appendChild(buildFn(m));
+  } else {
+    container.innerHTML = "";
+    for (const m of messages) container.appendChild(buildFn(m));
   }
-  threadMessages.scrollTop = threadMessages.scrollHeight;
+
+  container.__key = key;
+  container.__sig = sig;
+  container.__count = messages.length;
+
+  if (!sameThread || grew || nearBottom) {
+    container.scrollTop = container.scrollHeight;
+  }
+}
+
+function renderMessages(messages, packId) {
+  renderMessagesInto(
+    threadMessages,
+    messages,
+    "conv:" + packId,
+    (m) => buildMessageBubble(m, packId),
+    '<p class="muted centered">Nenhuma mensagem trocada ainda. Escreva abaixo pra iniciar o contato.</p>'
+  );
 }
 
 // Busca as mensagens (e o resto dos dados) de uma conversa e atualiza a
 // tela do chat que ja esta aberta — usada tanto ao abrir uma conversa
 // quanto para atualizar a mesma conversa depois de enviar uma resposta
-// (sem fechar/trocar de tela, como um chat de verdade).
-async function loadThreadMessages(packId) {
+// (sem fechar/trocar de tela, como um chat de verdade). Com { silent: true }
+// (atualizacao automatica de fundo) NAO re-renderiza o cabecalho/cards — isso
+// resetaria a calculadora de frete, o anexo ja selecionado, etc. — so
+// atualiza os balõezinhos, incrementalmente.
+async function loadThreadMessages(packId, { silent = false } = {}) {
   const res = await fetch(`/api/conversations/${encodeURIComponent(packId)}/messages`);
   if (handleSessionExpired(res)) return false;
   if (!res.ok) {
-    threadMessages.innerHTML = '<p class="muted">Erro ao carregar as mensagens.</p>';
+    if (!silent) threadMessages.innerHTML = '<p class="muted">Erro ao carregar as mensagens.</p>';
     return false;
   }
   const data = await res.json();
 
+  // Se o usuario trocou de conversa enquanto essa resposta vinha, ignora.
+  if (String(packId) !== String(state.selectedPackId)) return false;
+
   // O servidor pode ter descoberto produto/comprador/tipo de entrega na
   // hora (conversa antiga que ainda nao tinha esses dados) — atualiza o
-  // cabecalho com essa versao mais completa.
-  if (data.conversation) renderThreadInfo(data.conversation);
+  // cabecalho com essa versao mais completa (so quando NAO e refresh de fundo).
+  if (!silent && data.conversation) renderThreadInfo(data.conversation);
 
   renderMessages(data.messages || [], packId);
   return true;
@@ -2282,6 +2398,33 @@ loadMelhorEnvioStatus().then(() => {
   }
 });
 setInterval(loadPendingCount, 20000);
+
+// Atualiza a lista da esquerda de forma INCREMENTAL (sem piscar, sem
+// "Carregando...", sem perder a rolagem) — roda esteja uma conversa aberta
+// ou nao. Antes isso recriava a lista inteira a cada 30s e so quando NAO
+// havia conversa aberta (pedido do usuario: "nao e para carregar varias
+// vezes a pagina").
 setInterval(() => {
-  if (!state.selectedPackId && !state.selectedClaimId) loadList();
-}, 30000);
+  if (document.hidden) return; // aba em segundo plano: nao gasta a toa
+  if (state.module === "history") return; // o Histórico tem o proprio botao
+  loadList({ silent: true });
+}, 20000);
+
+// Atualiza a conversa/reclamacao ABERTA como um chat de verdade: rebusca a
+// cada 10s e so ACRESCENTA o que chegou de novo, mantendo a rolagem. Perguntas
+// nao entram aqui — a "thread" de uma pergunta e estatica (pergunta + no
+// maximo uma resposta) e nao muda sozinha do lado do comprador.
+async function refreshOpenThread() {
+  if (document.hidden) return;
+  try {
+    if (state.selectedPackId) {
+      await loadThreadMessages(state.selectedPackId, { silent: true });
+    } else if (state.selectedClaimId) {
+      await loadClaimMessages(state.selectedClaimId, { silent: true });
+    }
+  } catch (e) {
+    // um refresh que falha nao pode quebrar nada — ignora e tenta de novo
+    // no proximo ciclo.
+  }
+}
+setInterval(refreshOpenThread, 10000);
