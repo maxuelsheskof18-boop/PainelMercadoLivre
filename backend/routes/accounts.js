@@ -49,26 +49,28 @@ router.get("/oauth/callback", requireLogin, async (req, res) => {
 
     const me = await fetchMe(tokenData.access_token);
     const expiresAt = Date.now() + tokenData.expires_in * 1000;
+    const accountId = String(tokenData.user_id || me.id);
 
-    db.prepare(
-      `INSERT INTO accounts (id, nickname, email, access_token, refresh_token, expires_at, needs_reauth, updated_at)
-       VALUES (@id, @nickname, @email, @access_token, @refresh_token, @expires_at, 0, datetime('now'))
-       ON CONFLICT(id) DO UPDATE SET
-         nickname = excluded.nickname,
-         email = excluded.email,
-         access_token = excluded.access_token,
-         refresh_token = excluded.refresh_token,
-         expires_at = excluded.expires_at,
-         needs_reauth = 0,
-         updated_at = datetime('now')`
-    ).run({
-      id: tokenData.user_id || me.id,
-      nickname: me?.nickname || String(tokenData.user_id || me.id),
-      email: me?.email || null,
-      access_token: tokenData.access_token,
-      refresh_token: tokenData.refresh_token,
-      expires_at: expiresAt,
-    });
+    // Postgres: mesma tabela "accounts" de db.js (id TEXT, expires_at BIGINT,
+    // created_at/updated_at TIMESTAMPTZ com default now()). Upsert no formato
+    // do Postgres (EXCLUDED.*), diferente do SQLite da versao antiga.
+    await db.query(
+      `INSERT INTO accounts (id, nickname, access_token, refresh_token, expires_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, now())
+       ON CONFLICT (id) DO UPDATE SET
+         nickname = EXCLUDED.nickname,
+         access_token = EXCLUDED.access_token,
+         refresh_token = EXCLUDED.refresh_token,
+         expires_at = EXCLUDED.expires_at,
+         updated_at = now()`,
+      [
+        accountId,
+        me?.nickname || accountId,
+        tokenData.access_token,
+        tokenData.refresh_token,
+        expiresAt,
+      ]
+    );
 
     delete req.session.oauth;
 
@@ -81,18 +83,35 @@ router.get("/oauth/callback", requireLogin, async (req, res) => {
   }
 });
 
-router.get("/api/accounts", requireLogin, (req, res) => {
-  const accounts = db
-    .prepare(
-      "SELECT id, nickname, needs_reauth, created_at FROM accounts ORDER BY nickname"
-    )
-    .all();
-  res.json(accounts);
+router.get("/api/accounts", requireLogin, async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      "SELECT id, nickname, created_at FROM accounts ORDER BY nickname"
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("[api/accounts]", err);
+    res.status(500).json({ error: "Falha ao listar as contas.", detail: err.message });
+  }
 });
 
-router.delete("/api/accounts/:id", requireLogin, (req, res) => {
-  db.prepare("DELETE FROM accounts WHERE id = ?").run(req.params.id);
-  res.json({ ok: true });
+router.delete("/api/accounts/:id", requireLogin, async (req, res) => {
+  try {
+    // conversations.seller_id referencia accounts(id) sem ON DELETE CASCADE,
+    // entao apaga primeiro o que depende da conta (mensagens -> conversas),
+    // depois a conta. claims/questions/backfill_progress ja tem CASCADE.
+    const id = String(req.params.id);
+    await db.query(
+      "DELETE FROM messages WHERE pack_id IN (SELECT pack_id FROM conversations WHERE seller_id = $1)",
+      [id]
+    );
+    await db.query("DELETE FROM conversations WHERE seller_id = $1", [id]);
+    await db.query("DELETE FROM accounts WHERE id = $1", [id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[api/accounts DELETE]", err);
+    res.status(500).json({ error: "Falha ao remover a conta.", detail: err.message });
+  }
 });
 
 module.exports = router;
