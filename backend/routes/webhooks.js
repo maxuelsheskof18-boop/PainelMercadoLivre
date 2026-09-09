@@ -2,9 +2,11 @@
 // Doc oficial: https://developers.mercadolivre.com.br/pt_br/produto-receba-notificacoes
 //
 // Ao criar/editar seu aplicativo em https://developers.mercadolivre.com.br/,
-// cadastre esta URL como "Notifications callback URL":
+// cadastre esta URL como "URL de retorno de chamada de notificacao":
 //   <PUBLIC_BASE_URL>/webhooks/mercadolivre
-// e marque o topico de mensagens na lista de topicos do app.
+// (repare que e uma URL DIFERENTE da "URI de redirecionamento", que e
+// usada so no login/OAuth) e marque o topico de mensagens na lista de
+// topicos do app.
 //
 // IMPORTANTE: o nome exato do topico de mensagens pode aparecer como
 // "messages" na tela de configuracao do seu app — confirme por la. Se vier
@@ -12,6 +14,9 @@
 const express = require("express");
 const db = require("../db");
 const { syncPack } = require("../sync");
+const { parsePackResource } = require("../ml/api");
+const { syncClaim } = require("../claimsSync");
+const { syncQuestion } = require("../questionsSync");
 
 const router = express.Router();
 
@@ -19,14 +24,38 @@ function isMessageTopic(topic) {
   return typeof topic === "string" && topic.toLowerCase().includes("message");
 }
 
-// Extrai pack_id e seller_id de um resource do tipo
-// "/messages/packs/{pack_id}/sellers/{seller_id}"
-function parsePackResource(resource) {
-  const match = /\/messages\/packs\/([^/]+)\/sellers\/([^/?]+)/i.exec(
-    resource || ""
-  );
-  if (!match) return null;
-  return { packId: match[1], sellerId: match[2] };
+// O nome exato do topico de reclamacoes NUNCA foi confirmado com uma
+// notificacao de verdade (a documentacao publica de webhooks e inconsistente
+// sobre isso — as vezes aparece como "post_purchase", as vezes como
+// "claims"). Por isso o filtro aceita os dois candidatos, e a tabela
+// webhook_events (ver comentario em db.js) grava TODO topico recebido —
+// depois que a primeira reclamacao real chegar, da pra conferir ali qual
+// nome o Mercado Livre realmente usa e ajustar aqui se for diferente.
+function isClaimTopic(topic) {
+  if (typeof topic !== "string") return false;
+  const t = topic.toLowerCase();
+  return t.includes("claim") || t.includes("post_purchase") || t.includes("post-purchase");
+}
+
+function parseClaimResource(resource) {
+  const match = /claims\/([^/?]+)/i.exec(resource || "");
+  return match ? match[1] : null;
+}
+
+// Mesmo caso do topico de reclamacoes acima: o nome exato do topico de
+// perguntas nunca foi confirmado com uma notificacao de verdade (a
+// documentacao publica cita "questions" e "marketplace_questions" em
+// lugares diferentes). O filtro aceita qualquer topico que contenha
+// "question", e a tabela webhook_events grava tudo — depois que a primeira
+// pergunta real chegar, da pra conferir ali o nome exato e ajustar aqui se
+// for diferente.
+function isQuestionTopic(topic) {
+  return typeof topic === "string" && topic.toLowerCase().includes("question");
+}
+
+function parseQuestionResource(resource) {
+  const match = /questions\/([^/?]+)/i.exec(resource || "");
+  return match ? match[1] : null;
 }
 
 router.post("/webhooks/mercadolivre", express.json(), (req, res) => {
@@ -37,10 +66,63 @@ router.post("/webhooks/mercadolivre", express.json(), (req, res) => {
   const { topic, resource, user_id } = req.body || {};
   console.log("[webhook] recebido:", { topic, resource, user_id });
 
+  // Grava TODA notificacao (de qualquer topico) pra diagnostico — ver
+  // comentario da tabela webhook_events em db.js. Isso roda mesmo pra
+  // topicos que a gente ignora, de proposito: e a unica forma de responder
+  // "o Mercado Livre chegou a mandar ALGUMA notificacao pra essa conta?".
+  db.query(
+    `INSERT INTO webhook_events (topic, seller_id, resource) VALUES ($1, $2, $3)`,
+    [topic || null, String(user_id || "") || null, resource || null]
+  ).catch((err) => console.error("[webhook] falha ao gravar webhook_events:", err.message));
+
+  if (isClaimTopic(topic)) {
+    const claimId = parseClaimResource(resource);
+    const claimSellerId = String(user_id || "");
+    if (!claimId || !claimSellerId) {
+      console.warn("[webhook] nao consegui identificar reclamacao/seller em:", resource);
+      return;
+    }
+    (async () => {
+      try {
+        const { rows } = await db.query("SELECT 1 FROM accounts WHERE id = $1", [claimSellerId]);
+        if (!rows.length) {
+          console.warn(`[webhook] notificacao de reclamacao para conta nao conectada: ${claimSellerId}`);
+          return;
+        }
+        await syncClaim(claimSellerId, claimId);
+      } catch (err) {
+        console.error(`[webhook] falha ao sincronizar reclamacao ${claimId}:`, err.message);
+      }
+    })();
+    return;
+  }
+
+  if (isQuestionTopic(topic)) {
+    const questionId = parseQuestionResource(resource);
+    const questionSellerId = String(user_id || "");
+    if (!questionId || !questionSellerId) {
+      console.warn("[webhook] nao consegui identificar pergunta/seller em:", resource);
+      return;
+    }
+    (async () => {
+      try {
+        const { rows } = await db.query("SELECT 1 FROM accounts WHERE id = $1", [questionSellerId]);
+        if (!rows.length) {
+          console.warn(`[webhook] notificacao de pergunta para conta nao conectada: ${questionSellerId}`);
+          return;
+        }
+        await syncQuestion(questionSellerId, questionId);
+      } catch (err) {
+        console.error(`[webhook] falha ao sincronizar pergunta ${questionId}:`, err.message);
+      }
+    })();
+    return;
+  }
+
   if (!isMessageTopic(topic)) return;
 
   const parsed = parsePackResource(resource);
-  const sellerId = parsed?.sellerId || user_id;
+  const sellerId = String(parsed?.sellerId || user_id || "");
   const packId = parsed?.packId;
 
   if (!packId || !sellerId) {
@@ -48,17 +130,20 @@ router.post("/webhooks/mercadolivre", express.json(), (req, res) => {
     return;
   }
 
-  const accountExists = db
-    .prepare("SELECT 1 FROM accounts WHERE id = ?")
-    .get(sellerId);
-  if (!accountExists) {
-    console.warn(`[webhook] notificacao para conta nao conectada: ${sellerId}`);
-    return;
-  }
-
-  syncPack(sellerId, packId).catch((err) => {
-    console.error(`[webhook] falha ao sincronizar pack ${packId}:`, err.message);
-  });
+  (async () => {
+    try {
+      const { rows } = await db.query("SELECT 1 FROM accounts WHERE id = $1", [
+        sellerId,
+      ]);
+      if (!rows.length) {
+        console.warn(`[webhook] notificacao para conta nao conectada: ${sellerId}`);
+        return;
+      }
+      await syncPack(sellerId, packId);
+    } catch (err) {
+      console.error(`[webhook] falha ao sincronizar pack ${packId}:`, err.message);
+    }
+  })();
 });
 
 module.exports = router;
