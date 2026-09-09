@@ -22,6 +22,27 @@ const SHIPPING_TYPE_LABELS = {
   fulfillment: "Full",
 };
 
+// ---------------------------------------------------------------------------
+// "Puxar so as mensagens deste ano" (pedido do usuario). Todas as buscas de
+// pedidos deste arquivo (recentes, combinar entrega, atividade recente,
+// entregues) e a varredura mes-a-mes (runBackfillStep) ficam limitadas a
+// pedidos CRIADOS a partir de 1º de janeiro do ANO ATUAL — nada anterior a
+// isso e trazido pro painel. O corte acompanha a virada de ano sozinho
+// (usa o ano do relogio do servidor).
+//
+// Para voltar a puxar todo o historico: troque MESSAGES_SINCE_YEAR por um
+// ano fixo antigo (ex: 2020) ou remova os "dateCreatedFrom: sinceYearParam()"
+// espalhados abaixo e restaure a logica de BACKFILL_LOOKBACK_MONTHS em
+// runBackfillStep.
+function currentYear() {
+  return new Date().getUTCFullYear();
+}
+// Primeiro dia do ano de corte, no formato ISO 8601 com o offset de Brasilia
+// (-03:00) que a API do Mercado Livre espera nos filtros de data.
+function sinceYearParam() {
+  return `${currentYear()}-01-01T00:00:00.000-03:00`;
+}
+
 // Busca o tipo de envio (Flex/Agência/Coleta/Correios/Full) de um pedido, pra
 // mostrar como uma tag no painel — o vendedor pediu isso pra saber de onde
 // veio a venda, do mesmo jeito que ja existe a tag de "combinar entrega".
@@ -92,6 +113,7 @@ async function fetchAllNoShippingOrders(accessToken, sellerId) {
       limit: NO_SHIPPING_PAGE_SIZE,
       offset,
       tags: "no_shipping",
+      dateCreatedFrom: sinceYearParam(),
     });
     const results = Array.isArray(data?.results) ? data.results : [];
     all.push(...results);
@@ -150,6 +172,9 @@ async function fetchAllRecentlyUpdatedOrders(accessToken, sellerId) {
       offset,
       dateLastUpdatedFrom: toMlDateParam(from),
       dateLastUpdatedTo: toMlDateParam(to),
+      // ...mas so pedidos criados neste ano (pedido do usuario): um pedido de
+      // 2024 que recebeu atividade agora nao entra mais no painel.
+      dateCreatedFrom: sinceYearParam(),
     });
     const results = Array.isArray(data?.results) ? data.results : [];
     all.push(...results);
@@ -194,6 +219,7 @@ async function fetchAllDeliveredOrders(accessToken, sellerId) {
       limit: DELIVERED_PAGE_SIZE,
       offset,
       tags: "delivered",
+      dateCreatedFrom: sinceYearParam(),
     });
     const results = Array.isArray(data?.results) ? data.results : [];
     all.push(...results);
@@ -566,6 +592,7 @@ async function reconcileAccount(sellerId) {
 
   const orders = await fetchRecentOrders(accessToken, sellerId, {
     limit: RECENT_ORDERS_LIMIT,
+    dateCreatedFrom: sinceYearParam(),
   });
   const recentList = Array.isArray(orders?.results) ? orders.results : [];
 
@@ -954,7 +981,19 @@ async function loadBackfillProgress(sellerId) {
     "SELECT cursor_month, cursor_phase, cursor_offset FROM backfill_progress WHERE seller_id = $1",
     [sellerId]
   );
-  if (rows[0]) return rows[0];
+  if (rows[0]) {
+    // "So mensagens deste ano" (pedido do usuario): se um ciclo antigo ja
+    // tinha descido pra um mes de um ano anterior, puxa o cursor de volta
+    // pro mes atual em vez de continuar varrendo o passado.
+    const cm = new Date(rows[0].cursor_month);
+    if (cm.getUTCFullYear() < currentYear()) {
+      const now = new Date();
+      const reset = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      await saveBackfillProgress(sellerId, reset, "delivered", 0);
+      return { cursor_month: reset, cursor_phase: "delivered", cursor_offset: 0 };
+    }
+    return rows[0];
+  }
 
   // Primeira vez que essa conta e varrida: comeca no mes atual, fase
   // "delivered", do zero.
@@ -1067,14 +1106,14 @@ async function runBackfillStep(sellerId, accessToken) {
       nextCursorPhase = "no_shipping";
       nextCursorOffset = 0;
     } else {
-      // Terminou as duas fases desse mes — vai pro mes anterior.
+      // Terminou as duas fases desse mes — vai pro mes anterior, mas nunca
+      // antes de janeiro do ano atual (pedido do usuario: so mensagens deste
+      // ano). Ao chegar em janeiro, o proximo passo volta pro mes atual —
+      // ciclo continuo, so que agora limitado ao ano corrente em vez dos
+      // ~3 anos de BACKFILL_LOOKBACK_MONTHS.
       const prevMonth = shiftMonth(year, monthIndex, -1);
       const now = new Date();
-      const monthsBack =
-        (now.getUTCFullYear() - prevMonth.year) * 12 + (now.getUTCMonth() - prevMonth.monthIndex);
-      if (monthsBack > BACKFILL_LOOKBACK_MONTHS) {
-        // Chegou no limite do historico — volta pro mes atual (ciclo
-        // continuo, nunca "termina" de vez).
+      if (prevMonth.year < currentYear()) {
         nextCursorMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
       } else {
         nextCursorMonth = new Date(Date.UTC(prevMonth.year, prevMonth.monthIndex, 1));
