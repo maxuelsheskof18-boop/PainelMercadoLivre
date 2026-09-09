@@ -38,6 +38,17 @@ async function mlFetch(path, accessToken, options = {}) {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",
+      // O Mercado Livre bloqueia (do lado dele, anti-raspagem — erro 403
+      // "blocked_by: PolicyAgent" / "PA_UNAUTHORIZED_RESULT_FROM_POLICIES")
+      // chamadas que "parecem robô": sem User-Agent de navegador. Isso
+      // atingia principalmente a busca de detalhes de anuncio (/items) feita
+      // pelas Perguntas, deixando o titulo do anuncio em branco ("Anúncio
+      // não identificado"). Mandar cabecalhos de navegador de verdade
+      // costuma passar por esse bloqueio. Nao muda em nada as chamadas que
+      // ja funcionavam.
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      "Accept-Language": "pt-BR,pt;q=0.9",
       ...(options.headers || {}),
     },
   });
