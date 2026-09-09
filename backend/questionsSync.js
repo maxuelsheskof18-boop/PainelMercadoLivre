@@ -147,22 +147,34 @@ async function upsertQuestion(sellerId, question, itemInfo) {
   );
 }
 
-// Busca (em lote, poucas chamadas) titulo/link de varios anuncios de uma
-// vez — ver fetchItemsByIds em ml/api.js. Usado pela reconciliacao pra
-// resolver todas as perguntas de um ciclo (e o "backfill" abaixo) sem
-// precisar de uma chamada de rede por pergunta, o que e importante porque
-// varias perguntas costumam ser sobre o mesmo anuncio, e uma conta pode ter
-// centenas de perguntas pendentes de uma vez.
+// Busca titulo/link de varios anuncios (um por vez — /items/{id}, com
+// cabecalhos de navegador no mlFetch pra passar pelo bloqueio PolicyAgent do
+// Mercado Livre; o endpoint "em lote" /items?ids= fica sempre 403 pra
+// servidores). Deduplicado por item_id, entao mesmo com muitas perguntas
+// sobre o mesmo anuncio e so uma chamada por anuncio distinto. Limitado por
+// ciclo (o resto e coberto pelo backfill).
+const ITEMS_INFO_MAP_LIMIT = 60;
+
 async function fetchItemsInfoMap(sellerId, accessToken, itemIds) {
-  const ids = [...new Set((itemIds || []).filter(Boolean).map(String))];
-  if (ids.length === 0) return { itemsById: {}, accessToken };
-  try {
-    const result = await withTokenRetry(sellerId, accessToken, (token) => fetchItemsByIds(token, ids));
-    return { itemsById: result.result, accessToken: result.accessToken };
-  } catch (err) {
-    console.warn(`[questions] falha ao buscar lote de anuncios da conta ${sellerId}:`, err.status, err.body || err.message);
-    return { itemsById: {}, accessToken };
+  const ids = [...new Set((itemIds || []).filter(Boolean).map(String))].slice(0, ITEMS_INFO_MAP_LIMIT);
+  const itemsById = {};
+  for (const id of ids) {
+    try {
+      const result = await withTokenRetry(sellerId, accessToken, (token) => fetchItemById(token, id));
+      accessToken = result.accessToken;
+      const item = result.result;
+      if (item?.title) {
+        itemsById[id] = {
+          title: item.title,
+          permalink: item.permalink || null,
+          price: Number.isFinite(item.price) ? item.price : null,
+        };
+      }
+    } catch (err) {
+      console.warn(`[questions] falha ao buscar anuncio ${id} da conta ${sellerId}:`, err.status, err.body || err.message);
+    }
   }
+  return { itemsById, accessToken };
 }
 
 // Corrige perguntas que ja estao gravadas no banco mas ficaram com
@@ -173,30 +185,59 @@ async function fetchItemsInfoMap(sellerId, accessToken, itemIds) {
 // recentes buscadas neste ciclo (ver QUESTIONS_MAX_PAGES abaixo). Roda pra
 // TODAS as perguntas da conta (nao so as pendentes) porque uma pergunta ja
 // respondida tambem mostra o anuncio na tela.
+// Quantos anuncios distintos tentar por ciclo. O endpoint "multiget"
+// (/items?ids=) e bloqueado pelo Mercado Livre pra servidores (PolicyAgent —
+// ver ml/api.js), entao aqui buscamos UM anuncio por vez (/items/{id}), que
+// passa pelo bloqueio quando a chamada leva cabecalhos de navegador (ja
+// adicionados no mlFetch). Uma chamada por anuncio distinto — limitado por
+// ciclo pra nao alongar a reconciliacao; o resto vai sendo corrigido nos
+// ciclos seguintes.
+const ITEM_TITLE_BACKFILL_LIMIT = 40;
+
 async function backfillMissingItemTitles(sellerId, accessToken) {
   const { rows } = await db.query(
-    `SELECT DISTINCT item_id FROM questions WHERE seller_id = $1 AND item_id IS NOT NULL AND item_title IS NULL`,
+    `SELECT DISTINCT item_id FROM questions
+      WHERE seller_id = $1 AND item_id IS NOT NULL AND item_title IS NULL
+      LIMIT ${ITEM_TITLE_BACKFILL_LIMIT}`,
     [sellerId]
   );
   if (rows.length === 0) return accessToken;
 
-  const itemIds = rows.map((r) => r.item_id);
-  const { itemsById, accessToken: newToken } = await fetchItemsInfoMap(sellerId, accessToken, itemIds);
-  accessToken = newToken;
-
   let corrigidas = 0;
-  for (const itemId of Object.keys(itemsById)) {
-    const info = itemsById[itemId];
-    if (!info?.title) continue;
-    const { rowCount } = await db.query(
-      `UPDATE questions SET item_title = $1, item_permalink = $2, item_price = COALESCE(item_price, $3), updated_at = now()
-       WHERE seller_id = $4 AND item_id = $5 AND item_title IS NULL`,
-      [info.title, info.permalink, info.price ?? null, sellerId, itemId]
-    );
-    corrigidas += rowCount;
+  let falhas = 0;
+  for (const { item_id: itemId } of rows) {
+    try {
+      const result = await withTokenRetry(sellerId, accessToken, (token) => fetchItemById(token, itemId));
+      accessToken = result.accessToken;
+      const item = result.result;
+      const title = item?.title || null;
+      if (!title) {
+        falhas++;
+        continue;
+      }
+      const price = Number.isFinite(item?.price) ? item.price : null;
+      const { rowCount } = await db.query(
+        `UPDATE questions SET item_title = $1, item_permalink = $2, item_price = COALESCE(item_price, $3), updated_at = now()
+         WHERE seller_id = $4 AND item_id = $5 AND item_title IS NULL`,
+        [title, item?.permalink || null, price, sellerId, itemId]
+      );
+      corrigidas += rowCount;
+    } catch (err) {
+      falhas++;
+      console.warn(
+        `[questions] nao consegui buscar o anuncio ${itemId} (conta ${sellerId}):`,
+        err.status,
+        err.body || err.message
+      );
+    }
   }
   if (corrigidas > 0) {
     console.log(`[questions] conta ${sellerId}: ${corrigidas} pergunta(s) tiveram o anuncio ("Anúncio não identificado") corrigido via backfill.`);
+  }
+  if (falhas > 0 && corrigidas === 0) {
+    console.warn(
+      `[questions] conta ${sellerId}: ${falhas} anuncio(s) ainda sem titulo apos tentar buscar um a um — o Mercado Livre pode estar bloqueando (/items) mesmo com cabecalhos de navegador. Ver /api/debug/probe-item-batch.`
+    );
   }
   return accessToken;
 }
