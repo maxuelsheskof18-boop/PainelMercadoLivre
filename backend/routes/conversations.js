@@ -150,7 +150,7 @@ router.get("/conversations", async (req, res) => {
     params.push(`%${q}%`);
     const p = `$${params.length}`;
     conditions.push(
-      `(c.buyer_full_name ILIKE ${p} OR c.buyer_nickname ILIKE ${p} OR c.product_title ILIKE ${p} OR c.order_id ILIKE ${p})`
+      `(c.buyer_full_name ILIKE ${p} OR c.buyer_nickname ILIKE ${p} OR c.product_title ILIKE ${p} OR c.order_id ILIKE ${p} OR c.pack_id ILIKE ${p})`
     );
   }
 
@@ -814,6 +814,17 @@ router.get("/debug/probe-unread-variants", async (req, res) => {
     // "orders/search" com o filtro de mensagem nao lida — outra forma de
     // listar so os pedidos que tem mensagem esperando resposta.
     { nome: "orders/search?seller={id}&tags=not_paid,messages_unread (so pra ver a forma)", path: `/orders/search?seller=${sellerId}&sort=date_desc&limit=20` },
+    // "SEM RESPOSTA" (lidas mas nao respondidas) — o que falta de verdade:
+    // /messages/unread so traz o que NINGUEM abriu. Aqui procuramos o
+    // endpoint que lista TUDO que ainda precisa de resposta do vendedor.
+    { nome: "messages/unread?role=seller&tag=post_sale&mark_as_read=false", path: `/messages/unread?role=seller&tag=post_sale&mark_as_read=false` },
+    { nome: "messages/pending?role=seller&tag=post_sale", path: `/messages/pending?role=seller&tag=post_sale` },
+    { nome: "messages/unanswered?role=seller&tag=post_sale", path: `/messages/unanswered?role=seller&tag=post_sale` },
+    { nome: "messages/action_guide/packs?role=seller&tag=post_sale", path: `/messages/action_guide/packs?role=seller&tag=post_sale` },
+    { nome: "post-purchase/v1/sellers/{id}/messages/pending", path: `/post-purchase/v1/sellers/${sellerId}/messages/pending` },
+    { nome: "post-purchase/v1/messages/unanswered?seller_id={id}", path: `/post-purchase/v1/messages/unanswered?seller_id=${sellerId}` },
+    { nome: "orders/search?seller={id}&filters=order.messages.unanswered", path: `/orders/search?seller=${sellerId}&filters=order.messages.unanswered&limit=20` },
+    { nome: "orders/search?seller={id}&tags=messages_unanswered", path: `/orders/search?seller=${sellerId}&tags=messages_unanswered&limit=20` },
   ];
 
   const resultados = [];
