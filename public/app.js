@@ -2352,18 +2352,44 @@ filterSortBtn.addEventListener("click", () => {
 
 document.getElementById("sync-btn").addEventListener("click", async (e) => {
   const btn = e.currentTarget;
-  btn.disabled = true;
   const label = btn.querySelector(".btn-label");
+  btn.disabled = true;
   if (label) label.textContent = "Atualizando...";
+
+  // A rota /api/sync agora responde na hora (a sincronizacao de verdade roda
+  // em segundo plano no servidor — pode levar minutos numa conta grande).
+  // Aqui so disparamos, com um timeout de seguranca pra o botao nunca ficar
+  // preso mesmo que a resposta se perca, e vamos atualizando a lista algumas
+  // vezes nos minutos seguintes pra mostrar o que o servidor for achando.
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 20000);
   try {
-    // O mesmo botao atualiza conversas E reclamacoes — /api/sync ja
-    // sincroniza as duas coisas do lado do servidor.
-    await fetch("/api/sync", { method: "POST" });
-    await Promise.all([loadList(), loadPendingCount()]);
+    await fetch("/api/sync", { method: "POST", signal: ctrl.signal });
+  } catch (err) {
+    // timeout/erro de rede: nao tem problema, a sincronizacao ja foi
+    // disparada no servidor (ou vai no proximo clique).
   } finally {
-    btn.disabled = false;
-    if (label) label.textContent = "Atualizar";
+    clearTimeout(t);
   }
+
+  // O botao SEMPRE volta ao normal aqui — nada abaixo pode deixa-lo preso.
+  btn.disabled = false;
+  if (label) label.textContent = "Atualizar";
+
+  try {
+    await Promise.all([loadList({ silent: true }), loadPendingCount()]);
+  } catch (e) {
+    /* nao trava o botao por causa de um refresh que falhou */
+  }
+
+  // A reconciliacao roda em segundo plano; recarrega a lista (incremental,
+  // sem piscar) mais algumas vezes pra pegar os resultados conforme chegam.
+  [15000, 40000, 90000].forEach((ms) =>
+    setTimeout(() => {
+      loadList({ silent: true });
+      loadPendingCount();
+    }, ms)
+  );
 });
 
 document.getElementById("logout-btn").addEventListener("click", async () => {
