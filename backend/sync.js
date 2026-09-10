@@ -307,6 +307,19 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
   const last = messages[messages.length - 1];
   if (!last) return; // conversa sem mensagens ainda, nada a fazer
 
+  // Texto de preview da conversa (o que aparece na lista da esquerda). Se a
+  // ultima mensagem for so um anexo (foto que o comprador manda sem escrever
+  // nada — comum em reclamacao de "veio errado"), cai pro texto da ultima
+  // mensagem QUE TEM texto e, por ultimo, marca que veio um anexo — nunca
+  // deixa o preview vazio quando ha conversa (bug real: conversa aparecia em
+  // branco na lista).
+  const msgText = (m) => ((m?.text || "").trim() || null);
+  const lastWithText = [...messages].reverse().find((m) => msgText(m));
+  const lastHasAttachment =
+    Array.isArray(last?.message_attachments) && last.message_attachments.length > 0;
+  const previewText =
+    msgText(last) || (lastWithText ? msgText(lastWithText) : null) || (lastHasAttachment ? "📷 Foto/anexo" : null);
+
   const sellerIdStr = String(sellerId);
   const lastFromId = String(last?.from?.user_id ?? "");
   const isLastFromSeller = lastFromId === sellerIdStr;
@@ -393,7 +406,7 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
       isCombinarEntrega,
       isDelivered,
       shippingType,
-      last?.text || null,
+      previewText,
       messageDate(last),
       status,
       resolvedByOperatorAt,
