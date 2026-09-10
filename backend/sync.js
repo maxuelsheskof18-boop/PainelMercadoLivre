@@ -145,9 +145,14 @@ async function fetchAllNoShippingOrders(accessToken, sellerId) {
 // altissimo volume como a que motivou essa correcao (quase 100 mudancas de
 // pedido notificadas em poucas horas) isso pode virar bastante chamada
 // extra. 150 pedidos por busca ja cobre bem o caso comum sem pesar demais.
-const RECENTLY_UPDATED_WINDOW_DAYS = 3;
+// Janela ampliada (era 3 dias / 3 paginas): o usuario tem mensagens de nota
+// fiscal / "nao recebi" ate ~1 semana atras que ficavam de fora. A busca de
+// "nao lidas" (GET /messages/unread) so pega mensagem que NINGUEM abriu
+// ainda; uma mensagem que alguem da equipe leu pelo app do Mercado Livre mas
+// nao respondeu some de "nao lidas" e SO reaparece aqui, por esta janela.
+const RECENTLY_UPDATED_WINDOW_DAYS = 10;
 const RECENTLY_UPDATED_PAGE_SIZE = 50;
-const RECENTLY_UPDATED_MAX_PAGES = 3;
+const RECENTLY_UPDATED_MAX_PAGES = 6;
 
 // Formata uma data no formato que a API do Mercado Livre espera
 // (ISO 8601 com o offset de Brasilia, -03:00 — o Brasil nao tem mais
@@ -210,7 +215,7 @@ async function fetchAllRecentlyUpdatedOrders(accessToken, sellerId) {
 // MUITO mais pedidos entregues no total do que "com atividade nas ultimas
 // 72h", entao aqui vale a pena olhar uma janela maior de paginas.
 const DELIVERED_PAGE_SIZE = 50;
-const DELIVERED_MAX_PAGES = 3;
+const DELIVERED_MAX_PAGES = 6;
 
 async function fetchAllDeliveredOrders(accessToken, sellerId) {
   const all = [];
