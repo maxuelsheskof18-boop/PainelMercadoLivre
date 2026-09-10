@@ -524,6 +524,8 @@ router.post("/conversations/:packId/mark-resolved", express.json(), async (req, 
 // reconciliacoes se o botao for clicado varias vezes seguidas.
 let syncEmAndamento = false;
 let syncComecouEm = 0;
+let syncTerminouEm = 0;
+let syncEtapa = "";
 
 router.post("/sync", (req, res) => {
   // Se travou de vez (mais de 15 min), libera pra tentar de novo.
@@ -536,6 +538,7 @@ router.post("/sync", (req, res) => {
 
   syncEmAndamento = true;
   syncComecouEm = Date.now();
+  syncEtapa = "mensagens";
   res.status(202).json({ ok: true, iniciado: true });
 
   (async () => {
@@ -544,11 +547,13 @@ router.post("/sync", (req, res) => {
     } catch (err) {
       console.error("[sync] falha ao sincronizar mensagens:", err.message);
     }
+    syncEtapa = "reclamacoes";
     try {
       await reconcileAllClaims();
     } catch (err) {
       console.error("[sync] falha ao sincronizar reclamacoes:", err.message);
     }
+    syncEtapa = "perguntas";
     try {
       await reconcileAllQuestions();
     } catch (err) {
@@ -558,8 +563,23 @@ router.post("/sync", (req, res) => {
     .catch((err) => console.error("[sync] erro inesperado:", err))
     .finally(() => {
       syncEmAndamento = false;
-      console.log(`[sync] reconciliacao manual concluida em ${Math.round((Date.now() - syncComecouEm) / 1000)}s.`);
+      syncTerminouEm = Date.now();
+      syncEtapa = "";
+      console.log(`[sync] reconciliacao manual concluida em ${Math.round((syncTerminouEm - syncComecouEm) / 1000)}s.`);
     });
+});
+
+// O front chama isso a cada poucos segundos depois de clicar em "Atualizar",
+// pra mostrar que a sincronizacao esta rolando (ela roda em 2o plano no
+// servidor e pode levar minutos numa conta grande — antes o botao "voltava
+// ao normal" na hora e parecia que nada acontecia).
+router.get("/sync/status", (req, res) => {
+  res.json({
+    running: syncEmAndamento,
+    step: syncEtapa || null,
+    elapsedSeconds: syncEmAndamento ? Math.round((Date.now() - syncComecouEm) / 1000) : 0,
+    finishedSecondsAgo: syncTerminouEm ? Math.round((Date.now() - syncTerminouEm) / 1000) : null,
+  });
 });
 
 // Rota TEMPORARIA de diagnostico: busca pedidos recentes de cada conta (via
