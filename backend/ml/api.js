@@ -123,9 +123,31 @@ async function fetchUnreadMessagePacks(accessToken, sellerId) {
 }
 
 // Busca a conversa completa de um pedido (pack).
+//
+// "mark_as_read=false" e CRITICO: por padrao, LER as mensagens de um pack por
+// esta API MARCA elas como LIDAS no Mercado Livre. Como a reconciliacao do
+// painel busca as mensagens de muitos packs a cada ciclo (a cada 10 min),
+// sem esse parametro o painel estava "lendo" — e marcando como lidas —
+// mensagens que o vendedor ainda nem viu. Efeito colateral grave: elas
+// sumiam de GET /messages/unread (a lista de "nao lidas", que e a principal
+// forma do painel achar o que falta responder) e passavam a contar como
+// "Lidas > Sem responder" no painel de Vendas do Mercado Livre — sem
+// nenhum endpoint bom pra listar essas. Com "mark_as_read=false", buscar
+// aqui nao mexe no status: a mensagem so vira "lida" quando o vendedor
+// abrir a conversa DE FATO (ver markPackRead abaixo).
 async function fetchPackMessages(accessToken, packId, sellerId) {
   return mlFetch(
-    `/messages/packs/${packId}/sellers/${sellerId}?tag=post_sale`,
+    `/messages/packs/${packId}/sellers/${sellerId}?tag=post_sale&mark_as_read=false`,
+    accessToken
+  );
+}
+
+// Marca as mensagens de um pack como LIDAS — chamado quando o vendedor abre
+// a conversa no painel de propria vontade (nao na varredura automatica).
+// Assim o "nao lidas" do Mercado Livre acompanha o que o painel mostra.
+async function markPackRead(accessToken, packId, sellerId) {
+  return mlFetch(
+    `/messages/packs/${packId}/sellers/${sellerId}?tag=post_sale&mark_as_read=true`,
     accessToken
   );
 }
@@ -423,6 +445,7 @@ async function fetchMe(accessToken) {
 module.exports = {
   fetchUnreadMessagePacks,
   fetchPackMessages,
+  markPackRead,
   fetchPackInfo,
   fetchRecentOrders,
   fetchOrderById,
