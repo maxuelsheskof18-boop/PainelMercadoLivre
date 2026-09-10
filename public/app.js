@@ -1973,7 +1973,11 @@ function renderMessages(messages, packId) {
 // resetaria a calculadora de frete, o anexo ja selecionado, etc. — so
 // atualiza os balõezinhos, incrementalmente.
 async function loadThreadMessages(packId, { silent = false } = {}) {
-  const res = await fetch(`/api/conversations/${encodeURIComponent(packId)}/messages`);
+  // markRead=1 so quando o vendedor ABRE a conversa (nao no refresh de fundo)
+  // — e o que sinaliza pro servidor marcar como lida no Mercado Livre.
+  const url =
+    `/api/conversations/${encodeURIComponent(packId)}/messages` + (silent ? "" : "?markRead=1");
+  const res = await fetch(url);
   if (handleSessionExpired(res)) return false;
   if (!res.ok) {
     if (!silent) threadMessages.innerHTML = '<p class="muted">Erro ao carregar as mensagens.</p>';
