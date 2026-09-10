@@ -172,9 +172,11 @@ async function fetchAllRecentlyUpdatedOrders(accessToken, sellerId) {
       offset,
       dateLastUpdatedFrom: toMlDateParam(from),
       dateLastUpdatedTo: toMlDateParam(to),
-      // ...mas so pedidos criados neste ano (pedido do usuario): um pedido de
-      // 2024 que recebeu atividade agora nao entra mais no painel.
-      dateCreatedFrom: sinceYearParam(),
+      // De proposito SEM "dateCreatedFrom" aqui: essa busca existe justamente
+      // pra pegar pedido ANTIGO que teve atividade AGORA (ex: pedido de nota
+      // fiscal numa venda ja entregue meses atras). O corte "so deste ano"
+      // vale pras outras buscas e pro backfill historico — nao pra uma
+      // conversa que esta acontecendo agora.
     });
     const results = Array.isArray(data?.results) ? data.results : [];
     all.push(...results);
