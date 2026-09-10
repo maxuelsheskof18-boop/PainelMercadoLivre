@@ -2354,46 +2354,79 @@ filterSortBtn.addEventListener("click", () => {
   loadList();
 });
 
+let syncStatusTimer = null;
+
 document.getElementById("sync-btn").addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   const label = btn.querySelector(".btn-label");
-  btn.disabled = true;
-  if (label) label.textContent = "Atualizando...";
+  const setLabel = (txt) => {
+    if (label) label.textContent = txt;
+    else btn.textContent = txt;
+  };
 
-  // A rota /api/sync agora responde na hora (a sincronizacao de verdade roda
-  // em segundo plano no servidor — pode levar minutos numa conta grande).
-  // Aqui so disparamos, com um timeout de seguranca pra o botao nunca ficar
-  // preso mesmo que a resposta se perca, e vamos atualizando a lista algumas
-  // vezes nos minutos seguintes pra mostrar o que o servidor for achando.
+  btn.disabled = true;
+  setLabel("Iniciando...");
+
+  // /api/sync responde na hora (202): a sincronizacao de verdade roda em
+  // segundo plano no servidor e pode levar minutos numa conta grande.
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 20000);
   try {
     await fetch("/api/sync", { method: "POST", signal: ctrl.signal });
   } catch (err) {
-    // timeout/erro de rede: nao tem problema, a sincronizacao ja foi
-    // disparada no servidor (ou vai no proximo clique).
+    // timeout/erro de rede: a sincronizacao ja foi disparada no servidor.
   } finally {
     clearTimeout(t);
   }
 
-  // O botao SEMPRE volta ao normal aqui — nada abaixo pode deixa-lo preso.
-  btn.disabled = false;
-  if (label) label.textContent = "Atualizar";
-
   try {
     await Promise.all([loadList({ silent: true }), loadPendingCount()]);
-  } catch (e) {
-    /* nao trava o botao por causa de um refresh que falhou */
+  } catch (e) {}
+
+  // Acompanha o progresso pelo /api/sync/status enquanto o servidor trabalha —
+  // atualizando a lista (incremental, sem piscar) a cada checagem — e so
+  // libera o botao quando a sincronizacao termina de verdade.
+  const ETAPA_LABEL = { mensagens: "Mensagens", reclamacoes: "Reclamações", perguntas: "Perguntas" };
+  clearInterval(syncStatusTimer);
+  let tentativasSemStatus = 0;
+  syncStatusTimer = setInterval(async () => {
+    let st;
+    try {
+      st = await (await fetch("/api/sync/status")).json();
+    } catch {
+      if (++tentativasSemStatus > 4) finishSync();
+      return;
+    }
+    tentativasSemStatus = 0;
+    loadList({ silent: true });
+    loadPendingCount();
+    if (st.running) {
+      const etapa = ETAPA_LABEL[st.step] || "";
+      setLabel(`Sincronizando${etapa ? " " + etapa : ""}... ${st.elapsedSeconds || 0}s`);
+    } else {
+      finishSync();
+    }
+  }, 4000);
+
+  function finishSync() {
+    clearInterval(syncStatusTimer);
+    syncStatusTimer = null;
+    btn.disabled = false;
+    setLabel("Atualizado ✓");
+    loadList({ silent: true });
+    loadPendingCount();
+    setTimeout(() => setLabel("Atualizar"), 4000);
   }
 
-  // A reconciliacao roda em segundo plano; recarrega a lista (incremental,
-  // sem piscar) mais algumas vezes pra pegar os resultados conforme chegam.
-  [15000, 40000, 90000].forEach((ms) =>
-    setTimeout(() => {
-      loadList({ silent: true });
-      loadPendingCount();
-    }, ms)
-  );
+  // Rede de seguranca: no maximo 6 min de "sincronizando" na tela.
+  setTimeout(() => {
+    if (syncStatusTimer) {
+      clearInterval(syncStatusTimer);
+      syncStatusTimer = null;
+      btn.disabled = false;
+      setLabel("Atualizar");
+    }
+  }, 6 * 60 * 1000);
 });
 
 document.getElementById("logout-btn").addEventListener("click", async () => {
