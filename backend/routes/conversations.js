@@ -543,7 +543,10 @@ router.post("/sync", (req, res) => {
 
   (async () => {
     try {
-      await reconcileAllAccounts();
+      // quick: pula a reverificacao dos milhares de "entregues em observacao"
+      // e a varredura historica — essas rodam no ciclo automatico de fundo.
+      // Sem elas, o "Atualizar" termina em segundos, nao minutos.
+      await reconcileAllAccounts({ quick: true });
     } catch (err) {
       console.error("[sync] falha ao sincronizar mensagens:", err.message);
     }
