@@ -494,16 +494,41 @@ router.post("/conversations/:packId/mark-resolved", express.json(), async (req, 
   res.json({ ok: true });
 });
 
-// Botao "Atualizar agora" no painel: forca uma reconciliacao manual, sem
+// Botao "Atualizar agora" no painel: dispara uma reconciliacao manual, sem
 // esperar o webhook (util principalmente logo apos o servico "acordar" no
 // plano gratuito do Render).
-router.post("/sync", async (req, res) => {
-  try {
-    await reconcileAllAccounts();
-    // Reclamacoes sao sincronizadas junto do mesmo botao "Atualizar" — nao
-    // deixa de responder ok se so essa parte falhar (ex: conta sem
-    // permissao de reclamacoes ainda), pra nao travar a atualizacao das
-    // mensagens normais por causa disso.
+//
+// IMPORTANTE (bug real do usuario: "o botao Atualizar fica em 'Atualizando'
+// e nunca sai"): numa conta de altissimo volume (dezenas de milhares de
+// pedidos, milhares de "entregues em observacao"), reconcileAllAccounts()
+// leva MINUTOS — mais do que o navegador/Render aguentam numa requisicao so.
+// A resposta ficava pendurada pra sempre e o botao nunca voltava. Agora
+// esta rota RESPONDE NA HORA (202) e roda a reconciliacao EM SEGUNDO PLANO;
+// os resultados aparecem sozinhos na proxima atualizacao automatica da lista
+// (a cada 20s no front). Um flag simples evita empilhar varias
+// reconciliacoes se o botao for clicado varias vezes seguidas.
+let syncEmAndamento = false;
+let syncComecouEm = 0;
+
+router.post("/sync", (req, res) => {
+  // Se travou de vez (mais de 15 min), libera pra tentar de novo.
+  if (syncEmAndamento && Date.now() - syncComecouEm > 15 * 60 * 1000) {
+    syncEmAndamento = false;
+  }
+  if (syncEmAndamento) {
+    return res.status(202).json({ ok: true, jaRodando: true });
+  }
+
+  syncEmAndamento = true;
+  syncComecouEm = Date.now();
+  res.status(202).json({ ok: true, iniciado: true });
+
+  (async () => {
+    try {
+      await reconcileAllAccounts();
+    } catch (err) {
+      console.error("[sync] falha ao sincronizar mensagens:", err.message);
+    }
     try {
       await reconcileAllClaims();
     } catch (err) {
@@ -514,11 +539,12 @@ router.post("/sync", async (req, res) => {
     } catch (err) {
       console.error("[sync] falha ao sincronizar perguntas:", err.message);
     }
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("[sync]", err.message);
-    res.status(500).json({ error: "Falha ao sincronizar", detail: err.message });
-  }
+  })()
+    .catch((err) => console.error("[sync] erro inesperado:", err))
+    .finally(() => {
+      syncEmAndamento = false;
+      console.log(`[sync] reconciliacao manual concluida em ${Math.round((Date.now() - syncComecouEm) / 1000)}s.`);
+    });
 });
 
 // Rota TEMPORARIA de diagnostico: busca pedidos recentes de cada conta (via
