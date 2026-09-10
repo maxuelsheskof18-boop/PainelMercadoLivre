@@ -150,9 +150,9 @@ async function fetchAllNoShippingOrders(accessToken, sellerId) {
 // "nao lidas" (GET /messages/unread) so pega mensagem que NINGUEM abriu
 // ainda; uma mensagem que alguem da equipe leu pelo app do Mercado Livre mas
 // nao respondeu some de "nao lidas" e SO reaparece aqui, por esta janela.
-const RECENTLY_UPDATED_WINDOW_DAYS = 10;
+const RECENTLY_UPDATED_WINDOW_DAYS = 7;
 const RECENTLY_UPDATED_PAGE_SIZE = 50;
-const RECENTLY_UPDATED_MAX_PAGES = 6;
+const RECENTLY_UPDATED_MAX_PAGES = 4;
 
 // Formata uma data no formato que a API do Mercado Livre espera
 // (ISO 8601 com o offset de Brasilia, -03:00 — o Brasil nao tem mais
@@ -215,7 +215,7 @@ async function fetchAllRecentlyUpdatedOrders(accessToken, sellerId) {
 // MUITO mais pedidos entregues no total do que "com atividade nas ultimas
 // 72h", entao aqui vale a pena olhar uma janela maior de paginas.
 const DELIVERED_PAGE_SIZE = 50;
-const DELIVERED_MAX_PAGES = 6;
+const DELIVERED_MAX_PAGES = 4;
 
 async function fetchAllDeliveredOrders(accessToken, sellerId) {
   const all = [];
@@ -623,7 +623,12 @@ async function syncPack(sellerId, packId, orderId) {
 // as mensagens de cada um. Serve de rede de seguranca caso algum webhook se
 // perca (ou, com o Render gratuito, enquanto o servico esteve "dormindo" e
 // nao recebeu nenhum webhook).
-async function reconcileAccount(sellerId) {
+// { quick: true } (usado pelo botao "Atualizar" do painel) pula as duas
+// etapas mais lentas — a reverificacao dos milhares de "entregues em
+// observacao" e a varredura historica mes-a-mes. Essas duas so precisam
+// rodar no ciclo automatico de fundo (a cada 10 min), nao a cada clique:
+// sem elas, o "Atualizar" termina em segundos em vez de minutos.
+async function reconcileAccount(sellerId, { quick = false } = {}) {
   // IMPORTANTE (bug real, achado numa conta de altissimo volume): o token
   // de acesso dura poucas horas, e getValidAccessToken() so verifica/renova
   // ele no MOMENTO em que e chamado. Esta funcao pegava o token UMA UNICA
@@ -874,10 +879,20 @@ async function reconcileAccount(sellerId) {
   // garante que, uma vez descoberto UMA VEZ (mesmo que so enquanto ainda
   // estava dentro da janela da busca dedicada tags=delivered), um pedido
   // nunca mais "se perde" so por ter envelhecido numa conta de alto volume.
-  const { rows: watchRows } = await db.query(
-    `SELECT pack_id, order_id FROM conversations WHERE seller_id = $1 AND status = 'delivered_watch'`,
-    [sellerId]
-  );
+  // No modo "quick" (botao Atualizar) essa etapa e pulada — ver comentario
+  // no topo da funcao. No modo completo, um TETO por ciclo (amostra
+  // aleatoria) evita que a lista, que so cresce, faca cada ciclo demorar
+  // minutos: em varios ciclos todos acabam sendo checados, e o webhook
+  // cobre o tempo real de qualquer forma.
+  const WATCH_RECHECK_LIMIT = 600;
+  const { rows: watchRows } = quick
+    ? { rows: [] }
+    : await db.query(
+        `SELECT pack_id, order_id FROM conversations
+          WHERE seller_id = $1 AND status = 'delivered_watch'
+          ORDER BY random() LIMIT ${WATCH_RECHECK_LIMIT}`,
+        [sellerId]
+      );
   let promovidos = 0;
   for (const watch of watchRows) {
     // IMPORTANTE: esta lista (watchRows) so cresce com o tempo — um pedido
@@ -929,7 +944,9 @@ async function reconcileAccount(sellerId) {
   // Varredura automatica do historico, mes a mes, um pedacinho por vez (ver
   // runBackfillStep) — e o que garante, com o tempo e sem nenhuma acao
   // manual, que TODO pedido entregue ou de combinar entrega da conta (nao
-  // so os recentes) acaba sendo checado pelo menos uma vez.
+  // so os recentes) acaba sendo checado pelo menos uma vez. Pulada no modo
+  // "quick" (botao Atualizar).
+  if (quick) return;
   try {
     // Mesma reconfirmacao de token antes desta ultima etapa (a mais tardia
     // do ciclo inteiro) — ver comentario no topo desta funcao.
@@ -1188,15 +1205,15 @@ async function runBackfillStep(sellerId, accessToken) {
   return { processados, comMensagens, mes: `${year}-${pad2(monthIndex + 1)}`, fase: phaseUsed };
 }
 
-async function reconcileAllAccounts() {
+async function reconcileAllAccounts({ quick = false } = {}) {
   const { rows: accounts } = await db.query("SELECT id FROM accounts");
   console.log(
-    `[reconcile] contas conectadas no banco:`,
+    `[reconcile]${quick ? " (quick)" : ""} contas conectadas no banco:`,
     accounts.map((a) => a.id)
   );
   for (const acc of accounts) {
     try {
-      await reconcileAccount(acc.id);
+      await reconcileAccount(acc.id, { quick });
     } catch (err) {
       console.error(`[reconcile] falha na conta ${acc.id}:`, err.message);
     }
