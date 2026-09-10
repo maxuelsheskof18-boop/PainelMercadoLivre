@@ -631,6 +631,48 @@ async function reconcileAccount(sellerId) {
   // grande maioria das vezes) isso nao custa nada a mais.
   let accessToken = await getValidAccessToken(sellerId);
 
+  // Guarda todo pack_id ja verificado neste ciclo — usado pra nao checar o
+  // mesmo pack duas vezes (uma pela busca de "nao lidas" abaixo, outra pelo
+  // loop de pedidos recentes).
+  const packIdsVerificados = new Set();
+
+  // PRIMEIRO PASSO (era o ultimo): packs com mensagem NAO LIDA, direto do
+  // mesmo dado que alimenta o filtro "Com mensagens não lidas" no painel de
+  // Vendas do Mercado Livre (GET /messages/unread?role=seller&tag=post_sale
+  // — ver fetchUnreadMessagePacks em ml/api.js). Esta e a busca mais
+  // importante e mais barata (1 chamada + N packs, N pequeno), e cobre
+  // JUSTAMENTE o caso que faltava: mensagem (nota fiscal, "nao recebi",
+  // atraso) num pedido NORMAL Flex/ML que ja saiu da janela dos pedidos
+  // recentes. Antes ela rodava so DEPOIS de todo o loop pesado de pedidos +
+  // reverificacao dos "em observacao" (que numa conta de 59 mil pedidos
+  // leva minutos) — e numa reconciliacao que estourasse o tempo, essa etapa
+  // simplesmente nao chegava a rodar. Agora roda primeiro, sempre.
+  let naoLidasNovas = 0;
+  try {
+    const unreadPacks = await fetchUnreadMessagePacks(accessToken, sellerId);
+    console.log(`[reconcile] conta ${sellerId}: ${unreadPacks.length} pack(s) com mensagem nao lida (GET /messages/unread).`);
+    for (const { packId } of unreadPacks) {
+      if (!packId || packIdsVerificados.has(String(packId))) continue;
+      packIdsVerificados.add(String(packId));
+      try {
+        await syncPack(sellerId, packId);
+        naoLidasNovas++;
+      } catch (err) {
+        console.warn(
+          `[reconcile] falha ao sincronizar pack com mensagem nao lida ${packId} da conta ${sellerId}:`,
+          err.status,
+          err.body || err.message
+        );
+      }
+    }
+  } catch (err) {
+    console.warn(
+      `[reconcile] falha ao buscar mensagens nao lidas (/messages/unread) da conta ${sellerId}:`,
+      err.status,
+      err.body || err.message
+    );
+  }
+
   const orders = await fetchRecentOrders(accessToken, sellerId, {
     limit: RECENT_ORDERS_LIMIT,
     dateCreatedFrom: sinceYearParam(),
@@ -701,11 +743,6 @@ async function reconcileAccount(sellerId) {
   let cancelados = 0;
   let resolvidosSemContato = 0;
   let emObservacao = 0;
-  // Guarda todo pack_id ja verificado neste ciclo (pela lista de pedidos
-  // acima) — usado logo depois pra saber quais packs da busca dedicada de
-  // "mensagens nao lidas" ja foram cobertos, e quais sao casos que so essa
-  // busca encontrou.
-  const packIdsVerificados = new Set();
   for (const order of list) {
     // Pedidos que nao fazem parte de um envio combinado nao tem pack_id
     // (vem null) — nesse caso o proprio order_id funciona no lugar.
@@ -811,42 +848,6 @@ async function reconcileAccount(sellerId) {
         err.body || err.message
       );
     }
-  }
-
-  // Busca dedicada final: packs com mensagem NAO LIDA, direto do mesmo dado
-  // que alimenta o filtro "Com mensagens não lidas" no painel de Vendas do
-  // Mercado Livre (ver fetchUnreadMessagePacks em ml/api.js). Diferente das
-  // buscas acima (todas baseadas numa JANELA de pedidos por data), essa vem
-  // direto de "tem mensagem esperando resposta" — pega justamente o caso de
-  // um pedido que, por qualquer motivo, ficou fora de todas as janelas mas
-  // ainda assim tem mensagem pendente. So processa de novo os que ainda NAO
-  // foram verificados neste ciclo (os outros ja passaram pelo loop acima).
-  let naoLidasNovas = 0;
-  try {
-    // Reconfirma o token de novo antes dessa etapa (ver comentario no topo
-    // desta funcao) — ela roda so DEPOIS do loop longo acima, entao e um dos
-    // pontos onde o token pode ja ter vencido nesse meio tempo.
-    accessToken = await getValidAccessToken(sellerId);
-    const unreadPacks = await fetchUnreadMessagePacks(accessToken, sellerId);
-    for (const { packId } of unreadPacks) {
-      if (!packId || packIdsVerificados.has(String(packId))) continue;
-      try {
-        await syncPack(sellerId, packId);
-        naoLidasNovas++;
-      } catch (err) {
-        console.warn(
-          `[reconcile] falha ao sincronizar pack com mensagem não lida ${packId} (achado so pela busca dedicada) da conta ${sellerId}:`,
-          err.status,
-          err.body || err.message
-        );
-      }
-    }
-  } catch (err) {
-    console.warn(
-      `[reconcile] falha ao buscar mensagens não lidas (messages/pending_read) da conta ${sellerId}:`,
-      err.status,
-      err.body || err.message
-    );
   }
 
   // Reverifica os pedidos "em observacao" (ja entregues, sem mensagem da
