@@ -242,37 +242,6 @@ async function fetchAllDeliveredOrders(accessToken, sellerId) {
   return all;
 }
 
-// Pedidos com mensagem AINDA NAO RESPONDIDA pelo vendedor — filtro
-// "tags=messages_unanswered" da API de Orders. E o pega-tudo: cobre tanto o
-// que ninguem abriu quanto o que alguem leu mas nao respondeu. Paginado com
-// folga (ate 500) porque numa conta movimentada pode ter dezenas.
-const UNANSWERED_PAGE_SIZE = 50;
-const UNANSWERED_MAX_PAGES = 10;
-
-async function fetchAllUnansweredMessageOrders(accessToken, sellerId) {
-  const all = [];
-  let offset = 0;
-  let total = 0;
-  for (let page = 0; page < UNANSWERED_MAX_PAGES; page++) {
-    const data = await fetchRecentOrders(accessToken, sellerId, {
-      limit: UNANSWERED_PAGE_SIZE,
-      offset,
-      tags: "messages_unanswered",
-    });
-    const results = Array.isArray(data?.results) ? data.results : [];
-    all.push(...results);
-    offset += results.length;
-    total = data?.paging?.total ?? offset;
-    if (results.length === 0 || offset >= total) break;
-  }
-  if (total > all.length) {
-    console.warn(
-      `[reconcile] busca de pedidos com mensagem sem resposta da conta ${sellerId}: so cobri ${all.length} de ${total} (limite de paginas).`
-    );
-  }
-  return all;
-}
-
 function messageDate(msg) {
   return (
     msg?.message_date?.received ||
@@ -722,42 +691,6 @@ async function reconcileAccount(sellerId) {
     );
   }
 
-  // SEGUNDO PASSO: pedidos com mensagem AINDA NAO RESPONDIDA (o filtro
-  // "tags=messages_unanswered" da API de Orders — confirmado que o Mercado
-  // Livre reconhece esse filtro na rota /api/debug/probe-unread-variants).
-  // Diferente de /messages/unread (que so traz o que NINGUEM abriu), este
-  // traz TUDO que ainda espera resposta do vendedor — inclusive as que
-  // alguem da equipe ja abriu pelo app do Mercado Livre mas nao respondeu
-  // (as "Lidas > Sem responder"). Este e o pega-tudo de verdade.
-  let semRespostaNovas = 0;
-  try {
-    const unansweredOrders = await fetchAllUnansweredMessageOrders(accessToken, sellerId);
-    console.log(
-      `[reconcile] conta ${sellerId}: ${unansweredOrders.length} pedido(s) com mensagem sem resposta (tags=messages_unanswered).`
-    );
-    for (const order of unansweredOrders) {
-      const packId = order?.pack_id || order?.id;
-      if (!packId || packIdsVerificados.has(String(packId))) continue;
-      packIdsVerificados.add(String(packId));
-      try {
-        await syncPack(sellerId, packId, order?.id);
-        semRespostaNovas++;
-      } catch (err) {
-        console.warn(
-          `[reconcile] falha ao sincronizar pedido sem resposta ${order?.id} (pack ${packId}) da conta ${sellerId}:`,
-          err.status,
-          err.body || err.message
-        );
-      }
-    }
-  } catch (err) {
-    console.warn(
-      `[reconcile] falha ao buscar pedidos com mensagem sem resposta (tags=messages_unanswered) da conta ${sellerId}:`,
-      err.status,
-      err.body || err.message
-    );
-  }
-
   const orders = await fetchRecentOrders(accessToken, sellerId, {
     limit: RECENT_ORDERS_LIMIT,
     dateCreatedFrom: sinceYearParam(),
@@ -990,7 +923,7 @@ async function reconcileAccount(sellerId) {
   }
 
   console.log(
-    `[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens, ${semContato} combinar-entrega sem contato ainda, ${cancelados} cancelado(s) ignorado(s), ${resolvidosSemContato} ja entregue(s)/concluido(s) sem contato ignorado(s), ${emObservacao} entregue(s) em observacao (sem mensagem ainda), ${watchRows.length} em observacao reverificado(s) (${promovidos} ganharam mensagem agora), ${naoLidasNovas} pack(s) resgatado(s) pela busca de nao lidas, ${semRespostaNovas} pela busca de "sem resposta".`
+    `[reconcile] conta ${sellerId}: ${comMensagens} pedido(s) com mensagens, ${semContato} combinar-entrega sem contato ainda, ${cancelados} cancelado(s) ignorado(s), ${resolvidosSemContato} ja entregue(s)/concluido(s) sem contato ignorado(s), ${emObservacao} entregue(s) em observacao (sem mensagem ainda), ${watchRows.length} em observacao reverificado(s) (${promovidos} ganharam mensagem agora), ${naoLidasNovas} pack(s) resgatado(s) pela busca de nao lidas.`
   );
 
   // Varredura automatica do historico, mes a mes, um pedacinho por vez (ver
