@@ -689,6 +689,17 @@ router.get("/debug/probe-unread-variants", async (req, res) => {
       nome: "marketplace/messages/unread (a antiga, so pra comparar)",
       path: `/marketplace/messages/unread?role=seller&tag=post_sale&user_id=${sellerId}`,
     },
+    // Variantes "unread" — as mais promissoras segundo a doc de mensagens
+    // pos-venda; testadas aqui direto pra parar de adivinhar.
+    { nome: "messages/unread?role=seller&tag=post_sale", path: `/messages/unread?role=seller&tag=post_sale` },
+    { nome: "messages/unread?role=seller", path: `/messages/unread?role=seller` },
+    { nome: "messages/unread?tag=post_sale", path: `/messages/unread?tag=post_sale` },
+    { nome: "messages/unread (sem parametro)", path: `/messages/unread` },
+    { nome: "messages/seller/{id}/unread?tag=post_sale", path: `/messages/seller/${sellerId}/unread?tag=post_sale` },
+    { nome: "conversations/messages/unread?role=seller&tag=post_sale", path: `/conversations/messages/unread?role=seller&tag=post_sale` },
+    // "orders/search" com o filtro de mensagem nao lida — outra forma de
+    // listar so os pedidos que tem mensagem esperando resposta.
+    { nome: "orders/search?seller={id}&tags=not_paid,messages_unread (so pra ver a forma)", path: `/orders/search?seller=${sellerId}&sort=date_desc&limit=20` },
   ];
 
   const resultados = [];
