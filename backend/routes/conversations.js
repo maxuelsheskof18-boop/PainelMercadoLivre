@@ -786,7 +786,12 @@ router.get("/debug/probe-unread", async (req, res) => {
 // e a certa, em vez de confiar em mais uma "leitura" da documentacao. Uso:
 // abrir no navegador (ja logado) /api/debug/probe-unread-variants
 router.get("/debug/probe-unread-variants", async (req, res) => {
-  const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts LIMIT 1");
+  // ?sellerId=... pra testar uma conta especifica (ex: a que tem mensagem);
+  // sem parametro pega a primeira conta cadastrada.
+  const wanted = req.query.sellerId ? String(req.query.sellerId) : null;
+  const { rows: accounts } = wanted
+    ? await db.query("SELECT id, nickname FROM accounts WHERE id = $1", [wanted])
+    : await db.query("SELECT id, nickname FROM accounts LIMIT 1");
   const acc = accounts[0];
   if (!acc) return res.json({ erro: "Nenhuma conta cadastrada." });
 
