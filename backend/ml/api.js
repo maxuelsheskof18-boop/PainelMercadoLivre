@@ -97,10 +97,20 @@ async function mlFetch(path, accessToken, options = {}) {
 // dominio/doc das outras chamadas de mensagens deste arquivo, SEM o prefixo
 // "/marketplace" e sem precisar de seller_id/user_id na URL, ja que a
 // identidade vem do proprio token):
-// GET /messages/pending_read?role=seller
-// Resposta: { user_id: N, results: [ { resource: "/packs/{pack_id}/sellers/{seller_id}", count: N }, ... ] }
+// CONFIRMADO EMPIRICAMENTE (rota /api/debug/probe-unread-variants, rodada
+// contra a conta real): o endpoint certo pra conta comum e
+//   GET /messages/unread?role=seller&tag=post_sale
+// -> 200 { user_id, total, results: [ { resource: "/packs/{pack_id}/sellers/{seller_id}", count } ] }
+// As outras variantes testadas: "/messages/pending_read" (o que este codigo
+// usava) e "/messages/unread" sem "&tag=post_sale" devolvem 404; a antiga
+// "/marketplace/messages/unread" devolve 403 "Invalid caller.id". O "&tag=
+// post_sale" e obrigatorio; "role=seller" evita trazer packs de outros
+// sellers (visto no teste: sem "role=seller" veio um pack de um seller_id
+// diferente). Essa e a busca que resgata mensagem em pedido NORMAL (Flex/
+// ML, nao "combinar entrega") que ja saiu da janela dos pedidos recentes —
+// ex: pedido de nota fiscal numa venda entregue.
 async function fetchUnreadMessagePacks(accessToken, sellerId) {
-  const data = await mlFetch(`/messages/pending_read?role=seller`, accessToken);
+  const data = await mlFetch(`/messages/unread?role=seller&tag=post_sale`, accessToken);
   const results = Array.isArray(data?.results) ? data.results : [];
   // "resource" vem como "/packs/{pack_id}" ou "/packs/{pack_id}/sellers/{seller_id}"
   // dependendo da origem — extrai so o id do pack, ignorando o resto.
@@ -118,6 +128,17 @@ async function fetchPackMessages(accessToken, packId, sellerId) {
     `/messages/packs/${packId}/sellers/${sellerId}?tag=post_sale`,
     accessToken
   );
+}
+
+// Dados de um "pack" (agrupamento de 1+ pedidos do mesmo carrinho). Um
+// pedido NORMAL (Flex/ML) tem pack_id DIFERENTE do order_id — entao pra
+// esses casos (ex: mensagem de nota fiscal achada so pela busca de "nao
+// lidas") nao da pra usar o pack_id como order_id. Este endpoint devolve os
+// order_id(s) de verdade que estao dentro do pack, pra a gente buscar os
+// detalhes do pedido (produto, se ja foi entregue, tipo de envio). Se o
+// pack nao existir / a chamada falhar, quem chama segue sem os detalhes.
+async function fetchPackInfo(accessToken, packId) {
+  return mlFetch(`/packs/${packId}`, accessToken);
 }
 
 // Busca pedidos recentes do vendedor (API de Orders, bem mais estavel/
@@ -402,6 +423,7 @@ async function fetchMe(accessToken) {
 module.exports = {
   fetchUnreadMessagePacks,
   fetchPackMessages,
+  fetchPackInfo,
   fetchRecentOrders,
   fetchOrderById,
   fetchShipment,
