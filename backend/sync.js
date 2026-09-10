@@ -2,7 +2,7 @@
 // as tabelas locais (conversations + messages), decidindo se ela fica
 // "pending" (aguardando resposta do vendedor) ou "answered".
 const db = require("./db");
-const { fetchPackMessages, fetchRecentOrders, fetchOrderById, fetchShipment, fetchUnreadMessagePacks } = require("./ml/api");
+const { fetchPackMessages, fetchPackInfo, fetchRecentOrders, fetchOrderById, fetchShipment, fetchUnreadMessagePacks } = require("./ml/api");
 const { getValidAccessToken, withTokenRetry } = require("./ml/tokens");
 
 // Rotulo legivel pra cada "logistic_type" que o Mercado Livre usa nos envios
@@ -539,27 +539,66 @@ async function syncPack(sellerId, packId, orderId) {
   const accessToken = await getValidAccessToken(sellerId);
   const packData = await fetchPackMessages(accessToken, packId, sellerId);
 
-  // O webhook normalmente so manda o pack_id, sem order_id. Quando o
-  // pedido nao faz parte de um envio combinado (o caso mais comum, e
-  // exatamente o dos pedidos de "combinar entrega"), pack_id == order_id —
-  // entao usamos o pack_id como palpite de order_id pra buscar os detalhes
-  // (produto, comprador, tipo de entrega). Se falhar, so seguimos sem
-  // esses detalhes extras; a mensagem em si e salva do mesmo jeito.
-  const effectiveOrderId = orderId || packId;
-  let orderInfo = null;
-  try {
-    const order = await fetchOrderById(accessToken, effectiveOrderId);
-    orderInfo = extractOrderInfo(order);
-    orderInfo.shippingType = await fetchShippingType(accessToken, order);
-  } catch (err) {
-    console.warn(
-      `[syncPack] nao consegui buscar detalhes do pedido ${effectiveOrderId}:`,
-      err.status,
-      err.body || err.message
-    );
+  // Descobrir o order_id de verdade:
+  //  - se veio explicito (raro), usa ele;
+  //  - senao tenta o pack_id como palpite — funciona pra "combinar entrega"
+  //    e pra pedidos de 1 item sem carrinho (pack_id == order_id);
+  //  - se esse palpite falhar (pedido NORMAL Flex/ML: pack_id != order_id,
+  //    caso das mensagens de nota fiscal achadas so pela busca de "nao
+  //    lidas"), pergunta ao endpoint /packs/{id} qual e o order_id real.
+  let resolvedOrderId = orderId || null;
+  let order = null;
+
+  const tryFetchOrder = async (id) => {
+    try {
+      return await fetchOrderById(accessToken, id);
+    } catch {
+      return null;
+    }
+  };
+
+  if (resolvedOrderId) {
+    order = await tryFetchOrder(resolvedOrderId);
+  }
+  if (!order) {
+    order = await tryFetchOrder(packId);
+    if (order) resolvedOrderId = String(order.id || packId);
+  }
+  if (!order) {
+    try {
+      const packInfo = await fetchPackInfo(accessToken, packId);
+      const realOrderId =
+        packInfo?.orders?.[0]?.id ??
+        packInfo?.orders?.[0]?.order_id ??
+        (Array.isArray(packInfo?.order_ids) ? packInfo.order_ids[0] : null);
+      if (realOrderId) {
+        order = await tryFetchOrder(realOrderId);
+        if (order) resolvedOrderId = String(realOrderId);
+      }
+    } catch (err) {
+      console.warn(
+        `[syncPack] /packs/${packId} nao ajudou a achar o order_id:`,
+        err.status,
+        err.body || err.message
+      );
+    }
   }
 
-  await upsertConversationFromPack(sellerId, packId, packData, effectiveOrderId, orderInfo);
+  let orderInfo = null;
+  if (order) {
+    orderInfo = extractOrderInfo(order);
+    try {
+      orderInfo.shippingType = await fetchShippingType(accessToken, order);
+    } catch {
+      // segue sem o tipo de envio
+    }
+  } else {
+    console.warn(`[syncPack] pack ${packId}: nao consegui identificar o pedido — mensagem salva sem detalhes.`);
+  }
+
+  // Se nao resolvemos um pedido de verdade, grava order_id NULL (nao o
+  // pack_id) pra nao criar link/consulta pra um pedido que nao existe.
+  await upsertConversationFromPack(sellerId, packId, packData, resolvedOrderId, orderInfo);
 }
 
 // Varredura de reconciliacao: olha os pedidos recentes do vendedor e checa
