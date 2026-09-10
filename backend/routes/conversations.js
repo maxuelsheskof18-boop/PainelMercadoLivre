@@ -10,6 +10,7 @@ const {
   fetchMe,
   fetchRecentOrders,
   fetchPackMessages,
+  markPackRead,
   fetchPackInfo,
   fetchOrderById,
   fetchShipment,
@@ -269,6 +270,18 @@ router.get("/conversations/:packId/messages", async (req, res) => {
   }
 
   res.json({ conversation, messages });
+
+  // Agora que o vendedor abriu a conversa DE FATO (markRead=1 — o front so
+  // manda isso ao ABRIR, nao nas atualizacoes automaticas a cada 10s), marca
+  // as mensagens como lidas no Mercado Livre (a varredura automatica NAO faz
+  // isso — ver mark_as_read=false em fetchPackMessages). Fire-and-forget.
+  if (req.query.markRead === "1" && conversation && conversation.seller_id) {
+    getValidAccessToken(conversation.seller_id)
+      .then((token) => markPackRead(token, packId, conversation.seller_id))
+      .catch((err) =>
+        console.warn(`[conversations] nao consegui marcar pack ${packId} como lido:`, err.status || err.message)
+      );
+  }
 });
 
 // Baixa o arquivo de um anexo que o COMPRADOR mandou numa mensagem pos-venda
