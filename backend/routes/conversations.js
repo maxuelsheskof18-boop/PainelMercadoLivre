@@ -10,6 +10,7 @@ const {
   fetchMe,
   fetchRecentOrders,
   fetchPackMessages,
+  fetchPackInfo,
   fetchOrderById,
   fetchShipment,
   fetchUnreadMessagePacks,
@@ -19,6 +20,7 @@ const {
   extractOrderInfo,
   upsertConversationFromPack,
   fetchShippingType,
+  syncPack,
 } = require("../sync");
 const { reconcileAllClaims } = require("../claimsSync");
 const { reconcileAllQuestions } = require("../questionsSync");
@@ -603,6 +605,92 @@ router.get("/debug/probe-messages", async (req, res) => {
       }
     } catch (err) {
       entry.error = err.message;
+    }
+    report.push(entry);
+  }
+
+  res.json(report);
+});
+
+// Rota TEMPORARIA de diagnostico: roda a CADEIA INTEIRA de "mensagens nao
+// lidas" pra cada conta e mostra onde ela quebra —
+//   1) GET /messages/unread?role=seller&tag=post_sale  (lista os packs)
+//   2) pra cada pack: GET /messages/packs/{id}/sellers/{id}?tag=post_sale
+//      (quantas mensagens vieram? qual a ultima?)
+//   3) tenta descobrir o order_id (fetchOrderById(packId) -> /packs/{id})
+//   4) roda syncPack de verdade no primeiro e confere se apareceu uma
+//      linha em "conversations".
+// Uso: abrir /api/debug/probe-unread-full no navegador (ja logado).
+router.get("/debug/probe-unread-full", async (req, res) => {
+  const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts");
+  const report = [];
+
+  for (const acc of accounts) {
+    const sellerId = acc.id;
+    const entry = { sellerId, nickname: acc.nickname };
+    try {
+      const accessToken = await getValidAccessToken(sellerId);
+
+      let unreadPacks;
+      try {
+        unreadPacks = await fetchUnreadMessagePacks(accessToken, sellerId);
+      } catch (err) {
+        entry.passo1_listaNaoLidas = { erro: { status: err.status, body: err.body || err.message } };
+        report.push(entry);
+        continue;
+      }
+      entry.passo1_listaNaoLidas = { total: unreadPacks.length, amostra: unreadPacks.slice(0, 8) };
+
+      entry.passo2_mensagensPorPack = [];
+      for (const { packId } of unreadPacks.slice(0, 6)) {
+        const p = { packId };
+        try {
+          const packData = await fetchPackMessages(accessToken, packId, sellerId);
+          const msgs = Array.isArray(packData?.messages) ? packData.messages : [];
+          p.ok = true;
+          p.qtdMensagens = msgs.length;
+          p.ultimaMensagem = msgs.length
+            ? { text: (msgs[msgs.length - 1]?.text || "").slice(0, 120), from: msgs[msgs.length - 1]?.from?.user_id }
+            : null;
+          p.chavesDoTopo = Object.keys(packData || {});
+        } catch (err) {
+          p.ok = false;
+          p.erro = { status: err.status, body: err.body || err.message };
+        }
+
+        // Como o painel tenta achar o order_id:
+        try {
+          const o = await fetchOrderById(accessToken, packId);
+          p.orderIdViaPackId = { achou: true, id: o?.id, status: o?.status, tags: o?.tags };
+        } catch (err) {
+          p.orderIdViaPackId = { achou: false, status: err.status };
+          try {
+            const info = await fetchPackInfo(accessToken, packId);
+            p.packInfo = { chaves: Object.keys(info || {}), orders: info?.orders, order_ids: info?.order_ids };
+          } catch (err2) {
+            p.packInfo = { erro: { status: err2.status, body: err2.body || err2.message } };
+          }
+        }
+
+        entry.passo2_mensagensPorPack.push(p);
+      }
+
+      // Passo 4: roda syncPack de verdade no primeiro pack e confere o banco.
+      const primeiro = unreadPacks[0]?.packId;
+      if (primeiro) {
+        try {
+          await syncPack(sellerId, primeiro);
+          const { rows } = await db.query(
+            "SELECT pack_id, order_id, status, is_delivered, last_message_text FROM conversations WHERE pack_id = $1",
+            [String(primeiro)]
+          );
+          entry.passo4_syncPackReal = { packId: primeiro, gravouNoBanco: rows.length > 0, linha: rows[0] || null };
+        } catch (err) {
+          entry.passo4_syncPackReal = { packId: primeiro, erro: { status: err.status, body: err.body || err.message } };
+        }
+      }
+    } catch (err) {
+      entry.erro = err.message;
     }
     report.push(entry);
   }
