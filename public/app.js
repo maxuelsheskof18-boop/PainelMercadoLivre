@@ -82,6 +82,7 @@ const freightToggleArrow = document.getElementById("freight-toggle-arrow");
 const freightForm = document.getElementById("freight-form");
 const freightCep = document.getElementById("freight-cep");
 const freightWeight = document.getElementById("freight-weight");
+const freightVolumes = document.getElementById("freight-volumes");
 const freightHeight = document.getElementById("freight-height");
 const freightWidth = document.getElementById("freight-width");
 const freightLength = document.getElementById("freight-length");
@@ -1031,6 +1032,7 @@ function renderQuestionThreadInfo(question) {
   freightToggleArrow.textContent = "▾";
   freightResults.innerHTML = "";
   freightCep.value = "";
+  freightVolumes.value = "1";
   // So aqui (Perguntas) o modelo da resposta e editavel — ver
   // freightTemplateEditBtn/buildFreightMessage (pedido do usuario).
   freightTemplateEditBtn.classList.toggle("hidden", !state.melhorEnvio.connected);
@@ -1519,6 +1521,7 @@ function renderThreadInfo(conv) {
   // pos-venda padrao, sem opcao de editar.
   freightTemplateEditBtn.classList.add("hidden");
   freightCep.value = "";
+  freightVolumes.value = "1";
   const orderTotalValue = Number(conv.order_total);
   freightInsurance.value = Number.isFinite(orderTotalValue) && orderTotalValue > 0 ? orderTotalValue.toFixed(2) : "20";
 }
@@ -1641,6 +1644,14 @@ freightCalcBtn.addEventListener("click", async () => {
     return;
   }
 
+  // "Volumes" (pedido do usuario): pacote pesado que a transportadora nao
+  // aceita inteiro (ex: 20kg) e dividido fisicamente em varios volumes
+  // menores antes de despachar. O campo "Peso" acima ja e o peso de CADA
+  // volume (ver o title do campo no HTML) — cotamos 1 volume no Melhor
+  // Envio e multiplicamos o preco pela quantidade de volumes, que e como a
+  // transportadora de fato cobra (um frete por volume despachado).
+  const volumes = Math.max(1, parseInt(freightVolumes.value, 10) || 1);
+
   freightCalcBtn.disabled = true;
   freightResults.innerHTML = '<p class="freight-msg muted">Calculando...</p>';
   try {
@@ -1666,17 +1677,28 @@ freightCalcBtn.addEventListener("click", async () => {
       freightResults.innerHTML = '<p class="freight-msg muted">Nenhuma opcao de frete encontrada pra esse CEP/pacote.</p>';
       return;
     }
-    freightResults.innerHTML = data.options
-      .map(
-        (o) => `
-      <div class="freight-option" data-price="${o.price}" data-delivery="${o.deliveryTime ?? ""}" title="Clique para preencher a mensagem com esse valor">
-        <span class="freight-option-name">${o.company ? o.company + " — " : ""}${o.name}</span>
+    const volumesNote =
+      volumes > 1
+        ? `<p class="freight-msg muted small">Preço de 1 volume × ${volumes} volumes.</p>`
+        : "";
+    freightResults.innerHTML =
+      volumesNote +
+      data.options
+        .map((o) => {
+          const totalPrice = o.price * volumes;
+          return `
+      <div class="freight-option" data-price="${totalPrice}" data-delivery="${o.deliveryTime ?? ""}" title="Clique para preencher a mensagem com esse valor">
+        <span class="freight-option-name">${o.company ? o.company + " — " : ""}${o.name}${
+            volumes > 1 ? ` (${volumes} volumes)` : ""
+          }</span>
         <span class="freight-option-time muted">${o.deliveryTime ? o.deliveryTime + " dia(s) util" : ""}</span>
-        <span class="freight-option-price">R$ ${o.price.toFixed(2).replace(".", ",")}</span>
+        <span class="freight-option-price">R$ ${totalPrice.toFixed(2).replace(".", ",")}${
+            volumes > 1 ? ` <span class="muted small">(R$ ${o.price.toFixed(2).replace(".", ",")}/vol.)</span>` : ""
+          }</span>
         <span class="freight-option-hint">usar ➜</span>
-      </div>`
-      )
-      .join("");
+      </div>`;
+        })
+        .join("");
   } catch (e) {
     freightResults.innerHTML = '<p class="freight-msg freight-error">Falha ao calcular o frete.</p>';
   } finally {
