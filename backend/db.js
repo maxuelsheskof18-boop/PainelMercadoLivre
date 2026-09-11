@@ -269,6 +269,12 @@ async function init() {
     -- pra sempre. Mesmo padrao ja usado em claims/conversations acima.
     ALTER TABLE questions ADD COLUMN IF NOT EXISTS resolved_by_operator_at TIMESTAMPTZ;
     ALTER TABLE questions ADD COLUMN IF NOT EXISTS resolved_by_operator TEXT;
+    -- Status de pagamento do PEDIDO (nao do frete — ver comentario em
+    -- extractOrderInfo, sync.js) — pedido do usuario: "confirmacao se o
+    -- cliente pagou". Valores documentados pelo Mercado Livre: confirmed,
+    -- payment_required, payment_in_process, partially_paid, paid,
+    -- cancelled, invalid.
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS order_payment_status TEXT;
   `);
 
   // Limpeza pontual: ate a correcao em upsertConversationFromPack (sync.js),

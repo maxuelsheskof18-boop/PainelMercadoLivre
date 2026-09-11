@@ -294,7 +294,17 @@ function extractOrderInfo(order) {
   }, 0);
   const orderQuantity = quantitySum > 0 ? quantitySum : null;
 
-  return { isCombinarEntrega, isDelivered, productTitle, buyerFullName, orderTotal, orderQuantity };
+  // Status de pagamento do PEDIDO (produto), direto do campo documentado
+  // "order.status": confirmed | payment_required | payment_in_process |
+  // partially_paid | paid | cancelled | invalid. Pedido do usuario:
+  // "confirmacao se o cliente pagou". IMPORTANTE: isso e o pagamento do
+  // PRODUTO na plataforma — nao tem relacao com o frete de "combinar
+  // entrega", que o comprador paga por FORA do Mercado Livre (Pix direto
+  // pro vendedor) e por isso a API nao tem como confirmar; esse continua
+  // sendo so o "Pago!" que o comprador escreve na conversa.
+  const paymentStatus = order.status || null;
+
+  return { isCombinarEntrega, isDelivered, productTitle, buyerFullName, orderTotal, orderQuantity, paymentStatus };
 }
 
 async function upsertConversationFromPack(sellerId, packId, packData, orderId, orderInfo) {
@@ -376,11 +386,13 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
   // buscamos o envio dessa vez — so os pontos que ja buscam o pedido
   // completo (ver fetchShippingType) preenchem isso de verdade.
   const shippingType = orderInfo && orderInfo.shippingType !== undefined ? orderInfo.shippingType : null;
+  // Mesma logica de "so sobrescreve quando temos dado novo" dos campos acima.
+  const orderPaymentStatus = orderInfo?.paymentStatus ?? null;
 
   await db.query(
     `INSERT INTO conversations
-       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, order_quantity, is_combinar_entrega, is_delivered, shipping_type, last_message_text, last_message_date, status, resolved_by_operator_at, resolved_by_operator, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
+       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, order_quantity, is_combinar_entrega, is_delivered, shipping_type, order_payment_status, last_message_text, last_message_date, status, resolved_by_operator_at, resolved_by_operator, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now())
      ON CONFLICT (pack_id) DO UPDATE SET
        order_id = EXCLUDED.order_id,
        buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
@@ -392,6 +404,7 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
        is_combinar_entrega = COALESCE(EXCLUDED.is_combinar_entrega, conversations.is_combinar_entrega),
        is_delivered = COALESCE(EXCLUDED.is_delivered, conversations.is_delivered),
        shipping_type = COALESCE(EXCLUDED.shipping_type, conversations.shipping_type),
+       order_payment_status = COALESCE(EXCLUDED.order_payment_status, conversations.order_payment_status),
        last_message_text = EXCLUDED.last_message_text,
        last_message_date = EXCLUDED.last_message_date,
        status = EXCLUDED.status,
@@ -411,6 +424,7 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
       isCombinarEntrega,
       isDelivered,
       shippingType,
+      orderPaymentStatus,
       previewText,
       messageDate(last),
       status,
