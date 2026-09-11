@@ -47,6 +47,7 @@ const orderCardCopyBtn = document.getElementById("order-card-copy-btn");
 const threadDeliveryTag = document.getElementById("thread-delivery-tag");
 const threadDeliveredTag = document.getElementById("thread-delivered-tag");
 const threadShippingTag = document.getElementById("thread-shipping-tag");
+const threadPaymentTag = document.getElementById("thread-payment-tag");
 const threadClaimStageTag = document.getElementById("thread-claim-stage-tag");
 const threadClaimWarningTag = document.getElementById("thread-claim-warning-tag");
 const claimDueBanner = document.getElementById("claim-due-banner");
@@ -546,6 +547,46 @@ function statusLabel(status) {
   return "pendente";
 }
 
+// Status de pagamento do PEDIDO (produto) — pedido do usuario: "confirmacao
+// se o cliente pagou". Valores documentados do Mercado Livre em
+// order.status. IMPORTANTE: isso e o pagamento do produto na plataforma —
+// NAO o frete de "combinar entrega" (pago por fora, direto pro vendedor,
+// sem confirmacao possivel via API — continua sendo o "Pago!" que o
+// comprador escreve na conversa).
+const PAYMENT_STATUS_LABELS = {
+  paid: "Pago",
+  partially_paid: "Pago parcialmente",
+  payment_required: "Aguardando pagamento",
+  payment_in_process: "Pagamento em processamento",
+  cancelled: "Cancelado",
+  invalid: "Inválido",
+  confirmed: "Confirmado",
+};
+function paymentStatusLabel(status) {
+  return PAYMENT_STATUS_LABELS[status] || null;
+}
+function paymentStatusTagClass(status) {
+  return status === "paid" || status === "confirmed" ? "tag-paid" : "tag-payment-pending";
+}
+function renderPaymentTag(el, status) {
+  const label = paymentStatusLabel(status);
+  if (!label) {
+    el.classList.add("hidden");
+    return;
+  }
+  el.textContent = label;
+  el.className = "tag " + paymentStatusTagClass(status);
+}
+// Na LISTA (diferente da conversa aberta) so mostra o status de pagamento
+// quando precisa de atencao (nao pago) — "Pago" em toda linha so pesaria a
+// tela sem ajudar, ja que a maioria das vendas chega aqui ja paga.
+function listPaymentBadge(status) {
+  if (!status || status === "paid" || status === "confirmed") return "";
+  const label = paymentStatusLabel(status);
+  if (!label) return "";
+  return `<span class="tag ${paymentStatusTagClass(status)}">${label}</span>`;
+}
+
 // Atualiza a lista da esquerda SEM recriar tudo do zero a cada carregamento
 // (pedido do usuario: "nao e para carregar varias vezes a pagina"). Compara a
 // lista nova com o que ja esta na tela por uma chave (pack_id/claim_id/
@@ -653,6 +694,7 @@ async function loadConversations({ silent = false } = {}) {
           <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · #${conv.order_id}` : ""}${fmtMoney(conv.order_total) ? ` · ${fmtMoney(conv.order_total)}` : ""}${fmtQuantity(conv.order_quantity) ? ` · ${fmtQuantity(conv.order_quantity)}` : ""}</span>
           ${conv.is_delivered ? '<span class="tag tag-delivered">Pedido já entregue</span>' : conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
           ${conv.shipping_type ? `<span class="tag tag-shipping">${conv.shipping_type}</span>` : ""}
+          ${listPaymentBadge(conv.order_payment_status)}
           ${conv.has_open_claim ? '<span class="tag tag-claim" title="Este pedido tem uma reclamação aberta na aba Reclamações">⚠ Reclamação aberta</span>' : ""}
         </div>
       </div>
@@ -772,6 +814,7 @@ function renderClaimThreadInfo(claim) {
   threadClaimWarningTag.classList.add("hidden");
   threadShippingTag.textContent = claim.shipping_type || "-";
   threadShippingTag.classList.toggle("hidden", !claim.shipping_type);
+  threadPaymentTag.classList.add("hidden"); // reclamacao nao tem esse dado ainda
   quickTemplates.classList.add("hidden");
   freightBox.classList.add("hidden");
   freightTemplateEditBtn.classList.add("hidden");
@@ -1013,6 +1056,7 @@ function renderQuestionThreadInfo(question) {
   threadDeliveryTag.classList.add("hidden");
   threadDeliveredTag.classList.add("hidden");
   threadShippingTag.classList.add("hidden");
+  threadPaymentTag.classList.add("hidden"); // pergunta e pre-venda, nao tem pedido/pagamento ainda
   threadClaimStageTag.classList.add("hidden");
   threadClaimWarningTag.classList.add("hidden");
   claimDueBanner.classList.add("hidden");
@@ -1431,6 +1475,10 @@ function renderThreadInfo(conv) {
   threadDeliveredTag.classList.toggle("hidden", !conv.is_delivered);
   threadShippingTag.textContent = conv.shipping_type || "-";
   threadShippingTag.classList.toggle("hidden", !conv.shipping_type);
+  // Status de pagamento do PEDIDO (pedido do usuario) — ver comentario em
+  // PAYMENT_STATUS_LABELS: isso e o pagamento do produto, nao do frete de
+  // combinar entrega (esse continua sem confirmacao automatica possivel).
+  renderPaymentTag(threadPaymentTag, conv.order_payment_status);
   // O atalho da mensagem padrao de "combinar entrega" so faz sentido pra
   // pedidos classificados assim — nos outros, fica escondido.
   quickTemplates.classList.toggle("hidden", !conv.is_combinar_entrega);

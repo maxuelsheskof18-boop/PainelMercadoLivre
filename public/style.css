@@ -632,6 +632,16 @@ body {
   color: #6d28d9;
   border: 1px solid #ddd6fe;
 }
+.tag-paid {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+.tag-payment-pending {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
 /* Contador de "N perguntas" quando o mesmo comprador tem mais de uma
    pergunta agrupada numa unica entrada da lista (ver GET /questions no
    backend) — pedido do usuario de unificar por numero de comprador. */
