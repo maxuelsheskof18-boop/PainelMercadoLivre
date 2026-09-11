@@ -217,6 +217,14 @@ async function fetchShipment(accessToken, shipmentId) {
   return mlFetch(`/shipments/${shipmentId}`, accessToken);
 }
 
+// Dados de faturamento do pedido (nome/documento — CPF ou CNPJ — usados pra
+// emitir nota fiscal). Pedido do usuario: "dados do cliente... cpf ou cnpj".
+// NAO CONFIRMADO ainda se devolve endereco tambem — ver
+// /api/debug/probe-buyer-info antes de exibir no painel.
+async function fetchOrderBillingInfo(accessToken, orderId) {
+  return mlFetch(`/orders/${orderId}/billing_info`, accessToken);
+}
+
 // Busca os dados publicos de um USUARIO (ex: o nome/nickname de um
 // comprador) — a pergunta pre-venda so traz o buyer_id, sem o nickname (ver
 // backend/questionsSync.js). Endpoint diferente do /items (que o Mercado
@@ -450,6 +458,7 @@ module.exports = {
   fetchRecentOrders,
   fetchOrderById,
   fetchShipment,
+  fetchOrderBillingInfo,
   fetchItemById,
   fetchItemsByIds,
   fetchUserById,
