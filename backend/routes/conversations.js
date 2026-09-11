@@ -14,6 +14,7 @@ const {
   fetchPackInfo,
   fetchOrderById,
   fetchShipment,
+  fetchOrderBillingInfo,
   fetchUnreadMessagePacks,
 } = require("../ml/api");
 const {
@@ -729,6 +730,77 @@ router.get("/debug/probe-unread-full", async (req, res) => {
       entry.erro = err.message;
     }
     report.push(entry);
+  }
+
+  res.json(report);
+});
+
+// Rota TEMPORARIA de diagnostico: pedido do usuario — "trazer confirmacao
+// se o cliente pagou o envio" + "dados do cliente: nome, telefone, cpf/cnpj,
+// endereco". Antes de mostrar isso no painel, precisa confirmar o que a API
+// do Mercado Livre realmente devolve (endpoints de faturamento/endereco tem
+// historico de vir diferente do documentado nesse projeto). Testa, pra uma
+// venda de verdade: 1) GET /orders/{id} (status de pagamento, sempre
+// disponivel); 2) GET /orders/{id}/billing_info (nome/documento, talvez
+// endereco); 3) se o pedido tiver shipping.id, GET /shipments/{id}
+// (endereco/telefone do destinatario — so existe fora de "combinar
+// entrega", que nao tem envio de verdade pelo Mercado Envios).
+// Uso: /api/debug/probe-buyer-info (pega a venda mais recente com pedido)
+// ou /api/debug/probe-buyer-info?packId=... (uma especifica).
+router.get("/debug/probe-buyer-info", async (req, res) => {
+  const packId = req.query.packId ? String(req.query.packId) : null;
+  const { rows: convRows } = packId
+    ? await db.query("SELECT pack_id, seller_id, order_id FROM conversations WHERE pack_id = $1", [packId])
+    : await db.query(
+        `SELECT pack_id, seller_id, order_id FROM conversations
+          WHERE order_id IS NOT NULL ORDER BY last_message_date DESC NULLS LAST LIMIT 1`
+      );
+  const conv = convRows[0];
+  if (!conv) return res.json({ erro: "Nenhuma conversa com pedido encontrada." });
+
+  const report = { packId: conv.pack_id, orderId: conv.order_id, sellerId: conv.seller_id };
+  try {
+    const accessToken = await getValidAccessToken(conv.seller_id);
+
+    try {
+      const order = await fetchOrderById(accessToken, conv.order_id);
+      report.pedido = {
+        status: order?.status,
+        tags: order?.tags,
+        payments: (order?.payments || []).map((p) => ({
+          status: p.status,
+          status_detail: p.status_detail,
+          date_approved: p.date_approved,
+        })),
+        shippingId: order?.shipping?.id || null,
+        buyer: order?.buyer,
+      };
+    } catch (err) {
+      report.pedido = { erro: { status: err.status, body: err.body || err.message } };
+    }
+
+    try {
+      const billing = await fetchOrderBillingInfo(accessToken, conv.order_id);
+      report.billingInfo = billing;
+    } catch (err) {
+      report.billingInfo = { erro: { status: err.status, body: err.body || err.message } };
+    }
+
+    if (report.pedido?.shippingId) {
+      try {
+        const shipment = await fetchShipment(accessToken, report.pedido.shippingId);
+        report.shipment = {
+          receiver_address: shipment?.receiver_address,
+          chavesDoTopo: Object.keys(shipment || {}),
+        };
+      } catch (err) {
+        report.shipment = { erro: { status: err.status, body: err.body || err.message } };
+      }
+    } else {
+      report.shipment = "sem shipping.id (provavelmente combinar entrega, sem envio pelo Mercado Envios)";
+    }
+  } catch (err) {
+    report.erro = err.message;
   }
 
   res.json(report);
