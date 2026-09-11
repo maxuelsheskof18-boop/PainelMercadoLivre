@@ -270,6 +270,29 @@ async function init() {
     ALTER TABLE questions ADD COLUMN IF NOT EXISTS resolved_by_operator_at TIMESTAMPTZ;
     ALTER TABLE questions ADD COLUMN IF NOT EXISTS resolved_by_operator TEXT;
   `);
+
+  // Limpeza pontual: ate a correcao em upsertConversationFromPack (sync.js),
+  // uma resposta enviada PELO PAINEL (gravada na hora, sem message_id ainda)
+  // podia ficar DUPLICADA quando a mesma mensagem voltava do Mercado Livre
+  // (com o message_id de verdade) — em vez de completar o registro
+  // otimista, o codigo antigo criava uma segunda linha. Bug real reportado
+  // pelo usuario (mesma resposta aparecendo duas vezes na conversa). Isso
+  // aqui apaga so os casos claros: mesma pack_id/direction='out'/texto, uma
+  // copia sem message_id e outra com, criadas com poucos minutos de
+  // diferenca — nunca duas respostas iguais mandadas de proposito em
+  // momentos diferentes. Seguro rodar em todo boot (depois da primeira vez
+  // nao acha mais nada pra apagar).
+  await pool.query(`
+    DELETE FROM messages dup
+     USING messages real
+     WHERE dup.pack_id = real.pack_id
+       AND dup.direction = 'out' AND real.direction = 'out'
+       AND dup.text = real.text
+       AND dup.message_id IS NULL
+       AND real.message_id IS NOT NULL
+       AND dup.id <> real.id
+       AND ABS(EXTRACT(EPOCH FROM (dup.created_at - real.created_at))) < 600
+  `);
 }
 
 module.exports = { query, init, pool };

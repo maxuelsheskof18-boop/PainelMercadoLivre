@@ -420,7 +420,7 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
   );
 
   const { rows: existingRows } = await db.query(
-    "SELECT message_id FROM messages WHERE pack_id = $1",
+    "SELECT message_id FROM messages WHERE pack_id = $1 AND message_id IS NOT NULL",
     [String(packId)]
   );
   const existing = new Set(existingRows.map((r) => r.message_id));
@@ -429,6 +429,34 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
     const id = m?.id ? String(m.id) : null;
     if (id && existing.has(id)) continue; // ja gravada
     const fromId = String(m?.from?.user_id ?? "");
+    const direction = fromId === sellerIdStr ? "out" : "in";
+    const text = m?.text || null;
+
+    // A resposta enviada PELO PROPRIO PAINEL (ver POST /conversations/:packId/
+    // reply em routes/conversations.js) grava a mensagem na hora, sem esperar
+    // o Mercado Livre confirmar — por isso ela entra sem "message_id" (ainda
+    // nao existe um). Quando essa MESMA mensagem chega aqui de volta (webhook
+    // ou reconciliacao), ja com o message_id de verdade, ela precisa
+    // COMPLETAR aquele registro em vez de criar um novo — senao a mesma
+    // resposta aparece duas vezes na conversa (bug real reportado pelo
+    // usuario, com print). So faz sentido pra direction='out' com id novo.
+    if (id && direction === "out" && text) {
+      const { rows: claimed } = await db.query(
+        `UPDATE messages SET message_id = $1, sent_date = COALESCE(sent_date, $2)
+           WHERE id = (
+             SELECT id FROM messages
+              WHERE pack_id = $3 AND message_id IS NULL AND direction = 'out' AND text = $4
+              ORDER BY id ASC LIMIT 1
+           )
+         RETURNING id`,
+        [id, messageDate(m), String(packId), text]
+      );
+      if (claimed.length > 0) {
+        existing.add(id);
+        continue; // reaproveitou o registro otimista — nao insere de novo
+      }
+    }
+
     // Anexo que o comprador (ou o vendedor, por fora do painel) mandou
     // junto com essa mensagem — ex: foto de um produto com defeito. Sem
     // isso, so o texto ficava gravado e o anexo em si desaparecia (pedido
@@ -445,15 +473,16 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
       [
         String(packId),
         id,
-        fromId === sellerIdStr ? "out" : "in",
+        direction,
         fromId || null,
-        m?.text || null,
+        text,
         Array.isArray(m?.message_attachments) && m.message_attachments.length
           ? JSON.stringify(m.message_attachments)
           : null,
         messageDate(m),
       ]
     );
+    if (id) existing.add(id);
   }
 }
 
