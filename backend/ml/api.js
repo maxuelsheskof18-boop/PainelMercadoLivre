@@ -414,9 +414,18 @@ async function uploadMessageAttachment(accessToken, buffer, filename, mimetype) 
 // o recurso certo (ver comentario em sendMessage acima e em
 // fetchPackMessages). Devolve o arquivo cru (buffer) + content-type, pra a
 // rota do painel repassar pro navegador sem expor o access_token.
+//
+// "site_id=MLB" e OBRIGATORIO nesse endpoint especifico — CONFIRMADO via
+// download real (rota /api/debug/probe-attachment-download): sem ele o
+// Mercado Livre recusa com 400 "The queryparam 'site_id' is required" (o
+// download de anexo NUNCA tinha funcionado de verdade ate essa correcao —
+// pedido do usuario: "as midias ainda nao consigo ver no painel"). Fixo em
+// "MLB" porque este painel so atende contas brasileiras (mesmo dominio de
+// autorizacao ML_AUTH_DOMAIN usado no OAuth).
 async function fetchMessageAttachmentFile(accessToken, attachmentId) {
   const url = new URL(`${API_BASE}/messages/attachments/${attachmentId}`);
   url.searchParams.set("tag", "post_sale");
+  url.searchParams.set("site_id", "MLB");
   url.searchParams.set("access_token", accessToken);
 
   const res = await fetch(url.toString(), {
