@@ -856,6 +856,84 @@ router.get("/debug/probe-message-attachments/:orderId", async (req, res) => {
   }
 });
 
+// Rota TEMPORARIA de diagnostico: o usuario relatou que nao consegue ver
+// midia (foto/anexo) que o comprador manda numa mensagem — o download
+// devolve so "Falha ao baixar o anexo do Mercado Livre", sem detalhe
+// nenhum na tela. Esta rota acha um anexo de verdade no banco (de uma
+// mensagem recebida) e tenta baixar ele testando variantes do endpoint,
+// mostrando o erro CRU de cada uma — pra descobrir o motivo real em vez de
+// adivinhar (esse endpoint nunca foi confirmado contra um download real,
+// so contra o formato do campo "message_attachments" na mensagem).
+// Uso: /api/debug/probe-attachment-download (pega o anexo mais recente) ou
+// ?packId=...&filename=... pra um especifico.
+router.get("/debug/probe-attachment-download", async (req, res) => {
+  let packId = req.query.packId ? String(req.query.packId) : null;
+  let filename = req.query.filename ? String(req.query.filename) : null;
+
+  if (!filename) {
+    const { rows } = await db.query(
+      `SELECT pack_id, attachments FROM messages
+        WHERE attachments IS NOT NULL AND jsonb_array_length(attachments) > 0
+        ORDER BY id DESC LIMIT 1`
+    );
+    const row = rows[0];
+    if (!row) return res.json({ erro: "Nenhuma mensagem com anexo encontrada no banco ainda." });
+    packId = row.pack_id;
+    const att = row.attachments[0];
+    filename = typeof att === "string" ? att : att?.filename || att?.id || att?.attachment_id;
+    if (!filename) return res.json({ erro: "Achei uma mensagem com anexo, mas sem campo filename/id reconhecivel.", attachmentCru: att });
+  }
+
+  const { rows: convRows } = await db.query("SELECT seller_id FROM conversations WHERE pack_id = $1", [packId]);
+  const conv = convRows[0];
+  if (!conv) return res.json({ erro: `Conversa ${packId} nao encontrada.` });
+
+  const report = { packId, filename, sellerId: conv.seller_id, tentativas: [] };
+  const accessToken = await getValidAccessToken(conv.seller_id);
+
+  const variantes = [
+    { nome: "messages/attachments/{filename}?tag=post_sale (o que o painel usa hoje)", path: `/messages/attachments/${filename}?tag=post_sale` },
+    { nome: "messages/attachments/{filename} (sem tag)", path: `/messages/attachments/${filename}` },
+    { nome: "messages/attachments/{filename}?tag=post_sale&site_id=MLB", path: `/messages/attachments/${filename}?tag=post_sale&site_id=MLB` },
+  ];
+
+  for (const variante of variantes) {
+    const url = new URL(`https://api.mercadolibre.com${variante.path}`);
+    url.searchParams.set("access_token", accessToken);
+    try {
+      const r = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        redirect: "manual", // pra ver se o ML redireciona (302) em vez de devolver o arquivo direto
+      });
+      const contentType = r.headers.get("content-type") || null;
+      const isRedirect = r.status >= 300 && r.status < 400;
+      const entry = {
+        nome: variante.nome,
+        path: variante.path,
+        status: r.status,
+        ok: r.ok,
+        contentType,
+        contentLength: r.headers.get("content-length"),
+        location: isRedirect ? r.headers.get("location") : null,
+      };
+      if (!r.ok && !isRedirect && (contentType || "").includes("json")) {
+        try {
+          entry.corpo = await r.json();
+        } catch {
+          entry.corpo = await r.text().catch(() => null);
+        }
+      } else if (!r.ok && !isRedirect) {
+        entry.corpo = (await r.text().catch(() => "")).slice(0, 300);
+      }
+      report.tentativas.push(entry);
+    } catch (err) {
+      report.tentativas.push({ nome: variante.nome, path: variante.path, erro: err.message });
+    }
+  }
+
+  res.json(report);
+});
+
 // Rota TEMPORARIA de diagnostico: chama fetchUnreadMessagePacks (a busca
 // dedicada por mensagens NAO LIDAS, ver comentario dela em ml/api.js) pra
 // cada conta e devolve a lista crua devolvida pelo Mercado Livre — serve pra
