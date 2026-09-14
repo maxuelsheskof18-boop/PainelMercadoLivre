@@ -21,7 +21,7 @@ const {
   reconcileAllAccounts,
   extractOrderInfo,
   upsertConversationFromPack,
-  fetchShippingType,
+  fetchShippingDetails,
   syncPack,
 } = require("../sync");
 const { reconcileAllClaims } = require("../claimsSync");
@@ -225,19 +225,20 @@ router.get("/conversations/:packId/messages", async (req, res) => {
     (conversation.product_title == null ||
       conversation.order_total == null ||
       conversation.order_quantity == null ||
+      conversation.order_payment_status == null ||
       (conversation.shipping_type == null && conversation.is_combinar_entrega !== true))
   ) {
     try {
       const accessToken = await getValidAccessToken(conversation.seller_id);
       const order = await fetchOrderById(accessToken, conversation.order_id);
       const orderInfo = extractOrderInfo(order);
-      // So busca o tipo de envio (Flex/Agência/etc.) se ainda nao tem — pedido
-      // de combinar entrega nunca vai ter (nao tem envio de verdade), entao
-      // nem tenta nesse caso pra nao gastar chamada de API a toa toda vez que
-      // essa conversa for aberta.
-      const shippingType = orderInfo?.isCombinarEntrega
-        ? null
-        : await fetchShippingType(accessToken, order);
+      // So busca o envio (tipo + endereco de entrega) se ainda nao tem —
+      // pedido de combinar entrega nunca vai ter (nao tem envio de
+      // verdade), entao nem tenta nesse caso pra nao gastar chamada de API
+      // a toa toda vez que essa conversa for aberta.
+      const shippingDetails = orderInfo?.isCombinarEntrega
+        ? { shippingType: null, deliveryAddress: null }
+        : await fetchShippingDetails(accessToken, order);
 
       const { rows: updated } = await db.query(
         `UPDATE conversations
@@ -247,8 +248,10 @@ router.get("/conversations/:packId/messages", async (req, res) => {
                 order_total = COALESCE($4, order_total),
                 order_quantity = COALESCE($5, order_quantity),
                 shipping_type = COALESCE($6, shipping_type),
+                order_payment_status = COALESCE($7, order_payment_status),
+                delivery_address = COALESCE($8, delivery_address),
                 updated_at = now()
-          WHERE pack_id = $7
+          WHERE pack_id = $9
           RETURNING *`,
         [
           orderInfo?.buyerFullName ?? null,
@@ -256,7 +259,9 @@ router.get("/conversations/:packId/messages", async (req, res) => {
           orderInfo?.isCombinarEntrega ?? null,
           orderInfo?.orderTotal ?? null,
           orderInfo?.orderQuantity ?? null,
-          shippingType,
+          shippingDetails.shippingType,
+          orderInfo?.paymentStatus ?? null,
+          shippingDetails.deliveryAddress,
           packId,
         ]
       );
