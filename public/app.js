@@ -44,6 +44,9 @@ const orderCardProduct = document.getElementById("order-card-product");
 const orderCardMeta = document.getElementById("order-card-meta");
 const orderCardLink = document.getElementById("order-card-link");
 const orderCardCopyBtn = document.getElementById("order-card-copy-btn");
+const orderCardAddressRow = document.getElementById("order-card-address-row");
+const orderCardAddress = document.getElementById("order-card-address");
+const orderCardAddressCopyBtn = document.getElementById("order-card-address-copy-btn");
 const threadDeliveryTag = document.getElementById("thread-delivery-tag");
 const threadDeliveredTag = document.getElementById("thread-delivered-tag");
 const threadShippingTag = document.getElementById("thread-shipping-tag");
@@ -1134,6 +1137,10 @@ function renderQuestionThreadInfo(question) {
   // ele nao mostra o titulo aqui no painel, mas o operador consegue abrir o
   // anuncio de verdade num clique (no navegador dele, sem passar pelo mesmo
   // bloqueio, ja que ai e um acesso normal de pessoa, nao do nosso servidor).
+  // Pergunta e pre-venda, nunca tem endereco de entrega — evita que o
+  // endereco de uma conversa vista antes fique "vazando" pra ca (esse card
+  // e reaproveitado pro anuncio, ver comentario abaixo).
+  orderCardAddressRow.classList.add("hidden");
   if (question.item_title || question.item_id) {
     orderCard.classList.remove("hidden");
     orderCardProduct.textContent = question.item_title || "Anúncio não identificado (clique no link pra ver)";
@@ -1262,6 +1269,9 @@ async function submitQuestionReply() {
 // de cada botao (ver renderThreadInfo/renderClaimThreadInfo).
 orderCardCopyBtn.addEventListener("click", () => {
   if (orderCardCopyBtn.dataset.orderId) copyTextToClipboard(orderCardCopyBtn.dataset.orderId, orderCardCopyBtn);
+});
+orderCardAddressCopyBtn.addEventListener("click", () => {
+  if (orderCardAddressCopyBtn.dataset.address) copyTextToClipboard(orderCardAddressCopyBtn.dataset.address, orderCardAddressCopyBtn);
 });
 claimInfoCopyBtn.addEventListener("click", () => {
   if (claimInfoCopyBtn.dataset.orderId) copyTextToClipboard(claimInfoCopyBtn.dataset.orderId, claimInfoCopyBtn);
@@ -1547,6 +1557,16 @@ function renderThreadInfo(conv) {
     } else {
       orderCardLink.classList.add("hidden");
       orderCardCopyBtn.classList.add("hidden");
+    }
+    // Endereco de entrega (pedido do usuario) — so existe pra pedido com
+    // envio de verdade pelo Mercado Envios (ver delivery_address no
+    // backend); "combinar entrega" nunca tem isso aqui.
+    if (conv.delivery_address) {
+      orderCardAddress.textContent = conv.delivery_address;
+      orderCardAddressCopyBtn.dataset.address = conv.delivery_address;
+      orderCardAddressRow.classList.remove("hidden");
+    } else {
+      orderCardAddressRow.classList.add("hidden");
     }
   } else {
     orderCard.classList.add("hidden");

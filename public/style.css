@@ -862,6 +862,16 @@ body {
 }
 .order-card-copy-btn:hover { background: var(--bg); }
 .order-card-copy-btn.copied { color: var(--accent-dark); border-color: var(--accent-dark); }
+.order-card-address-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.order-card-address-row .order-card-icon { font-size: 15px; margin-top: 1px; }
+.order-card-address-row .muted { flex: 1; line-height: 1.4; }
 
 /* ---------- Link detectado dentro de uma mensagem ---------- */
 .msg-link { display: inline-flex; align-items: center; gap: 4px; }

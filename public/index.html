@@ -202,6 +202,15 @@
                visivel quando ele dividia a mesma linha; numa linha só dele,
                isso nunca mais acontece, em qualquer largura de tela). -->
           <a id="order-card-link" href="#" target="_blank" rel="noopener" class="order-card-link">Ver no Mercado Livre ↗</a>
+          <!-- Endereco de entrega (pedido do usuario: "dados do cliente...
+               endereço") — so aparece quando o pedido tem envio de verdade
+               pelo Mercado Envios (nao existe pra "combinar entrega", cujo
+               endereco so vem do que o comprador escreve na conversa). -->
+          <div id="order-card-address-row" class="order-card-address-row hidden">
+            <span class="order-card-icon">📍</span>
+            <span id="order-card-address" class="muted small"></span>
+            <button type="button" id="order-card-address-copy-btn" class="order-card-copy-btn" title="Copiar endereço">📋</button>
+          </div>
         </div>
         <div id="claim-info-card" class="order-card hidden">
           <div class="order-card-row">
