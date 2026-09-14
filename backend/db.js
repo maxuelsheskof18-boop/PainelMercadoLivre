@@ -275,6 +275,14 @@ async function init() {
     -- payment_required, payment_in_process, partially_paid, paid,
     -- cancelled, invalid.
     ALTER TABLE conversations ADD COLUMN IF NOT EXISTS order_payment_status TEXT;
+    -- Endereco de entrega (pedido do usuario: "dados do cliente...
+    -- endereço") — vem do envio de verdade pelo Mercado Envios
+    -- (GET /shipments/{id}.receiver_address); pedido de "combinar entrega"
+    -- nao tem envio pelo Mercado Envios, entao fica sempre NULL aqui (o
+    -- endereco desses so existe no que o comprador escreve na conversa).
+    -- NAO inclui telefone: a API devolve o telefone do comprador mascarado
+    -- ("XXXXXXX"), confirmado numa venda real — nao ha como mostrar isso.
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS delivery_address TEXT;
   `);
 
   // Limpeza pontual: ate a correcao em upsertConversationFromPack (sync.js),

@@ -51,24 +51,53 @@ function sinceYearParam() {
 // TODO pedido verificado a cada reconciliacao pesaria demais numa conta de
 // alto volume, sem necessidade (pedido sem mensagem nao aparece em nenhuma
 // aba, entao a tag nao seria vista mesmo).
-async function fetchShippingType(accessToken, order) {
-  if (!order) return null;
+// Formata o endereco de entrega devolvido pelo Mercado Envios (campo
+// "receiver_address" do envio) numa linha legivel — pedido do usuario
+// ("dados do cliente... endereço"). CONFIRMADO via sonda real
+// (/api/debug/probe-buyer-info) que esse campo vem completo (rua, numero,
+// bairro, cidade, UF, CEP) e NAO mascarado. So existe pra pedido com envio
+// DE VERDADE pelo Mercado Envios — "combinar entrega" (tag no_shipping) nao
+// tem shipping.id nenhum, entao nunca tem esse endereco; nesses casos o
+// unico jeito de saber o endereco continua sendo o que o comprador escreve
+// na propria conversa (ver o template "Combinar entrega" no front).
+function formatDeliveryAddress(addr) {
+  if (!addr) return null;
+  const linha1 = [addr.street_name, addr.street_number].filter(Boolean).join(", ");
+  const bairro = addr.neighborhood?.name || null;
+  const cidade = addr.city?.name || null;
+  const uf = addr.state?.id ? addr.state.id.replace(/^BR-/, "") : null;
+  const linha2 = [bairro, [cidade, uf].filter(Boolean).join(" - ")].filter(Boolean).join(", ");
+  const cep = addr.zip_code ? `CEP ${addr.zip_code}` : null;
+  return [linha1, linha2, cep].filter(Boolean).join(" · ") || null;
+}
+
+// Busca o tipo de envio (Flex/Agência/etc.) e o endereco de entrega de um
+// pedido — as duas coisas vem do MESMO recurso (GET /shipments/{id}), entao
+// buscamos junto pra nao gastar duas chamadas de API por pedido.
+// IMPORTANTE (confirmado via sonda real contra a API, nao documentacao):
+// o telefone do destinatario ("receiver_phone") vem MASCARADO ("XXXXXXX")
+// nesse endpoint — o Mercado Livre nao libera telefone de comprador pra
+// vendedor por essa via, entao nem tentamos mostrar isso no painel.
+async function fetchShippingDetails(accessToken, order) {
+  if (!order) return { shippingType: null, deliveryAddress: null };
   const tags = Array.isArray(order.tags) ? order.tags : [];
-  if (tags.includes("no_shipping")) return null; // combinar entrega: sem envio de verdade
+  if (tags.includes("no_shipping")) return { shippingType: null, deliveryAddress: null }; // combinar entrega
   const shippingId = order?.shipping?.id;
-  if (!shippingId) return null;
+  if (!shippingId) return { shippingType: null, deliveryAddress: null };
   try {
     const shipment = await fetchShipment(accessToken, shippingId);
     const type = shipment?.logistic_type || shipment?.logistic?.type || null;
-    if (!type) return null;
-    return SHIPPING_TYPE_LABELS[type] || null;
+    return {
+      shippingType: type ? SHIPPING_TYPE_LABELS[type] || null : null,
+      deliveryAddress: formatDeliveryAddress(shipment?.receiver_address),
+    };
   } catch (err) {
     console.warn(
       `[shippingType] falha ao buscar o envio ${shippingId} do pedido ${order?.id}:`,
       err.status,
       err.body || err.message
     );
-    return null;
+    return { shippingType: null, deliveryAddress: null };
   }
 }
 
@@ -384,15 +413,20 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
   const isDelivered = orderInfo && typeof orderInfo.isDelivered === "boolean" ? orderInfo.isDelivered : null;
   // Mesma logica: fica null (nao mexe no que ja tinha) quando ainda nao
   // buscamos o envio dessa vez — so os pontos que ja buscam o pedido
-  // completo (ver fetchShippingType) preenchem isso de verdade.
+  // completo (ver fetchShippingDetails) preenchem isso de verdade.
   const shippingType = orderInfo && orderInfo.shippingType !== undefined ? orderInfo.shippingType : null;
   // Mesma logica de "so sobrescreve quando temos dado novo" dos campos acima.
   const orderPaymentStatus = orderInfo?.paymentStatus ?? null;
+  // Endereco de entrega (pedido do usuario: "dados do cliente... endereço")
+  // — so existe pra pedido com envio de verdade pelo Mercado Envios (ver
+  // fetchShippingDetails/formatDeliveryAddress); "combinar entrega" fica
+  // sempre null aqui.
+  const deliveryAddress = orderInfo?.deliveryAddress ?? null;
 
   await db.query(
     `INSERT INTO conversations
-       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, order_quantity, is_combinar_entrega, is_delivered, shipping_type, order_payment_status, last_message_text, last_message_date, status, resolved_by_operator_at, resolved_by_operator, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now())
+       (pack_id, seller_id, order_id, buyer_id, buyer_nickname, buyer_full_name, product_title, order_total, order_quantity, is_combinar_entrega, is_delivered, shipping_type, order_payment_status, delivery_address, last_message_text, last_message_date, status, resolved_by_operator_at, resolved_by_operator, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
      ON CONFLICT (pack_id) DO UPDATE SET
        order_id = EXCLUDED.order_id,
        buyer_id = COALESCE(EXCLUDED.buyer_id, conversations.buyer_id),
@@ -405,6 +439,7 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
        is_delivered = COALESCE(EXCLUDED.is_delivered, conversations.is_delivered),
        shipping_type = COALESCE(EXCLUDED.shipping_type, conversations.shipping_type),
        order_payment_status = COALESCE(EXCLUDED.order_payment_status, conversations.order_payment_status),
+       delivery_address = COALESCE(EXCLUDED.delivery_address, conversations.delivery_address),
        last_message_text = EXCLUDED.last_message_text,
        last_message_date = EXCLUDED.last_message_date,
        status = EXCLUDED.status,
@@ -425,6 +460,7 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
       isDelivered,
       shippingType,
       orderPaymentStatus,
+      deliveryAddress,
       previewText,
       messageDate(last),
       status,
@@ -649,7 +685,9 @@ async function syncPack(sellerId, packId, orderId) {
   if (order) {
     orderInfo = extractOrderInfo(order);
     try {
-      orderInfo.shippingType = await fetchShippingType(accessToken, order);
+      const shippingDetails = await fetchShippingDetails(accessToken, order);
+      orderInfo.shippingType = shippingDetails.shippingType;
+      orderInfo.deliveryAddress = shippingDetails.deliveryAddress;
     } catch {
       // segue sem o tipo de envio
     }
@@ -850,7 +888,9 @@ async function reconcileAccount(sellerId, { quick = false } = {}) {
           const fullOrder = orderResult.result;
           accessToken = orderResult.accessToken;
           orderInfo = extractOrderInfo(fullOrder);
-          orderInfo.shippingType = await fetchShippingType(accessToken, fullOrder);
+          const shippingDetails = await fetchShippingDetails(accessToken, fullOrder);
+          orderInfo.shippingType = shippingDetails.shippingType;
+          orderInfo.deliveryAddress = shippingDetails.deliveryAddress;
         } catch (err) {
           console.warn(
             `[reconcile] nao consegui buscar detalhes do pedido ${order?.id}:`,
@@ -961,7 +1001,9 @@ async function reconcileAccount(sellerId, { quick = false } = {}) {
           const fullOrder = orderResult.result;
           accessToken = orderResult.accessToken;
           orderInfo = extractOrderInfo(fullOrder);
-          orderInfo.shippingType = await fetchShippingType(accessToken, fullOrder);
+          const shippingDetails = await fetchShippingDetails(accessToken, fullOrder);
+          orderInfo.shippingType = shippingDetails.shippingType;
+          orderInfo.deliveryAddress = shippingDetails.deliveryAddress;
         } catch (err) {
           console.warn(
             `[reconcile] nao consegui buscar detalhes do pedido em observacao ${watch.order_id}:`,
@@ -1188,7 +1230,9 @@ async function runBackfillStep(sellerId, accessToken) {
         try {
           const fullOrder = await fetchOrderById(accessToken, order?.id);
           orderInfo = extractOrderInfo(fullOrder);
-          orderInfo.shippingType = await fetchShippingType(accessToken, fullOrder);
+          const shippingDetails = await fetchShippingDetails(accessToken, fullOrder);
+          orderInfo.shippingType = shippingDetails.shippingType;
+          orderInfo.deliveryAddress = shippingDetails.deliveryAddress;
         } catch (err) {
           // Segue sem os detalhes extras — a mensagem em si ja vale a pena gravar.
         }
@@ -1270,6 +1314,6 @@ module.exports = {
   upsertConversationFromPack,
   upsertNoContactOrder,
   extractOrderInfo,
-  fetchShippingType,
+  fetchShippingDetails,
   runBackfillStep,
 };

@@ -8,7 +8,7 @@
 const db = require("./db");
 const { getValidAccessToken, withTokenRetry } = require("./ml/tokens");
 const { fetchOrderById } = require("./ml/api");
-const { extractOrderInfo, fetchShippingType } = require("./sync");
+const { extractOrderInfo, fetchShippingDetails } = require("./sync");
 const {
   fetchClaims,
   fetchClaimById,
@@ -210,8 +210,8 @@ async function fetchOrderInfoForClaim(sellerId, accessToken, info) {
     const order = orderResult.result;
     accessToken = orderResult.accessToken;
     // O tipo de envio (Flex/Agência/etc.) vem do mesmo pedido, do mesmo jeito
-    // que ja e feito pras conversas de mensagens (ver fetchShippingType).
-    const shippingType = await fetchShippingType(accessToken, order);
+    // que ja e feito pras conversas de mensagens (ver fetchShippingDetails).
+    const { shippingType } = await fetchShippingDetails(accessToken, order);
     return { orderInfo: { ...extractOrderInfo(order), shippingType }, accessToken };
   } catch (err) {
     console.warn(
