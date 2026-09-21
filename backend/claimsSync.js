@@ -107,14 +107,25 @@ async function upsertClaim(sellerId, claim, messages, orderInfo) {
   // chegado mensagem nova depois da marcacao, o que indica que o assunto
   // voltou a ficar ativo e precisa reabrir sozinho.
   const { rows: existingRows } = await db.query(
-    "SELECT resolved_by_operator_at, resolved_by_operator FROM claims WHERE claim_id = $1",
+    "SELECT resolved_by_operator_at, resolved_by_operator, last_message_text FROM claims WHERE claim_id = $1",
     [claimId]
   );
   let resolvedByOperatorAt = existingRows[0]?.resolved_by_operator_at || null;
   let resolvedByOperator = existingRows[0]?.resolved_by_operator || null;
-  const lastMessageDate = claimMessageDate(last);
-  if (resolvedByOperatorAt && lastMessageDate && new Date(lastMessageDate) > new Date(resolvedByOperatorAt)) {
-    // Reabre: chegou mensagem depois da marcacao manual.
+  // Detecta "chegou mensagem nova" comparando o TEXTO da ultima mensagem
+  // contra o que ja estava gravado — NAO a data (bug real reportado pelo
+  // usuario: "marco como resolvido... depois de uma atualizacao ele volta").
+  // Comparar por data e fragil a qualquer diferenca de relogio entre este
+  // servidor e o Mercado Livre: bastava uma mensagem ANTIGA parecer "mais
+  // nova" que o momento da marcacao pra reabrir sozinha sem nada de novo de
+  // verdade. Reclamacao nao tem um id estavel de mensagem individual (ver
+  // comentario no topo desta funcao), entao o texto da ultima mensagem e o
+  // sinal mais confiavel disponivel (mesmo raciocinio do fix em sync.js,
+  // so que la da pra comparar por message_id).
+  const existingLastMessageText = existingRows[0]?.last_message_text || null;
+  const newLastMessageText = last?.message || null;
+  const hasNewMessage = newLastMessageText !== null && newLastMessageText !== existingLastMessageText;
+  if (resolvedByOperatorAt && hasNewMessage) {
     resolvedByOperatorAt = null;
     resolvedByOperator = null;
   }
