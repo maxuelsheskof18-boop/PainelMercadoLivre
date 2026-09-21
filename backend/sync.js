@@ -369,23 +369,45 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
   const isLastFromSeller = lastFromId === sellerIdStr;
   let status = isLastFromSeller ? "answered" : "pending";
 
-  // Se essa conversa foi marcada manualmente como resolvida pelo operador
-  // (atendimento antigo, tratado por fora do painel), preserva isso mesmo
-  // numa resincronizacao — a NAO SER que tenha chegado mensagem nova depois
-  // da marcacao, caso em que reabre sozinha (mesma logica de upsertClaim em
-  // claimsSync.js, so que aqui com o status 'resolved_by_operator', que e
-  // DIFERENTE do 'resolved' automatico usado em markConversationResolved).
-  const { rows: existingResolveRows } = await db.query(
-    "SELECT resolved_by_operator_at, resolved_by_operator FROM conversations WHERE pack_id = $1",
+  // Le o estado atual gravado (status, bloqueio, resolucao manual) ANTES de
+  // decidir o status novo — precisa disso pra nao desfazer marcacoes
+  // manuais/permanentes numa resincronizacao de rotina.
+  const { rows: existingConvRows } = await db.query(
+    "SELECT status, resolved_by_operator_at, resolved_by_operator FROM conversations WHERE pack_id = $1",
     [String(packId)]
   );
-  let resolvedByOperatorAt = existingResolveRows[0]?.resolved_by_operator_at || null;
-  let resolvedByOperator = existingResolveRows[0]?.resolved_by_operator || null;
-  const lastMsgDate = messageDate(last);
-  if (resolvedByOperatorAt && lastMsgDate && new Date(lastMsgDate) > new Date(resolvedByOperatorAt)) {
+  const existingStatus = existingConvRows[0]?.status || null;
+  let resolvedByOperatorAt = existingConvRows[0]?.resolved_by_operator_at || null;
+  let resolvedByOperator = existingConvRows[0]?.resolved_by_operator || null;
+
+  // Pra saber se "chegou mensagem nova de verdade" (unico motivo pra reabrir
+  // uma conversa marcada como resolvida), compara os message_id contra o que
+  // JA esta gravado — NAO a data da ultima mensagem. Comparar por data e
+  // fragil: se o relogio do servidor e o do Mercado Livre tiverem qualquer
+  // diferenca (coisa de segundos ja basta), uma mensagem ANTIGA podia parecer
+  // "mais nova" que o momento em que o operador clicou em resolver, reabrindo
+  // a conversa sozinha sem nenhuma mensagem nova de verdade — bug real
+  // reportado pelo usuario ("marco como resolvido... depois de uma
+  // atualizacao ele volta"). Comparar por message_id (o proprio Mercado Livre
+  // que atribui, nunca se repete) nao depende de relogio nenhum.
+  const { rows: knownMsgRows } = await db.query(
+    "SELECT message_id FROM messages WHERE pack_id = $1 AND message_id IS NOT NULL",
+    [String(packId)]
+  );
+  const knownMsgIds = new Set(knownMsgRows.map((r) => r.message_id));
+  const hasNewMessage = messages.some((m) => m?.id && !knownMsgIds.has(String(m.id)));
+
+  if (resolvedByOperatorAt && hasNewMessage) {
     resolvedByOperatorAt = null;
     resolvedByOperator = null;
   }
+  // "Bloqueado" (Mercado Livre recusou aceitar resposta — ver blockReason em
+  // routes/conversations.js) e permanente: nao existe reversao automatica,
+  // entao preserva sempre que ja estiver assim, senao a proxima sincronizacao
+  // desfazia o bloqueio sozinha (mesmo bug relatado pelo usuario, so que pra
+  // "bloqueado" em vez de "resolvido") — so um "Marcar como resolvido"
+  // manual (resolvedByOperatorAt abaixo) tem prioridade sobre isso.
+  if (existingStatus === "blocked") status = "blocked";
   if (resolvedByOperatorAt) status = "resolved_by_operator";
 
   // Descobre quem e o comprador: o participante que nao e o vendedor.
@@ -469,11 +491,11 @@ async function upsertConversationFromPack(sellerId, packId, packData, orderId, o
     ]
   );
 
-  const { rows: existingRows } = await db.query(
-    "SELECT message_id FROM messages WHERE pack_id = $1 AND message_id IS NOT NULL",
-    [String(packId)]
-  );
-  const existing = new Set(existingRows.map((r) => r.message_id));
+  // Mesmo Set ja calculado acima (knownMsgIds) pra decidir reabertura —
+  // reaproveita em vez de consultar de novo; o loop abaixo AINDA precisa
+  // adicionar a ele conforme grava, pra "reivindicar" (ver mais abaixo) nao
+  // inserir a mesma mensagem otimista duas vezes dentro deste mesmo loop.
+  const existing = knownMsgIds;
 
   for (const m of messages) {
     const id = m?.id ? String(m.id) : null;
