@@ -16,6 +16,7 @@ const {
   fetchShipment,
   fetchOrderBillingInfo,
   fetchUnreadMessagePacks,
+  fetchResource,
 } = require("../ml/api");
 const {
   reconcileAllAccounts,
@@ -1296,12 +1297,27 @@ router.get("/debug/probe-identidade", async (req, res) => {
 // Livre), e nao no processamento feito por este painel. Uso: abrir no
 // navegador (ja logado no painel) /api/debug/webhook-events, ou
 // /api/debug/webhook-events?sellerId=... pra filtrar so uma conta.
+// ?topicLike=message e ?resourceLike=<pedaco do pack/order/venda> filtram
+// ANTES do LIMIT — sem isso, uma conta de alto volume (ex: VESCO SUPRIMENTOS,
+// dezenas de milhares de notificacoes de item/estoque/frete por dia) enche
+// os ultimos 100 registros so com essas, e uma notificacao de mensagem (rara
+// em comparacao) nunca aparece mesmo tendo chegado ha pouco. Uso:
+// /api/debug/webhook-events?sellerId=...&topicLike=message pra confirmar se
+// (e quando) uma notificacao de mensagem de verdade chegou pra essa conta.
 router.get("/debug/webhook-events", async (req, res) => {
   const conditions = [];
   const params = [];
   if (req.query.sellerId) {
     params.push(req.query.sellerId);
     conditions.push(`w.seller_id = $${params.length}`);
+  }
+  if (req.query.topicLike) {
+    params.push(`%${req.query.topicLike}%`);
+    conditions.push(`w.topic ILIKE $${params.length}`);
+  }
+  if (req.query.resourceLike) {
+    params.push(`%${req.query.resourceLike}%`);
+    conditions.push(`w.resource ILIKE $${params.length}`);
   }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
@@ -1327,6 +1343,44 @@ router.get("/debug/webhook-events", async (req, res) => {
   );
 
   res.json({ resumoPorConta: porConta, ultimasNotificacoes: rows });
+});
+
+// Achado real (2026-09-22): o topico "messages" do webhook chega com um
+// "resource" que NAO segue o formato que parsePackResource (ml/api.js)
+// espera ("packs/{id}/sellers/{id}") — chega so um hash tipo
+// "01a0c9fc922b76fea4701f90c5ef1bc6". Resultado: TODA notificacao de
+// mensagem em tempo real cai no "if (!packId || !sellerId) return;" de
+// routes/webhooks.js silenciosamente (so um console.warn, nunca visto) —
+// ou seja, o webhook de mensagem nunca funcionou de verdade, so ficava
+// registrado em webhook_events sem nenhum efeito. Essa rota tenta descobrir
+// o que esse hash realmente e, testando alguns formatos de URL contra a API
+// de verdade — sem isso, seria chute. Uso:
+// /api/debug/probe-message-hash?hash=01a0c9...&sellerId=522101670
+router.get("/debug/probe-message-hash", async (req, res) => {
+  const hash = req.query.hash;
+  const sellerId = req.query.sellerId;
+  if (!hash || !sellerId) {
+    return res.status(400).json({ error: "Informe ?hash=...&sellerId=..." });
+  }
+
+  const accessToken = await getValidAccessToken(sellerId);
+  const tentativas = [
+    `/messages/${hash}`,
+    `/messages/${hash}?tag=post_sale`,
+    `/messages/search?message_id=${hash}`,
+    `/messages/${hash}?role=seller&tag=post_sale`,
+  ];
+
+  const resultados = [];
+  for (const caminho of tentativas) {
+    try {
+      const data = await fetchResource(accessToken, caminho);
+      resultados.push({ caminho, ok: true, data });
+    } catch (err) {
+      resultados.push({ caminho, ok: false, status: err.status, body: err.body || err.message });
+    }
+  }
+  res.json({ hash, sellerId, resultados });
 });
 
 // Rota de diagnostico: mostra, por conta, os packs com mensagem NAO LIDA
