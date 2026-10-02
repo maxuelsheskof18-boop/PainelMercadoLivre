@@ -13,8 +13,10 @@
 // com outro nome, ajuste o filtro `isMessageTopic` abaixo.
 const express = require("express");
 const db = require("../db");
-const { syncPack } = require("../sync");
-const { parsePackResource } = require("../ml/api");
+const { syncPack, reconcileAccount } = require("../sync");
+const { parsePackResource, fetchMessageById } = require("../ml/api");
+const { getValidAccessToken } = require("../ml/tokens");
+const webhookLog = require("../webhookLog");
 const { syncClaim } = require("../claimsSync");
 const { syncQuestion } = require("../questionsSync");
 
@@ -123,27 +125,79 @@ router.post("/webhooks/mercadolivre", express.json(), (req, res) => {
 
   const parsed = parsePackResource(resource);
   const sellerId = String(parsed?.sellerId || user_id || "");
-  const packId = parsed?.packId;
+  let packId = parsed?.packId || null;
 
-  if (!packId || !sellerId) {
-    console.warn("[webhook] nao consegui identificar pack/seller em:", resource);
+  if (!sellerId) {
+    console.warn("[webhook] notificacao de mensagem sem seller:", resource);
+    webhookLog.record({ resource, ok: false, motivo: "sem seller" });
     return;
   }
 
   (async () => {
+    const log = { resource, sellerId, formato: packId ? "pack" : "outro" };
     try {
-      const { rows } = await db.query("SELECT 1 FROM accounts WHERE id = $1", [
-        sellerId,
-      ]);
+      const { rows } = await db.query("SELECT 1 FROM accounts WHERE id = $1", [sellerId]);
       if (!rows.length) {
         console.warn(`[webhook] notificacao para conta nao conectada: ${sellerId}`);
+        webhookLog.record({ ...log, ok: false, motivo: "conta nao conectada" });
         return;
       }
-      await syncPack(sellerId, packId);
+
+      // O topico "messages" chega com o ID DA MENSAGEM (hash de 32 hex), nao
+      // com "/packs/{id}/sellers/{id}" — achado real em webhook_events
+      // (2026-09-22): por isso todo webhook de mensagem era descartado aqui
+      // sem efeito nenhum. Resolve o pack consultando a propria mensagem.
+      if (!packId) {
+        try {
+          const accessToken = await getValidAccessToken(sellerId);
+          const msg = await fetchMessageById(accessToken, resource);
+          packId = resolvePackFromMessage(msg);
+          log.resolveuPor = packId ? "GET /messages/{id}" : null;
+          if (!packId) log.respostaDaMensagem = JSON.stringify(msg).slice(0, 600);
+        } catch (err) {
+          log.erroBuscarMensagem = { status: err.status, body: err.body || err.message };
+        }
+      }
+
+      if (packId) {
+        await syncPack(sellerId, packId);
+        webhookLog.record({ ...log, packId, ok: true });
+        return;
+      }
+
+      // Nao deu pra descobrir o pack: em vez de perder a notificacao, roda uma
+      // reconciliacao rapida da conta (no maximo 1 por minuto por conta, pra
+      // uma enxurrada de notificacoes nao disparar varias ao mesmo tempo).
+      const last = lastQuickReconcile.get(sellerId) || 0;
+      if (Date.now() - last < 60_000) {
+        webhookLog.record({ ...log, ok: false, motivo: "pack nao resolvido; reconciliacao rapida ja rodou ha pouco" });
+        return;
+      }
+      lastQuickReconcile.set(sellerId, Date.now());
+      await reconcileAccount(sellerId, { quick: true });
+      webhookLog.record({ ...log, ok: true, motivo: "pack nao resolvido; rodou reconciliacao rapida da conta" });
     } catch (err) {
-      console.error(`[webhook] falha ao sincronizar pack ${packId}:`, err.message);
+      console.error(`[webhook] falha ao processar notificacao de mensagem ${resource}:`, err.message);
+      webhookLog.record({ ...log, ok: false, motivo: err.message });
     }
   })();
 });
+
+const lastQuickReconcile = new Map();
+
+// Procura o pack na resposta de GET /messages/{id}. A documentacao diz que
+// vem em "message_resources": [{ name: "packs", id: "..." }, { name:
+// "sellers", id: "..." }], mas isso nunca foi confirmado neste painel — por
+// isso tenta tambem outros formatos e, por ultimo, procura "packs/{id}" em
+// qualquer lugar do JSON.
+function resolvePackFromMessage(msg) {
+  if (!msg || typeof msg !== "object") return null;
+  const resources = Array.isArray(msg.message_resources) ? msg.message_resources : [];
+  const fromResources = resources.find((r) => String(r?.name).toLowerCase() === "packs");
+  if (fromResources?.id) return String(fromResources.id);
+  if (msg.pack_id) return String(msg.pack_id);
+  const match = /packs\/(\d+)/i.exec(JSON.stringify(msg));
+  return match ? match[1] : null;
+}
 
 module.exports = router;

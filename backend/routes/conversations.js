@@ -24,6 +24,7 @@ const {
   upsertConversationFromPack,
   fetchShippingDetails,
   syncPack,
+  refreshPackOnDemand,
 } = require("../sync");
 const { reconcileAllClaims } = require("../claimsSync");
 const { reconcileAllQuestions } = require("../questionsSync");
@@ -192,13 +193,88 @@ router.get("/conversations", async (req, res) => {
   res.json(rows);
 });
 
+// Junta as mensagens da(s) reclamacao(oes) da venda (tabela claim_messages)
+// na lista de mensagens da conversa, em ordem de data — o site do Mercado
+// Livre mostra tudo junto numa conversa so, mas a API de mensagens
+// pos-venda NAO devolve as trocadas durante a reclamacao. Cada uma vai com
+// from_claim=true (o front mostra uma etiqueta). Mensagens sem data valida
+// mantem a posicao relativa (herdam a data da anterior).
+function mergeClaimMessages(messages, claimMsgs) {
+  if (!claimMsgs.length) return messages;
+  const toMs = (v) => {
+    const t = v ? new Date(v).getTime() : NaN;
+    return Number.isNaN(t) ? null : t;
+  };
+  let carry = 0;
+  const base = messages.map((m) => {
+    const t = toMs(m.sent_date);
+    if (t !== null) carry = t;
+    return { t: carry, m };
+  });
+  const extra = claimMsgs
+    .map((c) => ({
+      t: toMs(c.sent_date) ?? 0,
+      m: {
+        id: `claim-${c.id}`,
+        pack_id: null,
+        message_id: null,
+        direction: c.sender_role === "respondent" ? "out" : "in",
+        text: c.message,
+        sent_date: c.sent_date,
+        operator_name: c.operator_name || null,
+        attachments: null,
+        from_claim: true,
+        claim_id: c.claim_id,
+        sender_role: c.sender_role,
+      },
+    }))
+    .sort((a, b) => a.t - b.t);
+
+  const out = [];
+  let i = 0;
+  for (const e of extra) {
+    while (i < base.length && base[i].t <= e.t) out.push(base[i++].m);
+    out.push(e.m);
+  }
+  while (i < base.length) out.push(base[i++].m);
+  return out;
+}
+
 router.get("/conversations/:packId/messages", async (req, res) => {
   const packId = req.params.packId;
 
-  const { rows: messages } = await db.query(
+  // Busca a versao atual dessa conversa no Mercado Livre antes de ler o
+  // banco (ver refreshPackOnDemand em sync.js) — espera no maximo 8s pra a
+  // tela nunca travar por causa de uma chamada lenta; se estourar, segue com
+  // o que ja tem gravado e a atualizacao termina em segundo plano.
+  try {
+    const { rows: known } = await db.query(
+      "SELECT seller_id, order_id FROM conversations WHERE pack_id = $1",
+      [packId]
+    );
+    if (known[0]) {
+      await Promise.race([
+        refreshPackOnDemand(known[0].seller_id, packId, known[0].order_id),
+        new Promise((resolve) => setTimeout(resolve, 8000)),
+      ]);
+    }
+  } catch (err) {
+    console.warn(`[conversations] nao consegui atualizar o pack ${packId} na hora:`, err.status, err.body || err.message);
+  }
+
+  const { rows: dbMessages } = await db.query(
     "SELECT * FROM messages WHERE pack_id = $1 ORDER BY id ASC",
     [packId]
   );
+  const { rows: claimMsgs } = await db.query(
+    `SELECT cm.id, cm.claim_id, cm.sender_role, cm.message, cm.sent_date, cm.operator_name
+       FROM claim_messages cm
+       JOIN claims cl ON cl.claim_id = cm.claim_id
+       JOIN conversations c ON c.seller_id = cl.seller_id AND c.order_id = cl.order_id
+      WHERE c.pack_id = $1 AND cm.message IS NOT NULL`,
+    [packId]
+  );
+  const messages = mergeClaimMessages(dbMessages, claimMsgs);
 
   const { rows: convRows } = await db.query(
     `SELECT c.*, a.nickname AS seller_nickname,
@@ -1458,6 +1534,13 @@ router.get("/debug/probe-pack-full", async (req, res) => {
     report.contas.push(entry);
   }
   res.json(report);
+});
+
+// Ultimas notificacoes de mensagem processadas pelo webhook desde que o
+// servico subiu (memoria — zera ao reiniciar) e o resultado de cada uma:
+// se achou o pack, por qual caminho, ou o erro. Uso: /api/debug/webhook-message-log
+router.get("/debug/webhook-message-log", (req, res) => {
+  res.json(require("../webhookLog").getAll());
 });
 
 router.get("/debug/probe-message-hash", async (req, res) => {
