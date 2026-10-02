@@ -1356,6 +1356,110 @@ router.get("/debug/webhook-events", async (req, res) => {
 // o que esse hash realmente e, testando alguns formatos de URL contra a API
 // de verdade — sem isso, seria chute. Uso:
 // /api/debug/probe-message-hash?hash=01a0c9...&sellerId=522101670
+// Sonda (2026-10-02): usuario reportou que o painel mostra so a ULTIMA
+// mensagem de uma venda (CPC TINTAS, pack 2000015168802409 / pedido
+// 2000018602746358) enquanto o site do Mercado Livre mostra a conversa toda.
+// Compara, pro MESMO pack: (1) o que a API devolve cru (chaves do topo,
+// paging, status da conversa, cada mensagem resumida), (2) o que ja esta
+// gravado no banco, (3) variacoes de paginacao (limit/offset) e (4) se ha
+// reclamacao ligada ao pedido (mensagens durante reclamacao nao vem por esta
+// API). Uso: /api/debug/probe-pack-full?packId=2000015168802409
+// (ou ?orderId=...) — acha sozinha a conta dona.
+router.get("/debug/probe-pack-full", async (req, res) => {
+  let packId = req.query.packId ? String(req.query.packId) : null;
+  const orderId = req.query.orderId ? String(req.query.orderId) : null;
+  if (!packId && !orderId) return res.status(400).json({ error: "Informe ?packId=... ou ?orderId=..." });
+
+  const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts");
+  const report = { packId, orderId, contas: [] };
+  const summarize = (m) => ({
+    id: m?.id,
+    from: m?.from?.user_id,
+    to: m?.to?.user_id,
+    text: (m?.text || "").slice(0, 70),
+    status: m?.status,
+    moderation: m?.moderation?.status,
+    tag: m?.message_moderation || m?.tag || null,
+    attachments: Array.isArray(m?.message_attachments) ? m.message_attachments.length : 0,
+    date: m?.message_date,
+  });
+
+  for (const acc of accounts) {
+    const entry = { sellerId: acc.id, nickname: acc.nickname };
+    try {
+      const accessToken = await getValidAccessToken(acc.id);
+
+      let order = null;
+      if (orderId) {
+        try {
+          order = await fetchOrderById(accessToken, orderId);
+          packId = String(order?.pack_id || order?.id);
+          entry.pedido = { id: order?.id, pack_id: order?.pack_id || null, status: order?.status, tags: order?.tags };
+        } catch (err) {
+          entry.pedidoNaoEhDestaConta = err.status;
+          report.contas.push(entry);
+          continue;
+        }
+      }
+      const idToTry = packId;
+
+      // 1) resposta crua
+      try {
+        const raw = await fetchPackMessages(accessToken, idToTry, acc.id);
+        entry.packIdUsado = idToTry;
+        entry.chavesDoTopo = Object.keys(raw || {});
+        entry.paging = raw?.paging ?? null;
+        entry.conversationStatus = raw?.conversation_status ?? null;
+        entry.totalMensagensNaResposta = Array.isArray(raw?.messages) ? raw.messages.length : null;
+        entry.mensagens = (raw?.messages || []).map(summarize);
+      } catch (err) {
+        entry.erroMensagens = { status: err.status, body: err.body || err.message };
+        report.contas.push(entry);
+        continue; // pack nao e desta conta
+      }
+
+      // 2) variacoes de paginacao — se o total for maior que o devolvido, aparece aqui
+      entry.variacoes = [];
+      for (const q of ["limit=100", "limit=50&offset=0", "offset=1&limit=50"]) {
+        try {
+          const r = await fetchResource(
+            accessToken,
+            `/messages/packs/${idToTry}/sellers/${acc.id}?tag=post_sale&mark_as_read=false&${q}`
+          );
+          entry.variacoes.push({ q, count: Array.isArray(r?.messages) ? r.messages.length : null, paging: r?.paging ?? null });
+        } catch (err) {
+          entry.variacoes.push({ q, erro: err.status, body: err.body || err.message });
+        }
+      }
+
+      // 3) o que ja esta gravado no banco pra esse pack
+      const { rows: dbMsgs } = await db.query(
+        "SELECT message_id, direction, LEFT(text, 70) AS text, sent_date FROM messages WHERE pack_id = $1 ORDER BY id",
+        [String(idToTry)]
+      );
+      entry.nobancoQtd = dbMsgs.length;
+      entry.nobanco = dbMsgs;
+      const { rows: convRows } = await db.query(
+        "SELECT pack_id, order_id, status, blocked_reason, last_message_date FROM conversations WHERE pack_id = $1 OR order_id = $2",
+        [String(idToTry), orderId || String(idToTry)]
+      );
+      entry.conversasNoBanco = convRows;
+
+      // 4) reclamacoes ligadas ao pedido (mensagens trocadas DURANTE uma
+      // reclamacao nao vem pela API de mensagens pos-venda)
+      const { rows: claimRows } = await db.query(
+        "SELECT claim_id, order_id, stage, ml_status, local_status FROM claims WHERE order_id = $1 OR resource_id = $1",
+        [orderId || String(idToTry)]
+      );
+      entry.reclamacoesNoBanco = claimRows;
+    } catch (err) {
+      entry.erro = err.message;
+    }
+    report.contas.push(entry);
+  }
+  res.json(report);
+});
+
 router.get("/debug/probe-message-hash", async (req, res) => {
   const hash = req.query.hash;
   const sellerId = req.query.sellerId;
