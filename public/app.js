@@ -47,6 +47,9 @@ const orderCardCopyBtn = document.getElementById("order-card-copy-btn");
 const orderCardAddressRow = document.getElementById("order-card-address-row");
 const orderCardAddress = document.getElementById("order-card-address");
 const orderCardAddressCopyBtn = document.getElementById("order-card-address-copy-btn");
+const chatAddressCard = document.getElementById("chat-address-card");
+const chatAddressFields = document.getElementById("chat-address-fields");
+const chatAddressCopyBtn = document.getElementById("chat-address-copy-btn");
 const threadDeliveryTag = document.getElementById("thread-delivery-tag");
 const threadDeliveredTag = document.getElementById("thread-delivered-tag");
 const threadShippingTag = document.getElementById("thread-shipping-tag");
@@ -590,6 +593,63 @@ function listPaymentBadge(status) {
   return `<span class="tag ${paymentStatusTagClass(status)}">${label}</span>`;
 }
 
+// ---------- Dados combinados na conversa (so "combinar entrega") ----------
+// "Combinar entrega" nao tem envio de verdade pelo Mercado Envios, entao a
+// API NUNCA tem o endereco desses pedidos (ver delivery_address no backend,
+// so preenchido pra pedido com envio real). O unico lugar onde CEP, rua,
+// numero, telefone e CPF desses compradores existem e no que ELES MESMOS
+// escrevem na conversa, respondendo o modelo "Combinar entrega" (ver
+// COMBINAR_ENTREGA_TEMPLATE mais abaixo, que pede exatamente esses campos
+// com esses rotulos). Pedido do usuario: "os flex ta puxando o endereço...
+// mas os combinar entrega nao" — como nao tem como puxar da API, isso aqui
+// PROCURA os campos nas mensagens do proprio comprador em vez do vendedor
+// ter que catar rolando a conversa inteira. E so um regex sobre texto de
+// terceiro (nunca confirmado pelo Mercado Livre) — por isso o aviso "confira
+// antes de usar" no card.
+const CHAT_FIELD_PATTERNS = [
+  { key: "cep", label: "CEP", re: /\bcep[:\s-]+\s*(\d{5}-?\d{3})/i },
+  { key: "rua", label: "Rua", re: /\brua[:\s-]+\s*([^\n,]{2,80})/i },
+  { key: "numero", label: "Nº", re: /\bn[uú]mero[:\s-]+\s*(\S{1,10})|\bn[°º]?[:.-]+\s*(\S{1,10})/i },
+  { key: "bairro", label: "Bairro", re: /\bbairro[:\s-]+\s*([^\n,]{2,60})/i },
+  { key: "telefone", label: "Telefone", re: /\btelefone[:\s-]+\s*([\d\s()+-]{8,20})/i },
+  {
+    key: "cpf",
+    label: "CPF/CNPJ",
+    re: /\bcnpj[:\s-]+\s*([\d./-]{11,20})|\bcpf[:\s-]+\s*([\d./-]{11,20})/i,
+  },
+];
+
+// Varre as mensagens RECEBIDAS (do comprador) procurando os campos do
+// modelo — pega a ULTIMA ocorrencia de cada campo (se o comprador corrigiu
+// algo, ex: mandou o CEP errado e depois o certo, fica o mais recente).
+function extractChatCombinedData(messages) {
+  const found = {};
+  for (const m of messages) {
+    if (m.direction !== "in" || !m.text) continue;
+    for (const field of CHAT_FIELD_PATTERNS) {
+      const match = field.re.exec(m.text);
+      if (match) {
+        const value = (match[1] || match[2] || "").trim();
+        if (value) found[field.key] = { label: field.label, value };
+      }
+    }
+  }
+  return found;
+}
+
+function renderChatAddressCard(messages) {
+  const found = extractChatCombinedData(messages || []);
+  const entries = Object.values(found);
+  if (entries.length === 0) {
+    chatAddressCard.classList.add("hidden");
+    return;
+  }
+  const line = entries.map((f) => `${f.label}: ${f.value}`).join(" · ");
+  chatAddressFields.textContent = line;
+  chatAddressCopyBtn.dataset.text = line;
+  chatAddressCard.classList.remove("hidden");
+}
+
 // Atualiza a lista da esquerda SEM recriar tudo do zero a cada carregamento
 // (pedido do usuario: "nao e para carregar varias vezes a pagina"). Compara a
 // lista nova com o que ja esta na tela por uma chave (pack_id/claim_id/
@@ -818,6 +878,7 @@ function renderClaimThreadInfo(claim) {
   threadShippingTag.textContent = claim.shipping_type || "-";
   threadShippingTag.classList.toggle("hidden", !claim.shipping_type);
   threadPaymentTag.classList.add("hidden"); // reclamacao nao tem esse dado ainda
+  chatAddressCard.classList.add("hidden"); // idem — evita vazar de uma conversa vista antes
   quickTemplates.classList.add("hidden");
   freightBox.classList.add("hidden");
   freightTemplateEditBtn.classList.add("hidden");
@@ -1060,6 +1121,7 @@ function renderQuestionThreadInfo(question) {
   threadDeliveredTag.classList.add("hidden");
   threadShippingTag.classList.add("hidden");
   threadPaymentTag.classList.add("hidden"); // pergunta e pre-venda, nao tem pedido/pagamento ainda
+  chatAddressCard.classList.add("hidden"); // idem
   threadClaimStageTag.classList.add("hidden");
   threadClaimWarningTag.classList.add("hidden");
   claimDueBanner.classList.add("hidden");
@@ -1272,6 +1334,9 @@ orderCardCopyBtn.addEventListener("click", () => {
 });
 orderCardAddressCopyBtn.addEventListener("click", () => {
   if (orderCardAddressCopyBtn.dataset.address) copyTextToClipboard(orderCardAddressCopyBtn.dataset.address, orderCardAddressCopyBtn);
+});
+chatAddressCopyBtn.addEventListener("click", () => {
+  if (chatAddressCopyBtn.dataset.text) copyTextToClipboard(chatAddressCopyBtn.dataset.text, chatAddressCopyBtn);
 });
 claimInfoCopyBtn.addEventListener("click", () => {
   if (claimInfoCopyBtn.dataset.orderId) copyTextToClipboard(claimInfoCopyBtn.dataset.orderId, claimInfoCopyBtn);
@@ -1993,6 +2058,14 @@ function buildMessageBubble(m, packId) {
     hasIncomingAttachments ? '<div class="msg-attachments"></div>' : ""
   }<div class="msg-date">${fmtDate(m.sent_date)}</div>`;
   renderMessageTextWithLinks(div.querySelector(".msg-text"), m.text);
+  if (m.from_claim) {
+    // Mensagem trocada DURANTE uma reclamacao (nao vem pela API normal de
+    // mensagens — ver mergeClaimMessages em routes/conversations.js).
+    const tag = document.createElement("div");
+    tag.className = "msg-claim-tag";
+    tag.textContent = m.sender_role === "mediator" ? "🛡️ Mediação do Mercado Livre" : "🛡️ Reclamação";
+    div.insertBefore(tag, div.firstChild);
+  }
   if (m.attachment_name) {
     div.querySelector(".msg-attachment").textContent = `📎 ${m.attachment_name}`;
   }
@@ -2084,6 +2157,15 @@ async function loadThreadMessages(packId, { silent = false } = {}) {
   if (!silent && data.conversation) renderThreadInfo(data.conversation);
 
   renderMessages(data.messages || [], packId);
+
+  // "Dados combinados na conversa" (ver comentario em renderChatAddressCard)
+  // — so faz sentido pra combinar entrega; nos outros casos ja mostramos o
+  // endereco de verdade vindo do Mercado Envios (order-card-address-row).
+  if (data.conversation?.is_combinar_entrega) {
+    renderChatAddressCard(data.messages || []);
+  } else {
+    chatAddressCard.classList.add("hidden");
+  }
   return true;
 }
 

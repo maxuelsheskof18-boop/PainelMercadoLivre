@@ -1016,6 +1016,7 @@ body {
   display: inline-block;
 }
 .msg-date { font-size: 10.5px; margin-top: 4px; color: var(--muted); }
+.msg-claim-tag { font-size: 10.5px; font-weight: 700; margin-bottom: 3px; opacity: 0.8; }
 
 .quick-templates {
   display: flex;
