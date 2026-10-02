@@ -720,6 +720,58 @@ async function syncPack(sellerId, packId, orderId) {
   // Se nao resolvemos um pedido de verdade, grava order_id NULL (nao o
   // pack_id) pra nao criar link/consulta pra um pedido que nao existe.
   await upsertConversationFromPack(sellerId, packId, packData, resolvedOrderId, orderInfo);
+  await ensureClaimsForPack(sellerId, packData);
+}
+
+// Mensagens trocadas DURANTE uma reclamacao nao vem por
+// GET /messages/packs/... (a API de mensagens pos-venda so devolve as
+// "normais" — confirmado com a sonda probe-pack-full: venda com 8+ mensagens
+// no site do Mercado Livre devolveu total=3 aqui). A resposta traz, porem,
+// conversation_status.claim_ids com as reclamacoes da venda, mesmo ja
+// encerradas — que a varredura periodica nao grava (ela so busca as
+// abertas). Aqui sincroniza as que o painel ainda nao conhece, pra a
+// conversa poder mostrar essas mensagens tambem (ver GET
+// /conversations/:packId/messages). Require tardio: claimsSync.js ja importa
+// este arquivo (dependencia circular se fosse no topo).
+async function ensureClaimsForPack(sellerId, packData) {
+  const ids = packData?.conversation_status?.claim_ids;
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  const { syncClaim } = require("./claimsSync");
+  for (const id of ids) {
+    const claimId = String(id);
+    try {
+      const { rows } = await db.query("SELECT 1 FROM claims WHERE claim_id = $1", [claimId]);
+      if (rows.length) continue;
+      await syncClaim(sellerId, claimId);
+    } catch (err) {
+      console.warn(`[syncPack] nao consegui sincronizar a reclamacao ${claimId}:`, err.status, err.body || err.message);
+    }
+  }
+}
+
+// Atualiza UMA conversa direto do Mercado Livre na hora em que ela e aberta
+// no painel (ou a cada 30s enquanto fica aberta). Cobre o que nenhuma
+// varredura enxerga: resposta dada pelo SITE do Mercado Livre (nao ha "nao
+// lida" pra quem respondeu, e ler la tira a mensagem de "nao lidas") — o
+// webhook de mensagem em tempo real era o unico caminho pra isso e nunca
+// funcionou. 1 chamada so; limite de 1 por pack a cada 30s pra nao gastar
+// a cota da API com a atualizacao de fundo da conversa aberta.
+const packRefreshAt = new Map();
+const PACK_REFRESH_MIN_INTERVAL_MS = 30_000;
+
+async function refreshPackOnDemand(sellerId, packId, orderId) {
+  const key = String(packId);
+  const now = Date.now();
+  if (now - (packRefreshAt.get(key) || 0) < PACK_REFRESH_MIN_INTERVAL_MS) return false;
+  if (packRefreshAt.size > 2000) packRefreshAt.clear();
+  packRefreshAt.set(key, now);
+
+  const accessToken = await getValidAccessToken(sellerId);
+  const packData = await fetchPackMessages(accessToken, packId, sellerId);
+  // orderId precisa ser o ja gravado: o UPSERT sobrescreve order_id direto.
+  await upsertConversationFromPack(sellerId, packId, packData, orderId || null, null);
+  await ensureClaimsForPack(sellerId, packData);
+  return true;
 }
 
 // Varredura de reconciliacao: olha os pedidos recentes do vendedor e checa
@@ -1331,6 +1383,7 @@ async function reconcileAllAccounts({ quick = false } = {}) {
 
 module.exports = {
   syncPack,
+  refreshPackOnDemand,
   reconcileAccount,
   reconcileAllAccounts,
   upsertConversationFromPack,
