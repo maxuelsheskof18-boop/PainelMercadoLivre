@@ -47,9 +47,13 @@ const orderCardCopyBtn = document.getElementById("order-card-copy-btn");
 const orderCardAddressRow = document.getElementById("order-card-address-row");
 const orderCardAddress = document.getElementById("order-card-address");
 const orderCardAddressCopyBtn = document.getElementById("order-card-address-copy-btn");
-const chatAddressCard = document.getElementById("chat-address-card");
-const chatAddressFields = document.getElementById("chat-address-fields");
-const chatAddressCopyBtn = document.getElementById("chat-address-copy-btn");
+// "|| document.createElement" = rede de seguranca: se o index.html publicado
+// for mais antigo que este app.js (sem o card), o script NAO quebra por inteiro
+// (bug real: "Cannot read properties of null (reading 'addEventListener')"
+// deixava o painel todo sem carregar) — o card so nao aparece.
+const chatAddressCard = document.getElementById("chat-address-card") || document.createElement("div");
+const chatAddressFields = document.getElementById("chat-address-fields") || document.createElement("span");
+const chatAddressCopyBtn = document.getElementById("chat-address-copy-btn") || document.createElement("button");
 const threadDeliveryTag = document.getElementById("thread-delivery-tag");
 const threadDeliveredTag = document.getElementById("thread-delivered-tag");
 const threadShippingTag = document.getElementById("thread-shipping-tag");
