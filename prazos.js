@@ -434,21 +434,29 @@ async function coletarConta(acc, config, agora, hojeSP) {
   const token = await getValidAccessToken(sellerId);
   const janelas = await janelasDaConta(sellerId, token, hojeSP);
 
-  const [aImprimir, impressos] = await Promise.all([
+  // Substatus que ainda estao no CD (confirmado com /debug/probe-prazos-conta
+  // em 06/10): invoice_pending = falta a nota fiscal, o ML nem libera a
+  // etiqueta (contas com NF obrigatoria); ready_for_pickup = impresso e
+  // esperando o motorista da coleta. picked_up/dropped_off/in_hub ja sairam.
+  const [aImprimir, nfPendente, impressos, prontosColeta] = await Promise.all([
     buscarPedidos(sellerId, token, "ready_to_print"),
+    buscarPedidos(sellerId, token, "invoice_pending"),
     buscarPedidos(sellerId, token, "printed"),
+    buscarPedidos(sellerId, token, "ready_for_pickup"),
   ]);
 
   // Pedidos de um mesmo carrinho (pack) dividem o mesmo envio.
   const porEnvio = new Map();
-  for (const [lista, impresso] of [
-    [aImprimir, false],
-    [impressos, true],
+  for (const [lista, impresso, nf] of [
+    [aImprimir, false, false],
+    [nfPendente, false, true],
+    [impressos, true, false],
+    [prontosColeta, true, false],
   ]) {
     for (const o of lista) {
       const shipId = o?.shipping?.id;
       if (!shipId) continue;
-      if (!porEnvio.has(shipId)) porEnvio.set(shipId, { shipId, impresso, pedidos: [] });
+      if (!porEnvio.has(shipId)) porEnvio.set(shipId, { shipId, impresso, nfPendente: nf, pedidos: [] });
       porEnvio.get(shipId).pedidos.push(o);
     }
   }
@@ -481,6 +489,7 @@ async function coletarConta(acc, config, agora, hojeSP) {
       modalidade,
       logisticType: logistic_type,
       impresso: e.impresso,
+      nfPendente: e.nfPendente,
       slaStatus: sla.status,
       prazo: prazo ? prazo.toISOString() : null,
       prazoSla: prazoSla ? prazoSla.toISOString() : null,
