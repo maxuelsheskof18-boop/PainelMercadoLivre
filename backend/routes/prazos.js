@@ -1,5 +1,6 @@
 // Monitor de prazos de despacho (coleta / agencia / Flex).
-// Rotas: GET /api/prazos, POST /api/prazos/atualizar, PUT /api/prazos/config
+// Rotas: GET /api/prazos, POST /api/prazos/atualizar, PUT /api/prazos/config,
+// GET /api/prazos/calendario e /api/prazos/dia (historico)
 // (fase 2, mais abaixo) e a sonda /api/debug/probe-prazos (fase 1).
 //
 // FASE 1 — sonda de diagnostico. Antes de construir o painel de prazos,
@@ -500,6 +501,197 @@ async function coletarConta(acc, config, agora, hojeSP) {
   };
 }
 
+// --- Historico (calendario) -------------------------------------------------
+// A API do ML so mostra o que ainda esta "pronto para enviar": o que foi
+// despachado ontem some. Para poder voltar num dia e ver o que foi impresso,
+// cada ciclo grava os envios em prazos_envios:
+//   - impresso_em: primeiro ciclo em que o envio apareceu como "impresso"
+//     (precisao de ~3 min). impresso_estimado=true quando ja chegou impresso
+//     no primeiro ciclo (ou saiu despachado sem nunca ter sido visto impresso).
+//   - atrasou: em algum ciclo ficou pendente depois do prazo de despacho.
+//   - saiu_em / status_final: quando deixou a lista e por que (shipped,
+//     cancelled...), conferido no /shipments.
+// O historico comeca no dia em que esta versao foi publicada.
+let tabelaHistorico = null;
+
+function garantirTabelaHistorico() {
+  if (!tabelaHistorico) {
+    tabelaHistorico = (async () => {
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS prazos_envios (
+          shipping_id TEXT PRIMARY KEY,
+          seller_id TEXT NOT NULL,
+          conta TEXT,
+          venda TEXT,
+          comprador TEXT,
+          itens JSONB,
+          modalidade TEXT,
+          prazo TIMESTAMPTZ,
+          limite_impressao TIMESTAMPTZ,
+          dia_prazo DATE,
+          sla_status TEXT,
+          impresso BOOLEAN NOT NULL DEFAULT false,
+          impresso_em TIMESTAMPTZ,
+          impresso_estimado BOOLEAN NOT NULL DEFAULT false,
+          atrasou BOOLEAN NOT NULL DEFAULT false,
+          visto_em TIMESTAMPTZ NOT NULL,
+          ultimo_visto TIMESTAMPTZ NOT NULL,
+          saiu_em TIMESTAMPTZ,
+          status_final TEXT
+        )`);
+      await db.query("CREATE INDEX IF NOT EXISTS prazos_envios_dia_idx ON prazos_envios (dia_prazo)");
+    })().catch((err) => {
+      tabelaHistorico = null;
+      throw err;
+    });
+  }
+  return tabelaHistorico;
+}
+
+const COLUNAS_HIST = [
+  "shipping_id", "seller_id", "conta", "venda", "comprador", "itens", "modalidade", "prazo",
+  "limite_impressao", "dia_prazo", "sla_status", "impresso", "impresso_em", "impresso_estimado",
+  "atrasou", "visto_em", "ultimo_visto",
+];
+
+async function gravarHistorico(envios, contasOk, agora) {
+  await garantirTabelaHistorico();
+
+  for (let i = 0; i < envios.length; i += 100) {
+    const lote = envios.slice(i, i + 100);
+    const params = [];
+    const linhas = lote.map((e) => {
+      const valores = [
+        String(e.shippingId), e.sellerId, e.conta, e.venda, e.comprador, JSON.stringify(e.itens),
+        e.modalidade, e.prazo, e.limiteImpressao, e.prazo ? partesSP(new Date(e.prazo)).dia : null,
+        e.slaStatus, e.impresso, e.impresso ? agora : null, e.impresso,
+        e.situacao === "atrasado", agora, agora,
+      ];
+      const ph = valores.map((v) => {
+        params.push(v);
+        return `$${params.length}`;
+      });
+      return `(${ph.join(",")})`;
+    });
+    await db.query(
+      `INSERT INTO prazos_envios (${COLUNAS_HIST.join(",")}) VALUES ${linhas.join(",")}
+       ON CONFLICT (shipping_id) DO UPDATE SET
+         conta = EXCLUDED.conta,
+         comprador = EXCLUDED.comprador,
+         itens = EXCLUDED.itens,
+         modalidade = EXCLUDED.modalidade,
+         prazo = EXCLUDED.prazo,
+         limite_impressao = EXCLUDED.limite_impressao,
+         dia_prazo = EXCLUDED.dia_prazo,
+         sla_status = EXCLUDED.sla_status,
+         impresso = EXCLUDED.impresso,
+         -- Virou "impresso" agora (antes nao era): horario observado, nao estimado.
+         impresso_estimado = CASE WHEN prazos_envios.impresso_em IS NULL AND EXCLUDED.impresso
+                                  THEN false ELSE prazos_envios.impresso_estimado END,
+         impresso_em = COALESCE(prazos_envios.impresso_em, EXCLUDED.impresso_em),
+         atrasou = prazos_envios.atrasou OR EXCLUDED.atrasou,
+         ultimo_visto = EXCLUDED.ultimo_visto,
+         saiu_em = NULL,
+         status_final = NULL`,
+      params
+    );
+  }
+
+  // Saiu da lista neste ciclo: so para contas que foram lidas com sucesso
+  // (falha de rede numa conta nao pode "despachar" os envios dela).
+  if (!contasOk.length) return;
+  const { rows: sairam } = await db.query(
+    `UPDATE prazos_envios SET saiu_em = $1
+      WHERE saiu_em IS NULL AND ultimo_visto < $1 AND seller_id = ANY($2)
+      RETURNING shipping_id, seller_id`,
+    [agora, contasOk]
+  );
+  await emLotes(sairam, 5, async (r) => {
+    try {
+      const token = await getValidAccessToken(r.seller_id);
+      const s = await fetchShipment(token, r.shipping_id);
+      await db.query(
+        `UPDATE prazos_envios SET status_final = $2,
+           impresso_estimado = CASE WHEN impresso_em IS NULL AND $2 IN ('shipped','delivered') THEN true ELSE impresso_estimado END,
+           impresso_em = CASE WHEN impresso_em IS NULL AND $2 IN ('shipped','delivered') THEN saiu_em ELSE impresso_em END
+         WHERE shipping_id = $1`,
+        [r.shipping_id, s?.status || null]
+      );
+    } catch (err) {
+      console.error(`[prazos] status final ${r.shipping_id}:`, err.message);
+    }
+  });
+}
+
+const DATA_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+router.get("/prazos/calendario", async (req, res) => {
+  const { de, ate } = req.query;
+  if (!DATA_RE.test(de || "") || !DATA_RE.test(ate || "")) {
+    return res.status(400).json({ error: "Informe ?de=AAAA-MM-DD&ate=AAAA-MM-DD" });
+  }
+  try {
+    await garantirTabelaHistorico();
+    const { rows } = await db.query(
+      `SELECT to_char(dia_prazo, 'YYYY-MM-DD') AS dia,
+              count(*) FILTER (WHERE status_final IS DISTINCT FROM 'cancelled')::int AS total,
+              count(*) FILTER (WHERE impresso_em IS NOT NULL)::int AS impressos,
+              count(*) FILTER (WHERE impresso_em IS NOT NULL
+                                 AND (limite_impressao IS NULL OR impresso_em <= limite_impressao))::int AS no_limite,
+              count(*) FILTER (WHERE impresso_em IS NULL AND status_final IS DISTINCT FROM 'cancelled')::int AS nao_impressos,
+              count(*) FILTER (WHERE atrasou)::int AS atrasados,
+              count(*) FILTER (WHERE status_final = 'cancelled')::int AS cancelados
+         FROM prazos_envios
+        WHERE dia_prazo BETWEEN $1 AND $2
+        GROUP BY dia_prazo
+        ORDER BY dia_prazo`,
+      [de, ate]
+    );
+    const { rows: ini } = await db.query(
+      "SELECT to_char(min(visto_em) AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD') AS inicio FROM prazos_envios"
+    );
+    res.json({ dias: rows, inicio: ini[0]?.inicio || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get("/prazos/dia", async (req, res) => {
+  const { data } = req.query;
+  if (!DATA_RE.test(data || "")) return res.status(400).json({ error: "Informe ?data=AAAA-MM-DD" });
+  try {
+    await garantirTabelaHistorico();
+    const { rows } = await db.query(
+      `SELECT * FROM prazos_envios WHERE dia_prazo = $1 ORDER BY limite_impressao NULLS LAST, venda`,
+      [data]
+    );
+    const iso = (d) => (d ? new Date(d).toISOString() : null);
+    res.json({
+      data,
+      envios: rows.map((r) => ({
+        shippingId: r.shipping_id,
+        sellerId: r.seller_id,
+        conta: r.conta,
+        venda: r.venda,
+        comprador: r.comprador,
+        itens: r.itens || [],
+        modalidade: r.modalidade,
+        prazo: iso(r.prazo),
+        limiteImpressao: iso(r.limite_impressao),
+        slaStatus: r.sla_status,
+        impressoEm: iso(r.impresso_em),
+        impressoEstimado: r.impresso_estimado,
+        atrasou: r.atrasou,
+        saiuEm: iso(r.saiu_em),
+        statusFinal: r.status_final,
+        aindaNaLista: !r.saiu_em,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 async function rodarCiclo() {
   if (cicloAtual) return cicloAtual;
   cicloAtual = (async () => {
@@ -511,11 +703,13 @@ async function rodarCiclo() {
     const contas = [];
     const envios = [];
     const erros = [];
+    const contasOk = [];
     for (const acc of accounts) {
       try {
         const r = await coletarConta(acc, config, agora, hojeSP);
         contas.push(r.conta);
         envios.push(...r.envios);
+        contasOk.push(String(acc.id));
       } catch (err) {
         console.error(`[prazos] conta ${acc.nickname}:`, err.message);
         erros.push({ sellerId: String(acc.id), conta: acc.nickname, erro: err.message });
@@ -527,6 +721,13 @@ async function rodarCiclo() {
     for (const id of cacheEnvio.keys()) if (!vivos.has(id)) cacheEnvio.delete(id);
 
     estado = { atualizadoEm: agora.toISOString(), emAndamento: false, contas, envios, erros };
+
+    // Historico (calendario): falha no banco nao pode derrubar a tela ao vivo.
+    try {
+      await gravarHistorico(envios, contasOk, agora);
+    } catch (err) {
+      console.error("[prazos] falha ao gravar historico:", err.message);
+    }
   })()
     .catch((err) => {
       console.error("[prazos] ciclo falhou:", err.message);
