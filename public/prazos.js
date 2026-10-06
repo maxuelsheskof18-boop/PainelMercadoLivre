@@ -43,6 +43,9 @@
     sem_prazo: { rotulo: "Sem prazo", ordem: 4 },
     impresso: { rotulo: "Impresso", ordem: 5 },
     proximos: { rotulo: "Próximos dias", ordem: 6 },
+    // So no calendario (historico):
+    tarde: { rotulo: "Impresso após o limite", ordem: 2 },
+    cancelado: { rotulo: "Cancelado", ordem: 8 },
   };
   const PENDENTE = new Set(["estourou", "risco", "no_prazo", "sem_prazo"]);
   const VISOES = [
@@ -50,6 +53,7 @@
     { id: "atrasados", nome: "Atrasados" },
     { id: "impressos", nome: "Impressos" },
     { id: "proximos", nome: "Próximos dias" },
+    { id: "calendario", nome: "Calendário" },
   ];
 
   let dados = null;
@@ -193,6 +197,7 @@
       atrasados: () => renderAtrasados(grupos.atrasados),
       impressos: () => renderPorModalidade(grupos.impressos),
       proximos: () => renderProximos(grupos.proximos),
+      calendario: () => renderCalendario(),
     }[visao];
     corpoEl.innerHTML = corpo();
   }
@@ -232,7 +237,7 @@
   function renderAbas(g) {
     return `<div class="prazos-abas" role="tablist">${VISOES.map(
       (v) => `<button type="button" role="tab" class="prazos-aba aba-${v.id}${v.id === visao ? " ativa" : ""}" data-visao="${v.id}" aria-selected="${v.id === visao}">
-        ${v.nome}<span class="prazos-aba-n">${g[v.id].length}</span></button>`
+        ${v.nome}${g[v.id] ? `<span class="prazos-aba-n">${g[v.id].length}</span>` : ""}</button>`
     ).join("")}</div>`;
   }
 
@@ -247,6 +252,23 @@
 
   // Cliques no corpo: escolher modalidade, trocar modo do detalhe.
   corpoEl.addEventListener("click", (ev) => {
+    const alvo = ev.target.closest("[data-faixa],[data-cal-dia],[data-cal-mes],[data-cal-mod]");
+    if (alvo) {
+      const d = alvo.dataset;
+      if (d.faixa) faixaSel = d.faixa;
+      if (d.calDia) {
+        calDia = d.calDia;
+        calMes = d.calDia.slice(0, 7);
+      }
+      if (d.calMes) {
+        const [a, m] = calMes.split("-").map(Number);
+        const n = new Date(Date.UTC(a, m - 1 + Number(d.calMes), 1));
+        calMes = n.toISOString().slice(0, 7);
+      }
+      if (d.calMod) calModSel = calModSel === d.calMod ? null : d.calMod;
+      render();
+      return;
+    }
     const mod = ev.target.closest("[data-mod]");
     if (mod) {
       modSel = mod.dataset.mod;
@@ -467,27 +489,29 @@
   }
 
   // Detalhe: por produto (agrupa pacotes iguais) ou por pacote (tabela).
+  // m: { nome, itens, ctx?, sub?, vazio?, modalidade?, colPrazo?, colGrupo? }
   function renderDetalhe(m) {
     const modos = `<div class="pz-seg" role="group" aria-label="Agrupar">
       <button type="button" data-modo="produtos" class="${modoDetalhe === "produtos" ? "on" : ""}">Por produto</button>
       <button type="button" data-modo="pacotes" class="${modoDetalhe === "pacotes" ? "on" : ""}">Por pacote</button>
     </div>`;
+    const opcoes = { ctx: m.ctx || m.id, modalidade: m.modalidade, colPrazo: m.colPrazo, colGrupo: m.colGrupo };
     const corpo = !m.itens.length
-      ? '<p class="prazos-vazio grande">Nada a imprimir nesta modalidade. ✓</p>'
+      ? `<p class="prazos-vazio grande">${m.vazio || "Nada a imprimir nesta modalidade. ✓"}</p>`
       : modoDetalhe === "produtos"
-      ? tabelaProdutos(m.itens)
-      : tabelaPacotes(m.itens);
+      ? tabelaProdutos(m.itens, opcoes)
+      : tabelaPacotes(m.itens, opcoes);
     return `
       <section class="pz-detalhe">
         <div class="pz-detalhe-topo">
-          <div><span class="pz-titulo">${m.nome}</span> <span class="pz-sub">${m.itens.length} ${m.itens.length === 1 ? "pacote" : "pacotes"} a imprimir</span></div>
+          <div><span class="pz-titulo">${m.nome}</span> <span class="pz-sub">${m.itens.length} ${m.itens.length === 1 ? "pacote" : "pacotes"} ${m.sub || "a imprimir"}</span></div>
           ${modos}
         </div>
         ${corpo}
       </section>`;
   }
 
-  function tabelaProdutos(itens) {
+  function tabelaProdutos(itens, { ctx = "", modalidade = false, colPrazo, colGrupo } = {}) {
     const grupos = new Map();
     for (const e of itens) {
       for (const it of e.itens) {
@@ -507,14 +531,18 @@
       .map((gr) => {
         const sit = situacaoPorOrdem[gr.pior];
         const vendas = [...gr.envios.values()];
-        return `<details class="pz-produto sit-${sit}" data-chave="${esc(gr.titulo)}"${produtosAbertos.has(gr.titulo) ? " open" : ""}>
+        const chave = `${ctx}|${gr.titulo}`;
+        const grupoCol = colGrupo
+          ? colGrupo(vendas)
+          : { b: gr.limite ? fmtHora(gr.limite) : "—", small: gr.limite ? fmtFalta(gr.limite) : "" };
+        return `<details class="pz-produto sit-${sit}" data-chave="${esc(chave)}"${produtosAbertos.has(chave) ? " open" : ""}>
           <summary>
             <span class="pz-produto-qtd"><b>${gr.envios.size}</b><small>${gr.envios.size === 1 ? "pacote" : "pacotes"}</small></span>
             <span class="pz-produto-nome">${esc(gr.titulo)}<small>${esc([...gr.contas].join(" · "))}</small></span>
             <span class="pz-produto-un"><b>${gr.un}</b><small>unid.</small></span>
-            <span class="pz-produto-limite"><b>${gr.limite ? fmtHora(gr.limite) : "—"}</b><small>${gr.limite ? fmtFalta(gr.limite) : ""}</small></span>
+            <span class="pz-produto-limite"><b>${grupoCol.b}</b><small>${grupoCol.small}</small></span>
           </summary>
-          ${tabelaPacotes(vendas, { compacta: true })}
+          ${tabelaPacotes(vendas, { compacta: true, modalidade, colPrazo })}
         </details>`;
       })
       .join("")}</div>`;
@@ -563,31 +591,6 @@
     </section>`;
   }
 
-  function renderAtrasados(lista) {
-    if (!lista.length) return '<p class="prazos-vazio grande">Nenhum envio atrasado. ✓</p>';
-    const faixas = [
-      { titulo: "Venceu hoje", nota: "Despachar o quanto antes.", filtro: (d) => d === 0 },
-      { titulo: "Venceu ontem", nota: "", filtro: (d) => d === 1 },
-      {
-        titulo: "Há 2 dias ou mais",
-        nota: "Provavelmente travados: conferir no Mercado Livre (cancelamento, mediação ou pacote que saiu sem ser lido).",
-        filtro: (d) => d >= 2,
-      },
-    ];
-    const colPrazo = {
-      titulo: "Venceu",
-      valor: (e) => `<b>${fmtDiaHora(e.prazo)}</b><small>${e.impresso ? "etiqueta impressa" : "não impresso"}</small>`,
-    };
-    return faixas
-      .map((f) => {
-        const itens = lista
-          .filter((e) => f.filtro(diasDeAtraso(e)))
-          .sort((a, b) => Date.parse(b.prazo || 0) - Date.parse(a.prazo || 0));
-        return itens.length ? faixa(f.titulo, itens.length, f.nota, tabelaPacotes(itens, { modalidade: true, colPrazo })) : "";
-      })
-      .join("");
-  }
-
   function renderPorModalidade(lista) {
     if (!lista.length) return '<p class="prazos-vazio grande">Nenhum pacote impresso aguardando despacho.</p>';
     const colPrazo = { titulo: "Despachar até", valor: (e) => `<b>${fmtHora(e.prazo)}</b><small>${fmtFalta(e.prazo)}</small>` };
@@ -618,6 +621,420 @@
         return faixa(titulo.charAt(0).toUpperCase() + titulo.slice(1), itens.length, "", tabelaPacotes(itens, { modalidade: true, colPrazo }));
       })
       .join("");
+  }
+
+  // ---------- Visao "Atrasados" ----------
+  // Mesma ideia da "A imprimir": grafico de envelhecimento (quantos dias de
+  // atraso, por modalidade) + um cartao por faixa de idade + detalhe.
+  const FAIXAS_ATRASO = [
+    { id: "hoje", nome: "Venceu hoje", acao: "Despachar hoje", nivel: "estourou", de: 0, ate: 0 },
+    { id: "ontem", nome: "Venceu ontem", acao: "Despachar agora", nivel: "atrasado", de: 1, ate: 1 },
+    { id: "semana", nome: "2 a 7 dias", acao: "Conferir no ML", nivel: "risco", de: 2, ate: 7 },
+    { id: "antigos", nome: "Mais de 7 dias", acao: "Provavelmente travado", nivel: "vazio", de: 8, ate: Infinity },
+  ];
+  let faixaSel = null;
+  const COR_MOD = { coleta: "var(--mod-coleta)", agencia: "var(--mod-agencia)", flex: "var(--mod-flex)" };
+
+  function renderAtrasados(lista) {
+    if (!lista.length) {
+      return `<div class="pz-vazio-bonito"><b>Nenhum envio atrasado</b><span>Tudo o que venceu já foi despachado. ✓</span></div>`;
+    }
+    const faixas = FAIXAS_ATRASO.map((f) => {
+      const itens = lista
+        .filter((e) => {
+          const d = diasDeAtraso(e);
+          return d >= f.de && d <= f.ate;
+        })
+        .sort((a, b) => Date.parse(b.prazo || 0) - Date.parse(a.prazo || 0));
+      return { ...f, itens };
+    });
+    if (!faixas.some((f) => f.id === faixaSel && f.itens.length)) {
+      faixaSel = faixas.find((f) => f.itens.length).id;
+    }
+    const sel = faixas.find((f) => f.id === faixaSel);
+    const colPrazo = {
+      titulo: "Venceu",
+      valor: (e) => `<b>${fmtDiaHora(e.prazo)}</b><small>${idadeTexto(e)} · ${e.impresso ? "etiqueta impressa" : "não impresso"}</small>`,
+    };
+    return `
+      ${graficoEnvelhecimento(lista)}
+      <div class="pz-cards pz-cards-4">${faixas.map(cardFaixa).join("")}</div>
+      ${renderDetalhe({
+        ctx: "atr-" + sel.id,
+        nome: sel.nome,
+        itens: sel.itens,
+        sub: "em atraso",
+        vazio: "Nenhum envio nesta faixa.",
+        modalidade: true,
+        colPrazo,
+        colGrupo: (envs) => {
+          const maisAntigo = envs.reduce((a, e) => Math.max(a, diasDeAtraso(e)), 0);
+          return { b: maisAntigo ? `${maisAntigo} ${maisAntigo === 1 ? "dia" : "dias"}` : "hoje", small: "mais antigo" };
+        },
+      })}`;
+  }
+
+  const idadeTexto = (e) => {
+    const d = diasDeAtraso(e);
+    return d === 0 ? "hoje" : d === 1 ? "ontem" : `há ${d} dias`;
+  };
+
+  function graficoEnvelhecimento(lista) {
+    const colunas = [];
+    for (let d = 0; d <= 14; d++) colunas.push({ rot: d === 0 ? "hoje" : `${d}d`, de: d, ate: d });
+    colunas.push({ rot: "15d+", de: 15, ate: Infinity });
+    for (const c of colunas) {
+      c.porMod = { coleta: 0, agencia: 0, flex: 0 };
+      for (const e of lista) {
+        const d = diasDeAtraso(e);
+        if (d >= c.de && d <= c.ate) c.porMod[e.modalidade] = (c.porMod[e.modalidade] || 0) + 1;
+      }
+      c.total = Object.values(c.porMod).reduce((a, b) => a + b, 0);
+      c.faixa = FAIXAS_ATRASO.find((f) => c.de >= f.de && c.de <= f.ate).id;
+    }
+    const max = Math.max(1, ...colunas.map((c) => c.total));
+    return `
+      <section class="pz-tl">
+        <div class="pz-tl-cabecalho">
+          <span class="pz-titulo">Há quanto tempo estão atrasados</span>
+          <span class="pz-legenda">${MODALIDADES.map((m) => `<i style="background:${COR_MOD[m.id]}"></i>${m.nome}`).join(" ")}</span>
+        </div>
+        <div class="pz-barras">
+          ${colunas
+            .map(
+              (c) => `<button type="button" class="pz-barra${c.faixa === faixaSel ? " sel" : ""}" data-faixa="${c.faixa}"
+                  title="${c.total} ${c.total === 1 ? "envio" : "envios"} · ${c.rot === "hoje" ? "venceu hoje" : c.rot === "15d+" ? "15 dias ou mais" : `há ${c.de} ${c.de === 1 ? "dia" : "dias"}`}">
+                <span class="pz-barra-n">${c.total || ""}</span>
+                <span class="pz-barra-pilha" style="height:${(c.total / max) * 100}%">
+                  ${MODALIDADES.map((m) =>
+                    c.porMod[m.id] ? `<i style="flex:${c.porMod[m.id]};background:${COR_MOD[m.id]}"></i>` : ""
+                  ).join("")}
+                </span>
+                <span class="pz-barra-rot">${c.rot}</span>
+              </button>`
+            )
+            .join("")}
+        </div>
+      </section>`;
+  }
+
+  function cardFaixa(f) {
+    const n = f.itens.length;
+    const impressos = f.itens.filter((e) => e.impresso).length;
+    const pct = n ? Math.round((impressos / n) * 100) : 0;
+    const porConta = new Map();
+    for (const e of f.itens) porConta.set(e.conta, (porConta.get(e.conta) || 0) + 1);
+    const contas = [...porConta.entries()].sort((a, b) => b[1] - a[1]);
+    const maxConta = Math.max(1, ...contas.map((c) => c[1]));
+    const nivel = n ? f.nivel : "concluido";
+    return `
+      <button type="button" class="pz-card nivel-${nivel}${f.id === faixaSel ? " sel" : ""}" data-faixa="${f.id}" ${n ? "" : "disabled"}>
+        <div class="pz-card-topo">
+          <span class="pz-card-nome">${f.nome}</span>
+          <span class="pz-status nivel-${nivel}">${n ? f.acao : "Nenhum"}</span>
+        </div>
+        <div class="pz-card-meio">
+          <div class="pz-anel" style="--p:${pct}" role="img" aria-label="${pct}% com etiqueta impressa">
+            <div><b>${n}</b><span>${n === 1 ? "envio" : "envios"}</span></div>
+          </div>
+          <div class="pz-relogio"><b>${n - impressos}</b><span>sem etiqueta impressa<br>${impressos} já impressos</span></div>
+        </div>
+        <div class="pz-contas">${
+          contas.length
+            ? contas
+                .map(
+                  ([nome, q]) => `<div class="pz-conta"><span class="pz-conta-nome">${esc(nome)}</span>
+                    <span class="pz-conta-barra"><i style="width:${(q / maxConta) * 100}%"></i></span><b>${q}</b></div>`
+                )
+                .join("")
+            : '<div class="pz-conta-vazio">Nada nesta faixa ✓</div>'
+        }</div>
+      </button>`;
+  }
+
+  // ---------- Visao "Calendario" (historico gravado no banco) ----------
+  const MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
+  let calMes = null; // "AAAA-MM"
+  let calDia = null; // "AAAA-MM-DD"
+  let calModSel = null;
+  const cacheCal = new Map(); // mes -> { em, dados } | { carregando }
+  const cacheDia = new Map(); // dia -> { em, dados } | { carregando }
+  const CAL_TTL = 60_000;
+
+  const somaDias = (dia, n) => {
+    const d = new Date(`${dia}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+
+  function gradeDoMes(mes) {
+    const primeiro = `${mes}-01`;
+    const semana = new Date(`${primeiro}T12:00:00Z`).getUTCDay(); // 0 = domingo
+    const inicio = somaDias(primeiro, -((semana + 6) % 7)); // comeca na segunda
+    const dias = [];
+    for (let i = 0; i < 42; i++) dias.push(somaDias(inicio, i));
+    // Corta a ultima semana se ela for toda do mes seguinte.
+    while (dias.length > 35 && dias.slice(-7).every((d) => d.slice(0, 7) !== mes)) dias.splice(-7);
+    return dias;
+  }
+
+  async function buscarCache(cache, chave, url) {
+    const c = cache.get(chave);
+    if (c?.carregando || (c?.dados && Date.now() - c.em < CAL_TTL)) return;
+    cache.set(chave, { ...c, carregando: true });
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      cache.set(chave, { em: Date.now(), dados: await res.json() });
+    } catch (err) {
+      cache.set(chave, { em: Date.now(), erro: err.message, dados: c?.dados });
+    }
+    if (visivel && visao === "calendario") render();
+  }
+
+  function renderCalendario() {
+    const hoje = diaSP(new Date());
+    calDia = calDia || hoje;
+    calMes = calMes || calDia.slice(0, 7);
+    const grade = gradeDoMes(calMes);
+    buscarCache(cacheCal, calMes, `/api/prazos/calendario?de=${grade[0]}&ate=${grade[grade.length - 1]}`);
+    buscarCache(cacheDia, calDia, `/api/prazos/dia?data=${calDia}`);
+
+    const cal = cacheCal.get(calMes);
+    const porDia = new Map((cal?.dados?.dias || []).map((d) => [d.dia, d]));
+    const inicio = cal?.dados?.inicio;
+    const [ano, m] = calMes.split("-").map(Number);
+
+    const celulas = grade
+      .map((dia) => {
+        const d = porDia.get(dia);
+        const fora = dia.slice(0, 7) !== calMes;
+        const futuro = dia > hoje;
+        let nivel = "sem";
+        let pct = null;
+        if (d && d.total) {
+          pct = Math.round((d.no_limite / d.total) * 100);
+          // Cor = % impresso no limite; atraso aparece a parte (bolinha), senao
+          // um unico atraso por dia pintaria o mes inteiro de vermelho.
+          nivel = pct < 80 ? "ruim" : pct < 95 ? "atencao" : "bom";
+        }
+        return `<button type="button" class="pz-cal-dia nivel-${nivel}${fora ? " fora" : ""}${dia === hoje ? " hoje" : ""}${dia === calDia ? " sel" : ""}"
+            data-cal-dia="${dia}" ${futuro ? "disabled" : ""} title="${d ? `${d.total} pacotes · ${pct ?? 0}% impressos no limite · ${d.atrasados} atrasados` : "sem registro"}">
+          <span class="pz-cal-num">${Number(dia.slice(8))}</span>
+          ${d && d.total ? `<span class="pz-cal-total">${d.total}</span><span class="pz-cal-barra"><i style="width:${pct}%"></i></span>` : ""}
+          ${d && d.atrasados ? `<span class="pz-cal-atraso" aria-label="${d.atrasados} atrasados">${d.atrasados}</span>` : ""}
+        </button>`;
+      })
+      .join("");
+
+    const calendario = `
+      <section class="pz-cal">
+        <div class="pz-cal-topo">
+          <button type="button" class="pz-cal-nav" data-cal-mes="-1" aria-label="Mês anterior">‹</button>
+          <span class="pz-titulo">${MESES[m - 1]} ${ano}</span>
+          <button type="button" class="pz-cal-nav" data-cal-mes="1" aria-label="Próximo mês" ${calMes >= hoje.slice(0, 7) ? "disabled" : ""}>›</button>
+        </div>
+        <div class="pz-cal-semana">${["seg", "ter", "qua", "qui", "sex", "sáb", "dom"].map((s) => `<span>${s}</span>`).join("")}</div>
+        <div class="pz-cal-grade">${celulas}</div>
+        <div class="pz-cal-legenda">
+          <span><i class="bom"></i>95%+ no limite</span><span><i class="atencao"></i>80–94%</span><span><i class="ruim"></i>abaixo de 80%</span><span><b class="pz-cal-atraso">n</b>atrasados</span>
+        </div>
+        ${
+          inicio
+            ? `<div class="pz-nota">Histórico gravado desde ${inicio.split("-").reverse().join("/")}.</div>`
+            : cal?.carregando || !cal
+            ? '<div class="pz-nota">Carregando…</div>'
+            : '<div class="pz-nota">O histórico começa a ser gravado a partir de agora.</div>'
+        }
+        ${cal?.erro ? `<div class="pz-nota prazos-erro">Falha ao carregar: ${esc(cal.erro)}</div>` : ""}
+        <button type="button" class="btn btn-ghost btn-sm pz-cal-hoje" data-cal-dia="${hoje}">Ir para hoje</button>
+      </section>`;
+
+    return `<div class="pz-cal-layout">${calendario}<div class="pz-cal-relatorio">${relatorioDoDia(calDia)}</div></div>`;
+  }
+
+  // Situacao final de um envio do historico (cores iguais as da tela ao vivo).
+  function situacaoHistorica(e) {
+    if (e.statusFinal === "cancelled") return "cancelado";
+    if (e.atrasou) return "atrasado";
+    if (e.impressoEm) {
+      return !e.limiteImpressao || e.impressoEm <= e.limiteImpressao ? "impresso" : "tarde";
+    }
+    if (e.limiteImpressao && Date.now() > Date.parse(e.limiteImpressao)) return "estourou";
+    return "no_prazo";
+  }
+
+  function relatorioDoDia(dia) {
+    const c = cacheDia.get(dia);
+    const titulo = new Date(`${dia}T12:00:00-03:00`).toLocaleDateString("pt-BR", {
+      weekday: "long", day: "2-digit", month: "long", timeZone: TZ,
+    });
+    const cabecalho = `<div class="pz-dia-topo"><span class="pz-titulo">${esc(titulo.charAt(0).toUpperCase() + titulo.slice(1))}</span>
+      ${dia === diaSP(new Date()) ? '<span class="pz-status nivel-no_prazo">hoje · ao vivo</span>' : ""}</div>`;
+    if (!c?.dados) {
+      return cabecalho + `<div class="pz-vazio-bonito"><b>${c?.erro ? "Falha ao carregar" : "Carregando…"}</b>${c?.erro ? `<span>${esc(c.erro)}</span>` : ""}</div>`;
+    }
+    const conta = contaSel.value;
+    const todos = c.dados.envios
+      .filter((e) => !conta || e.sellerId === conta)
+      .map((e) => ({ ...e, situacao: situacaoHistorica(e), impresso: !!e.impressoEm }));
+    if (!todos.length) {
+      return cabecalho + `<div class="pz-vazio-bonito"><b>Nenhum pacote registrado neste dia</b><span>O histórico só existe a partir do dia em que o monitor foi publicado.</span></div>`;
+    }
+    const ativos = todos.filter((e) => e.situacao !== "cancelado");
+    const n = (s) => ativos.filter((e) => e.situacao === s).length;
+    const noLimite = n("impresso");
+    const pct = ativos.length ? Math.round((noLimite / ativos.length) * 100) : 0;
+    const naoImpressos = ativos.filter((e) => !e.impressoEm).length;
+
+    const kpis = [
+      { cls: "imprimir", n: ativos.length, rot: "Pacotes do dia", sub: `${todos.length - ativos.length} cancelados` },
+      { cls: "impresso", n: noLimite, rot: "Impressos no limite", sub: `${pct}% do dia` },
+      { cls: "risco", n: n("tarde"), rot: "Após o limite", sub: "impressos em cima da hora" },
+      { cls: "estourou", n: naoImpressos, rot: "Não impressos", sub: "sem etiqueta" },
+      { cls: "atrasado", n: n("atrasado"), rot: "Atrasaram", sub: "após o prazo de despacho" },
+    ];
+
+    const mods = MODALIDADES.map((m) => ({ ...m, itens: ativos.filter((e) => e.modalidade === m.id) })).filter((m) => m.itens.length);
+    if (calModSel && !mods.some((m) => m.id === calModSel)) calModSel = null;
+    const detalheItens = calModSel ? todos.filter((e) => e.modalidade === calModSel) : todos;
+
+    const colPrazo = {
+      titulo: "Impresso às",
+      valor: (e) => {
+        const quando = e.impressoEm
+          ? `<b>${fmtHora(e.impressoEm)}${e.impressoEstimado ? "*" : ""}</b>`
+          : `<b>${e.statusFinal === "cancelled" ? "cancelado" : "—"}</b>`;
+        const saida =
+          e.statusFinal === "cancelled" ? "" : e.saiuEm ? ` · saiu ${fmtHora(e.saiuEm)}` : " · ainda na lista";
+        return `${quando}<small>limite ${fmtHora(e.limiteImpressao)}${saida}</small>`;
+      },
+    };
+
+    return `
+      ${cabecalho}
+      <div class="prazos-resumo pz-resumo-dia">${kpis
+        .map(
+          (k) => `<div class="prazos-kpi kpi-${k.cls}${k.n ? "" : " zerado"}"><span class="kpi-n">${k.n}</span>
+            <span class="kpi-rotulo">${k.rot}</span><span class="kpi-sub">${esc(k.sub)}</span></div>`
+        )
+        .join("")}</div>
+      ${graficoImpressoes(ativos)}
+      <div class="pz-cards">${mods.map(cardModalidadeDia).join("")}</div>
+      ${renderDetalhe({
+        ctx: "dia-" + dia + (calModSel || ""),
+        nome: calModSel ? NOME_MODALIDADE[calModSel] : "Todos os pacotes",
+        itens: detalheItens,
+        sub: calModSel ? "· clique no cartão de novo para ver todos" : "do dia",
+        vazio: "Nenhum pacote.",
+        modalidade: !calModSel,
+        colPrazo,
+        colGrupo: (envs) => {
+          const ok = envs.filter((e) => e.situacao === "impresso").length;
+          return { b: `${ok}/${envs.length}`, small: "no limite" };
+        },
+      })}
+      <div class="pz-nota">* horário estimado: o pacote já estava impresso quando o monitor o viu pela primeira vez, ou saiu sem ser visto impresso. Os demais horários têm precisão de ~3 min.</div>`;
+  }
+
+  function graficoImpressoes(ativos) {
+    const comHora = ativos.filter((e) => e.impressoEm && !e.impressoEstimado);
+    const estimados = ativos.filter((e) => e.impressoEm && e.impressoEstimado).length;
+    const horas = comHora.map((e) => Math.floor(minutosSP(e.impressoEm) / 60));
+    const limites = new Map();
+    for (const e of ativos) {
+      if (!e.limiteImpressao) continue;
+      const min = minutosSP(e.limiteImpressao);
+      const chave = `${e.modalidade}-${min}`;
+      if (!limites.has(chave)) limites.set(chave, { min, mod: e.modalidade });
+    }
+    const todasHoras = [...horas, ...[...limites.values()].map((l) => Math.floor(l.min / 60))];
+    const ini = Math.min(7, ...todasHoras);
+    const fim = Math.max(18, ...todasHoras);
+    const barras = [];
+    for (let h = ini; h <= fim; h++) {
+      const daHora = comHora.filter((e) => Math.floor(minutosSP(e.impressoEm) / 60) === h);
+      barras.push({ h, ok: daHora.filter((e) => e.situacao === "impresso").length, tarde: daHora.filter((e) => e.situacao !== "impresso").length });
+    }
+    const max = Math.max(1, ...barras.map((b) => b.ok + b.tarde));
+    const pos = (min) => `${(((min - ini * 60) / ((fim + 1 - ini) * 60)) * 100).toFixed(2)}%`;
+    return `
+      <section class="pz-tl">
+        <div class="pz-tl-cabecalho">
+          <span class="pz-titulo">Impressões ao longo do dia</span>
+          <span class="pz-legenda"><i style="background:var(--sit-ok)"></i>no limite <i style="background:var(--sit-risco)"></i>após o limite <i class="lg-bandeira"></i>limite de impressão</span>
+        </div>
+        ${
+          comHora.length
+            ? `<div class="pz-hist">
+                <div class="pz-hist-barras">${barras
+                  .map(
+                    (b) => `<div class="pz-hist-col" title="${b.ok + b.tarde} impressos entre ${b.h}h e ${b.h + 1}h">
+                      <span class="pz-barra-n">${b.ok + b.tarde || ""}</span>
+                      <span class="pz-barra-pilha" style="height:${((b.ok + b.tarde) / max) * 100}%">
+                        ${b.tarde ? `<i style="flex:${b.tarde};background:var(--sit-risco)"></i>` : ""}${b.ok ? `<i style="flex:${b.ok};background:var(--sit-ok)"></i>` : ""}
+                      </span>
+                      <span class="pz-barra-rot">${String(b.h).padStart(2, "0")}h</span>
+                    </div>`
+                  )
+                  .join("")}</div>
+                ${linhasDeLimite(limites, pos)}
+              </div>`
+            : '<p class="prazos-vazio">Nenhuma impressão com horário registrado neste dia.</p>'
+        }
+        ${estimados ? `<div class="pz-nota">+ ${estimados} ${estimados === 1 ? "pacote" : "pacotes"} com horário estimado (fora do gráfico).</div>` : ""}
+      </section>`;
+  }
+
+  // Limites no mesmo horario viram um rotulo so ("Coleta · Flex 13:00");
+  // rotulos vizinhos alternam de altura para nao se sobreporem.
+  function linhasDeLimite(limites, pos) {
+    const porMin = new Map();
+    for (const l of limites.values()) {
+      const nomes = porMin.get(l.min) || [];
+      if (!nomes.includes(NOME_MODALIDADE[l.mod])) nomes.push(NOME_MODALIDADE[l.mod]);
+      porMin.set(l.min, nomes);
+    }
+    return [...porMin.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(
+        ([min, nomes], i) =>
+          `<div class="pz-hist-limite" style="left:${pos(min)}"><span style="top:${(i % 2) * 16}px">${esc(nomes.join(" · "))} ${minParaHhmm(min)}</span></div>`
+      )
+      .join("");
+  }
+
+  function cardModalidadeDia(m) {
+    const total = m.itens.length;
+    const ok = m.itens.filter((e) => e.situacao === "impresso").length;
+    const atr = m.itens.filter((e) => e.situacao === "atrasado").length;
+    const tarde = m.itens.filter((e) => e.situacao === "tarde").length;
+    const pct = total ? Math.round((ok / total) * 100) : 0;
+    const nivel = atr ? "estourou" : pct >= 95 ? "concluido" : pct >= 80 ? "risco" : "estourou";
+    const rotulo = atr ? `${atr} ${atr === 1 ? "atrasou" : "atrasaram"}` : pct >= 95 ? "Excelente" : pct >= 80 ? "Bom" : "Atenção";
+    const porConta = new Map();
+    for (const e of m.itens) porConta.set(e.conta, (porConta.get(e.conta) || 0) + 1);
+    const contas = [...porConta.entries()].sort((a, b) => b[1] - a[1]);
+    const maxConta = Math.max(1, ...contas.map((c) => c[1]));
+    return `
+      <button type="button" class="pz-card nivel-${nivel}${m.id === calModSel ? " sel" : ""}" data-cal-mod="${m.id}">
+        <div class="pz-card-topo">
+          <span class="pz-card-nome">${m.nome}</span>
+          <span class="pz-status nivel-${nivel}">${rotulo}</span>
+        </div>
+        <div class="pz-card-meio">
+          <div class="pz-anel" style="--p:${pct}" role="img" aria-label="${pct}% impressos no limite">
+            <div><b>${pct}%</b><span>no limite</span></div>
+          </div>
+          <div class="pz-relogio"><b>${ok}/${total}</b><span>impressos no limite${tarde ? `<br>${tarde} após o limite` : ""}</span></div>
+        </div>
+        <div class="pz-contas">${contas
+          .map(
+            ([nome, q]) => `<div class="pz-conta"><span class="pz-conta-nome">${esc(nome)}</span>
+              <span class="pz-conta-barra"><i style="width:${(q / maxConta) * 100}%"></i></span><b>${q}</b></div>`
+          )
+          .join("")}</div>
+      </button>`;
   }
 
   function atualizarBadge() {
