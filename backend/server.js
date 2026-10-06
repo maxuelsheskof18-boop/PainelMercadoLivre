@@ -17,6 +17,7 @@ const conversationsRoutes = require("./routes/conversations");
 const claimsRoutes = require("./routes/claims");
 const questionsRoutes = require("./routes/questions");
 const melhorenvioRoutes = require("./routes/melhorenvio");
+const prazosRoutes = require("./routes/prazos");
 const { reconcileAllAccounts } = require("./sync");
 const { reconcileAllClaims } = require("./claimsSync");
 const { reconcileAllQuestions } = require("./questionsSync");
@@ -89,6 +90,9 @@ app.use("/api", claimsRoutes);
 // Perguntas no anuncio (duvidas antes da compra) — sistema separado dos
 // dois de cima, tambem sob /api/...
 app.use("/api", questionsRoutes);
+
+// Monitor de prazos de despacho (coleta/agencia/Flex) — fase 1: sonda.
+app.use("/api", prazosRoutes);
 
 // Pagina principal exige login. IMPORTANTE: isso precisa vir ANTES do
 // express.static abaixo — senao, como "index.html" e um arquivo real
