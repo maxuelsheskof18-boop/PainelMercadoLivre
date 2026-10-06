@@ -1839,3 +1839,17 @@ body {
   .pz-hist-limite span { font-size: 9.5px; }
   .pz-dia-topo .pz-titulo { font-size: 15px; }
 }
+
+/* Nota fiscal pendente (invoice_pending): sem NF o ML nao libera a etiqueta */
+.pz-tag-nf {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #ede9fe;
+  color: #5b21b6;
+  font-size: 10.5px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+.pz-nf-txt { color: #6d28d9; font-weight: 600; }

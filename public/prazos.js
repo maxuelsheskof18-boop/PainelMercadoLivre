@@ -486,7 +486,10 @@
           </div>
           ${relogio}
         </div>
-        <div class="pz-progresso-txt">${m.impressos.length} de ${total} impressos hoje · ${pct}%</div>
+        <div class="pz-progresso-txt">${m.impressos.length} de ${total} impressos hoje · ${pct}%${(() => {
+          const nf = m.itens.filter((e) => e.nfPendente).length;
+          return nf ? `<br><span class="pz-nf-txt">${nf} aguardando nota fiscal — o ML só libera a etiqueta depois da NF</span>` : "";
+        })()}</div>
         <div class="pz-contas">${
           contas.length
             ? contas
@@ -550,7 +553,10 @@
         return `<details class="pz-produto sit-${sit}" data-chave="${esc(chave)}"${produtosAbertos.has(chave) ? " open" : ""}>
           <summary>
             <span class="pz-produto-qtd"><b>${gr.envios.size}</b><small>${gr.envios.size === 1 ? "pacote" : "pacotes"}</small></span>
-            <span class="pz-produto-nome">${esc(gr.titulo)}<small>${esc([...gr.contas].join(" · "))}</small></span>
+            <span class="pz-produto-nome">${esc(gr.titulo)}<small>${esc([...gr.contas].join(" · "))}${(() => {
+              const nf = vendas.filter((e) => e.nfPendente).length;
+              return nf ? ` · <span class="pz-nf-txt">${nf} com NF pendente</span>` : "";
+            })()}</small></span>
             <span class="pz-produto-un"><b>${gr.un}</b><small>unid.</small></span>
             <span class="pz-produto-limite"><b>${grupoCol.b}</b><small>${grupoCol.small}</small></span>
           </summary>
@@ -579,7 +585,7 @@
             <td data-label="Venda"><a href="https://www.mercadolivre.com.br/vendas/${encodeURIComponent(e.venda)}/detalhe" target="_blank" rel="noopener" title="Abrir no Mercado Livre">#${esc(e.venda)}</a></td>
             <td data-label="Conta">${esc(e.conta)}</td>
             ${modalidade ? `<td data-label="Modalidade">${NOME_MODALIDADE[e.modalidade] || ""}</td>` : ""}
-            <td data-label="Produto" class="pz-td-produto" title="${esc(produto)}">${esc(produto)}</td>
+            <td data-label="Produto" class="pz-td-produto" title="${esc(produto)}">${e.nfPendente ? '<span class="pz-tag-nf" title="Falta emitir a nota fiscal: o Mercado Livre só libera a etiqueta depois dela">NF pendente</span>' : ""}${esc(produto)}</td>
             <td data-label="Qtd" class="num">${qtd}</td>
             <td data-label="Comprador" class="pz-td-comprador">${esc(e.comprador || "")}</td>
             <td data-label="${prazoCol.titulo}" class="dir pz-td-prazo">${prazoCol.valor(e)}</td>
