@@ -1142,3 +1142,155 @@ body {
   .avatar { width: 36px; height: 36px; font-size: 13.5px; }
   .avatar-lg { width: 40px; height: 40px; font-size: 15px; }
 }
+
+/* ---------- Prazos de despacho (prazos.js) ---------- */
+.prazos-pane {
+  --sit-atrasado: #7f1d1d;
+  --sit-estourou: var(--danger);
+  --sit-estourou-soft: var(--danger-soft);
+  --sit-risco: #d97706;
+  --sit-risco-soft: #fef3c7;
+  --sit-ok: var(--success);
+  --sit-ok-soft: #dcfce7;
+}
+.prazos-pane .history-header h2 { margin-bottom: 2px; }
+.prazos-erro { color: var(--danger); }
+#prazos-som.ativo { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+.prazos-config {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 20px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 13px;
+  color: var(--text-soft);
+}
+.prazos-config input {
+  width: 72px;
+  padding: 5px 8px;
+  margin: 0 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font: inherit;
+}
+.prazos-config input[type="time"] { width: 96px; }
+.prazos-config-acoes { display: flex; gap: 8px; }
+
+.prazos-atrasados {
+  margin: 12px 20px 0;
+  padding: 12px;
+  border: 1px solid var(--sit-estourou);
+  border-radius: var(--radius-md);
+  background: var(--sit-estourou-soft);
+}
+.prazos-atrasados-titulo { font-weight: 600; color: var(--sit-atrasado); margin-bottom: 8px; font-size: 13.5px; }
+.prazos-atrasados .prazos-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+
+.prazos-colunas {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  padding: 16px 20px 20px;
+  align-items: start;
+}
+.prazos-coluna {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  min-width: 0;
+}
+.prazos-coluna-topo {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  border-top: 4px solid var(--border-strong);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: var(--card);
+}
+.prazos-coluna-topo.nivel-ok { border-top-color: var(--sit-ok); }
+.prazos-coluna-topo.nivel-no_prazo { border-top-color: var(--accent); }
+.prazos-coluna-topo.nivel-risco { border-top-color: var(--sit-risco); }
+.prazos-coluna-topo.nivel-estourou { border-top-color: var(--sit-estourou); }
+.prazos-coluna-nome { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+.prazos-coluna-limite { margin-top: 4px; font-size: 13px; color: var(--text-soft); }
+.prazos-coluna-limite b { font-size: 18px; color: var(--text); font-variant-numeric: tabular-nums; }
+.prazos-coluna-limite span { color: var(--muted); margin-left: 4px; }
+.prazos-janelas { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+.prazos-contadores { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.prazos-contadores .cont {
+  font-size: 11.5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+.prazos-contadores .cont b { font-variant-numeric: tabular-nums; }
+.prazos-contadores .cont.sit-risco { background: var(--sit-risco-soft); border-color: transparent; }
+.prazos-contadores .cont.sit-estourou { background: var(--sit-estourou-soft); border-color: transparent; }
+.prazos-contadores .cont.sit-impresso { background: var(--sit-ok-soft); border-color: transparent; }
+
+.prazos-coluna > .prazos-cards { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
+.prazos-coluna .empty-msg { padding: 16px 8px; }
+.prazos-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 12.5px;
+  min-width: 0;
+}
+.prazos-card.sit-no_prazo { border-left-color: var(--accent); }
+.prazos-card.sit-risco { border-left-color: var(--sit-risco); }
+.prazos-card.sit-estourou { border-left-color: var(--sit-estourou); background: var(--sit-estourou-soft); }
+.prazos-card.sit-atrasado { border-left-color: var(--sit-atrasado); }
+.prazos-card.sit-impresso { border-left-color: var(--sit-ok); }
+.prazos-card-topo { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.prazos-card-topo a { font-weight: 600; color: var(--text); text-decoration: none; font-variant-numeric: tabular-nums; }
+.prazos-card-topo a:hover { color: var(--accent); text-decoration: underline; }
+.prazos-card-conta { color: var(--muted); font-size: 11.5px; margin-top: 2px; overflow-wrap: anywhere; }
+.prazos-card-itens { margin-top: 4px; color: var(--text-soft); overflow-wrap: anywhere; }
+.prazos-card-prazo { margin-top: 6px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.prazos-card.sit-estourou .prazos-card-prazo,
+.prazos-card.sit-atrasado .prazos-card-prazo { color: var(--sit-estourou); }
+.prazos-card.sit-risco .prazos-card-prazo { color: var(--sit-risco); }
+.prazos-pill {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text-soft);
+}
+.prazos-pill.sit-risco { background: var(--sit-risco-soft); color: #92400e; }
+.prazos-pill.sit-estourou { background: var(--sit-estourou); color: #fff; }
+.prazos-pill.sit-atrasado { background: var(--sit-atrasado); color: #fff; }
+.prazos-pill.sit-impresso { background: var(--sit-ok-soft); color: #166534; }
+
+.prazos-grupo { border-top: 1px solid var(--border); }
+.prazos-grupo summary { padding: 10px 14px; cursor: pointer; font-size: 12.5px; color: var(--text-soft); font-weight: 600; }
+.prazos-grupo .prazos-cards { display: flex; flex-direction: column; gap: 8px; padding: 0 10px 10px; }
+
+@media (max-width: 1200px) {
+  .prazos-colunas { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 900px) {
+  /* No celular a tela inteira de prazos rola junto (cabecalho + atrasados +
+     colunas empilhadas); com overflow hidden do .history-pane ficava cortada. */
+  .prazos-pane { overflow-y: auto; }
+  .prazos-colunas { flex: none; padding: 12px; overflow-y: visible; }
+  /* Com 5 abas, a barra de modulos passa da largura do celular: as ultimas
+     ficavam fora da tela, impossiveis de tocar. Agora a barra rola de lado. */
+  .module-nav-items { min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .module-nav-items::-webkit-scrollbar { display: none; }
+  .module-nav-item { flex: 1 0 auto; }
+  .prazos-atrasados { margin: 12px 12px 0; }
+  .prazos-config { padding: 12px; }
+}

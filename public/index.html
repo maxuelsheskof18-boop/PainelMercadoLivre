@@ -95,6 +95,13 @@
           </span>
           <span class="module-nav-label">Histórico</span>
         </button>
+        <button class="module-nav-item" data-module="prazos" title="Prazos de despacho">
+          <span class="module-nav-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 3h15v13H1z"/><path d="M16 8h4l3 3v5h-7z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
+          </span>
+          <span class="module-nav-label">Prazos</span>
+          <span id="module-badge-prazos" class="tab-count module-badge hidden">0</span>
+        </button>
       </div>
       <button type="button" id="module-nav-toggle" class="module-nav-toggle" title="Recolher menu">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
@@ -212,6 +219,28 @@
             <button type="button" id="order-card-address-copy-btn" class="order-card-copy-btn" title="Copiar endereço">📋</button>
           </div>
         </div>
+        <!-- "Combinar entrega" NAO tem envio de verdade pelo Mercado Envios,
+             entao a API nunca tem o endereco desses pedidos (ver comentario
+             acima) — o unico lugar onde CEP/rua/número/telefone/CPF existem
+             e no que o proprio comprador escreve na conversa, respondendo o
+             modelo "Combinar entrega" (ver COMBINAR_ENTREGA_TEMPLATE em
+             app.js). Este card PROCURA esses campos nas mensagens do
+             comprador e mostra juntos, pra nao precisar catar rolando a
+             conversa inteira — pedido do usuario ("os flex ta puxando o
+             endereço... mas os combinar entrega nao"). Deixa claro que e
+             so o que foi ACHADO no texto (nunca confirmado pelo Mercado
+             Livre), pra o vendedor conferir antes de usar. -->
+        <div id="chat-address-card" class="order-card hidden">
+          <div class="order-card-row">
+            <span class="order-card-icon">✍️</span>
+            <div class="order-card-info">
+              <strong>Dados combinados na conversa</strong>
+              <span id="chat-address-fields" class="muted small"></span>
+            </div>
+            <button type="button" id="chat-address-copy-btn" class="order-card-copy-btn" title="Copiar tudo">📋</button>
+          </div>
+          <span class="muted small">🔎 Extraído do que o comprador escreveu aqui — não confirmado pelo Mercado Livre. Confira antes de usar.</span>
+        </div>
         <div id="claim-info-card" class="order-card hidden">
           <div class="order-card-row">
             <span class="order-card-icon">⚠️</span>
@@ -318,8 +347,39 @@
         <p class="muted empty-msg">Carregando...</p>
       </div>
     </section>
+
+    <!-- Prazos de despacho (coleta / agencia / Flex). Logica em prazos.js. -->
+    <section id="prazos-pane" class="history-pane prazos-pane hidden">
+      <div class="history-header">
+        <div>
+          <h2>Prazos de despacho</h2>
+          <div id="prazos-status" class="muted small">Carregando...</div>
+        </div>
+        <div class="history-filters">
+          <select id="prazos-conta" title="Filtrar por conta">
+            <option value="">Todas as contas</option>
+          </select>
+          <button type="button" id="prazos-som" class="btn btn-ghost btn-sm" title="Alerta sonoro e notificação quando um pedido entra em risco">🔕 Ativar alertas</button>
+          <button type="button" id="prazos-config-btn" class="btn btn-ghost btn-sm" title="Margens e horário do Flex">⚙ Ajustes</button>
+          <button type="button" id="prazos-atualizar" class="btn btn-ghost btn-sm" title="Buscar agora no Mercado Livre">⟳ Atualizar</button>
+        </div>
+      </div>
+      <form id="prazos-config" class="prazos-config hidden">
+        <label>Coleta: imprimir até <input type="number" name="coleta.margemMin" min="0" max="600" step="5" /> min antes do fim da janela</label>
+        <label>Agência: imprimir até <input type="number" name="agencia.margemMin" min="0" max="600" step="5" /> min antes do horário de entrega</label>
+        <label>Flex: imprimir até as <input type="time" name="flex.limite" /></label>
+        <label>Avisar "em risco" <input type="number" name="avisoMin" min="5" max="600" step="5" /> min antes do limite</label>
+        <div class="prazos-config-acoes">
+          <button type="submit" class="btn btn-primary btn-sm">Salvar</button>
+          <button type="button" id="prazos-config-cancelar" class="btn btn-ghost btn-sm">Cancelar</button>
+        </div>
+      </form>
+      <div id="prazos-atrasados" class="prazos-atrasados hidden"></div>
+      <div id="prazos-colunas" class="prazos-colunas"></div>
+    </section>
   </main>
 
   <script src="/app.js"></script>
+  <script src="/prazos.js"></script>
 </body>
 </html>

@@ -1,5 +1,5 @@
 const state = {
-  module: "messages", // "messages" | "claims" | "questions" | "history" — qual painel (menu lateral) esta ativo
+  module: "messages", // "messages" | "claims" | "questions" | "history" | "prazos" — qual painel (menu lateral) esta ativo
   status: "pending", // aba dentro do modulo "messages"
   claimStatus: "pending", // aba dentro do modulo "claims": "pending" | "answered" | "closed"
   questionStatus: "pending", // aba dentro do modulo "questions": "pending" | "answered"
@@ -2284,6 +2284,10 @@ moduleNavItems.forEach((btn) => {
     const isClaims = state.module === "claims";
     const isQuestions = state.module === "questions";
     const isHistory = state.module === "history";
+    // Prazos de despacho: tela de largura inteira como o Histórico, mas toda
+    // a logica fica em prazos.js (que mostra/esconde o proprio #prazos-pane).
+    const isPrazos = state.module === "prazos";
+    const isFullWidth = isHistory || isPrazos;
 
     tabsMessages.classList.toggle("hidden", !isMessages);
     tabsClaims.classList.toggle("hidden", !isClaims);
@@ -2291,14 +2295,14 @@ moduleNavItems.forEach((btn) => {
     filterCombinarToggle.classList.toggle("hidden", !isMessages);
     filterSortBtn.classList.toggle("hidden", !isMessages);
 
-    listPaneEl.classList.toggle("hidden", isHistory);
-    threadPaneEl.classList.toggle("hidden", isHistory);
+    listPaneEl.classList.toggle("hidden", isFullWidth);
+    threadPaneEl.classList.toggle("hidden", isFullWidth);
     historyPane.classList.toggle("hidden", !isHistory);
 
     if (isHistory) {
       populateOperatorFilter();
       loadHistory();
-    } else {
+    } else if (!isPrazos) {
       loadList();
     }
   });
@@ -2645,7 +2649,7 @@ setInterval(loadPendingCount, 20000);
 // vezes a pagina").
 setInterval(() => {
   if (document.hidden) return; // aba em segundo plano: nao gasta a toa
-  if (state.module === "history") return; // o Histórico tem o proprio botao
+  if (state.module === "history" || state.module === "prazos") return; // têm o proprio botao
   loadList({ silent: true });
 }, 20000);
 
