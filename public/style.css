@@ -1909,3 +1909,7 @@ body {
 .pz-card-janelas small { color: var(--muted); }
 .pz-rel-data { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-soft); }
 .pz-rel-data input { padding: 5px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font: inherit; }
+
+.pz-rel-periodo { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-right: 6px; }
+.pz-rel-atalhos button { padding: 4px 10px; font-size: 12px; }
+.pz-rel-botoes { flex-wrap: wrap; align-items: center; }

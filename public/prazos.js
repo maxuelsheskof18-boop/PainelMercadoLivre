@@ -263,7 +263,11 @@
     const rel = ev.target.closest("[data-relatorio]");
     if (rel) {
       if (rel.dataset.relatorio === "pdf") abrirRelatorio(calDia);
-      else baixarCsv(calDia);
+      else {
+        carregarPeriodo(calDia, calDia)
+          .then((d) => baixarCsv(linhasRelatorio(d.envios || []), calDia))
+          .catch((err) => alert(`Não foi possível gerar a planilha: ${err.message}`));
+      }
       return;
     }
     const alvo = ev.target.closest("[data-faixa],[data-cal-dia],[data-cal-mes],[data-cal-mod],[data-imp-mod]");
@@ -1267,11 +1271,25 @@
     return Math.max(0, Math.round((fim - Date.parse(e.prazo)) / 60000));
   }
 
-  function linhasRelatorio(dia) {
-    const c = cacheDia.get(dia);
-    if (!c?.dados) return null;
+  // Relatorio de um dia OU de um periodo (de/ate). Pedido do usuario em
+  // 06/10: "clicar do 01 ao 06 e gerar o relatorio desses dias".
+  const cachePeriodo = new Map(); // "de|ate" -> { em, dados }
+  const dataBr = (d) => d.split("-").reverse().join("/");
+
+  async function carregarPeriodo(de, ate) {
+    const chave = `${de}|${ate}`;
+    const c = cachePeriodo.get(chave);
+    if (c?.dados && Date.now() - c.em < CAL_TTL) return c.dados;
+    const res = await fetch(`/api/prazos/periodo?de=${de}&ate=${ate}`);
+    const corpo = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(corpo.error || `HTTP ${res.status}`);
+    cachePeriodo.set(chave, { em: Date.now(), dados: corpo });
+    return corpo;
+  }
+
+  function linhasRelatorio(envios) {
     const conta = contaSel.value;
-    return c.dados.envios
+    return envios
       .filter((e) => !conta || e.sellerId === conta)
       .map((e) => {
         const situacao = situacaoHistorica(e);
@@ -1296,30 +1314,27 @@
     cancelado: "Cancelado",
   };
 
-  async function carregarDia(dia) {
-    const c = cacheDia.get(dia);
-    if (c?.dados && Date.now() - c.em < CAL_TTL) return;
-    const res = await fetch(`/api/prazos/dia?data=${dia}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    cacheDia.set(dia, { em: Date.now(), dados: await res.json() });
-  }
-
-  async function abrirRelatorio(dia) {
+  async function abrirRelatorio(de, ate = de) {
+    if (de > ate) [de, ate] = [ate, de];
+    let dados;
     try {
-      await carregarDia(dia);
+      dados = await carregarPeriodo(de, ate);
     } catch (err) {
-      alert(`Não foi possível carregar o dia: ${err.message}`);
+      alert(`Não foi possível carregar o relatório: ${err.message}`);
       return;
     }
-    const linhas = linhasRelatorio(dia);
-    if (!linhas) return;
-    const dataLonga = new Date(`${dia}T12:00:00-03:00`).toLocaleDateString("pt-BR", {
-      weekday: "long", day: "2-digit", month: "long", year: "numeric", timeZone: TZ,
-    });
+    const linhas = linhasRelatorio(dados.envios || []);
+    const umDia = de === ate;
+    const periodoTxt = umDia
+      ? new Date(`${de}T12:00:00-03:00`).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long", year: "numeric", timeZone: TZ })
+      : `${dataBr(de)} a ${dataBr(ate)}`;
+    const noPeriodo = umDia ? "neste dia" : "no período";
     const contaNome = contaSel.value ? contaSel.options[contaSel.selectedIndex].text : "Todas as contas";
     const ativos = linhas.filter((e) => e.situacao !== "cancelado");
     const n = (s) => ativos.filter((e) => e.situacao === s).length;
-    const atrasados = ativos.filter((e) => e.situacao === "atrasado").sort((a, b) => (b.atrasoMin || 0) - (a.atrasoMin || 0));
+    const atrasados = ativos
+      .filter((e) => e.situacao === "atrasado")
+      .sort((a, b) => (a.dia < b.dia ? -1 : a.dia > b.dia ? 1 : (b.atrasoMin || 0) - (a.atrasoMin || 0)));
     const tarde = ativos.filter((e) => e.situacao === "tarde");
     const pct = (x, t) => (t ? `${Math.round((x / t) * 100)}%` : "—");
 
@@ -1341,14 +1356,32 @@
       if (e.situacao === "atrasado") r.atr++;
       porConta.set(e.conta, r);
     }
+    // Dia a dia (so no relatorio de periodo).
+    const porDia = new Map();
+    for (const e of linhas) {
+      const r = porDia.get(e.dia) || { total: 0, ok: 0, tarde: 0, nao: 0, atr: 0, canc: 0 };
+      if (e.situacao === "cancelado") r.canc++;
+      else {
+        r.total++;
+        if (e.situacao === "impresso") r.ok++;
+        if (e.situacao === "tarde") r.tarde++;
+        if (!e.impressoEm) r.nao++;
+        if (e.situacao === "atrasado") r.atr++;
+      }
+      porDia.set(e.dia, r);
+    }
+    const diaCurto = (d) =>
+      new Date(`${d}T12:00:00-03:00`).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit", timeZone: TZ });
+
     const durTxt = (m) => (m == null ? "—" : m >= 1440 ? `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h` : m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}` : `${m} min`);
     const tabelaEnvios = (lista, comMotivo) => `
       <table>
-        <thead><tr><th>Venda</th><th>Conta</th><th>Modalidade</th><th>Produto</th><th>Comprador</th>
+        <thead><tr>${umDia ? "" : "<th>Dia</th>"}<th>Venda</th><th>Conta</th><th>Modalidade</th><th>Produto</th><th>Comprador</th>
           <th>Limite impr.</th><th>Impresso às</th><th>Prazo despacho</th><th>Saiu às</th>${comMotivo ? "<th>Atraso</th><th>Motivo provável</th>" : ""}</tr></thead>
         <tbody>${lista
           .map(
             (e) => `<tr>
+              ${umDia ? "" : `<td class="mono">${diaCurto(e.dia)}</td>`}
               <td class="mono">#${esc(e.venda)}</td><td>${esc(e.conta)}</td><td>${NOME_MODALIDADE[e.modalidade] || ""}</td>
               <td>${esc(e.produto)}</td><td>${esc(e.comprador || "")}</td>
               <td class="mono">${fmtHora(e.limiteImpressao)}</td>
@@ -1361,8 +1394,27 @@
           .join("")}</tbody>
       </table>`;
 
+    const secaoDiaADia = umDia
+      ? ""
+      : `<h2>Dia a dia</h2>
+        ${porDia.size
+          ? `<table><thead><tr><th>Dia</th><th>Pacotes</th><th>Impressos no limite</th><th style="width:28%"></th><th>Após o limite</th><th>Não impressos</th><th>Atrasaram</th><th>Cancelados</th></tr></thead><tbody>
+            ${[...porDia.entries()]
+              .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+              .map(([d, r]) => {
+                const p = r.total ? Math.round((r.ok / r.total) * 100) : 0;
+                const cor = p >= 95 ? "#16a34a" : p >= 80 ? "#d97706" : "#dc2626";
+                const andamento = d === diaSP(new Date()) ? ' <small style="color:#2563eb">· em andamento</small>' : "";
+                return `<tr><td class="mono">${diaCurto(d)}${andamento}</td><td class="mono">${r.total}</td><td class="mono">${r.ok} (${p}%)</td>
+                  <td><div class="barra"><i style="width:${p}%;background:${cor}"></i></div></td>
+                  <td class="mono">${r.tarde}</td><td class="mono">${r.nao}</td><td class="mono ${r.atr ? "forte" : ""}">${r.atr}</td><td class="mono">${r.canc}</td></tr>`;
+              })
+              .join("")}
+          </tbody></table>`
+          : '<div class="vazio">Sem registros no período.</div>'}`;
+
     const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
-      <title>Relatório de atrasos ${dia.split("-").reverse().join("/")}</title>
+      <title>Relatório de atrasos ${umDia ? dataBr(de) : `${dataBr(de)} a ${dataBr(ate)}`}</title>
       <style>
         * { box-sizing: border-box; }
         body { font: 12px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #111827; margin: 24px; background: #fff; }
@@ -1382,15 +1434,18 @@
         .duas { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
         .nota { color: #6b7280; font-size: 10.5px; margin-top: 8px; }
         .vazio { color: #16a34a; font-weight: 600; padding: 8px 0; }
+        .barra { height: 8px; border-radius: 99px; background: #f3f4f6; overflow: hidden; margin-top: 3px; }
+        .barra i { display: block; height: 100%; border-radius: 99px; }
+        .aviso { padding: 10px 12px; background: #fef3c7; border-radius: 8px; }
         @media print { body { margin: 0; } h2 { break-after: avoid; } tr { break-inside: avoid; } }
         @page { size: A4 landscape; margin: 10mm; }
       </style></head><body>
-      <h1>Relatório de atrasos — ${esc(dataLonga)}</h1>
-      ${linhas.length ? "" : '<p style="padding:10px 12px;background:#fef3c7;border-radius:8px">Nenhum pacote registrado neste dia. O histórico só existe a partir do dia em que o monitor de prazos foi publicado.</p>'}
-      <div class="sub">${esc(contaNome)} · gerado em ${new Date().toLocaleString("pt-BR", { timeZone: TZ })} · Painel de prazos (Mercado Livre)</div>
+      <h1>Relatório de atrasos — ${esc(periodoTxt)}</h1>
+      <div class="sub">${esc(contaNome)}${umDia ? "" : ` · ${porDia.size} ${porDia.size === 1 ? "dia" : "dias"} com registro`} · gerado em ${new Date().toLocaleString("pt-BR", { timeZone: TZ })} · Painel de prazos (Mercado Livre)</div>
+      ${linhas.length ? "" : `<p class="aviso">Nenhum pacote registrado ${noPeriodo}. O histórico só existe a partir do dia em que o monitor de prazos foi publicado.</p>`}
 
       <div class="kpis">
-        <div class="kpi"><b>${ativos.length}</b><span>pacotes do dia</span></div>
+        <div class="kpi"><b>${ativos.length}</b><span>pacotes ${umDia ? "do dia" : "no período"}</span></div>
         <div class="kpi k-ok"><b>${n("impresso")}</b><span>impressos no limite (${pct(n("impresso"), ativos.length)})</span></div>
         <div class="kpi k-tarde"><b>${n("tarde")}</b><span>impressos após o limite</span></div>
         <div class="kpi k-nao"><b>${ativos.filter((e) => !e.impressoEm).length}</b><span>não impressos</span></div>
@@ -1398,12 +1453,14 @@
         <div class="kpi"><b>${linhas.length - ativos.length}</b><span>cancelados</span></div>
       </div>
 
+      ${secaoDiaADia}
+
       <div class="duas">
         <div>
           <h2>Atrasos por motivo</h2>
           ${porMotivo.size
             ? `<table><tbody>${[...porMotivo.entries()].sort((a, b) => b[1] - a[1]).map(([m, q]) => `<tr><td>${esc(m)}</td><td class="mono forte">${q}</td></tr>`).join("")}</tbody></table>`
-            : '<div class="vazio">Nenhum atraso neste dia ✓</div>'}
+            : `<div class="vazio">Nenhum atraso ${noPeriodo} ✓</div>`}
         </div>
         <div>
           <h2>Por conta</h2>
@@ -1426,22 +1483,23 @@
       </tbody></table>
 
       <h2>Pacotes que atrasaram (${atrasados.length})</h2>
-      ${atrasados.length ? tabelaEnvios(atrasados, true) : '<div class="vazio">Nenhum pacote atrasou neste dia ✓</div>'}
+      ${atrasados.length ? tabelaEnvios(atrasados, true) : `<div class="vazio">Nenhum pacote atrasou ${noPeriodo} ✓</div>`}
 
       <h2>Impressos após o limite — não atrasaram, mas foram em cima da hora (${tarde.length})</h2>
       ${tarde.length ? tabelaEnvios(tarde, false) : '<div class="vazio">Nenhum ✓</div>'}
 
       <div class="nota">"Atraso" = tempo entre o prazo de despacho e a saída do pacote da lista "pronto para enviar" do Mercado Livre (ou até agora, se ainda está no CD).
       * horário de impressão estimado (o pacote já estava impresso quando o monitor o viu pela primeira vez). Demais horários com precisão de ~3 min.
-      Coleta: prazo = fim da janela de coleta.</div>
+      Coleta: prazo = fim da janela de coleta. O dia de cada pacote é o dia do prazo de despacho.</div>
       </body></html>`;
-    mostrarRelatorio(html, `Relatório de atrasos — ${dia.split("-").reverse().join("/")}`, dia);
+    mostrarRelatorio(html, `Relatório de atrasos — ${umDia ? dataBr(de) : `${dataBr(de)} a ${dataBr(ate)}`}`, de, ate, linhas);
   }
 
   // Abre por cima do painel (iframe) em vez de window.open: pop-up costuma
   // ser bloqueado pelo navegador.
-  function mostrarRelatorio(html, titulo, dia) {
+  function mostrarRelatorio(html, titulo, de, ate, linhas) {
     document.getElementById("pz-rel-overlay")?.remove();
+    const hoje = diaSP(new Date());
     const ov = document.createElement("div");
     ov.id = "pz-rel-overlay";
     ov.className = "pz-rel-overlay";
@@ -1450,7 +1508,15 @@
         <div class="pz-rel-barra">
           <span class="pz-titulo">${esc(titulo)}</span>
           <span class="pz-rel-botoes">
-            <label class="pz-rel-data">Dia <input type="date" value="${dia}" max="${diaSP(new Date())}" data-rel="data" /></label>
+            <span class="pz-rel-periodo">
+              <label class="pz-rel-data">De <input type="date" value="${de}" max="${hoje}" data-rel="de" /></label>
+              <label class="pz-rel-data">até <input type="date" value="${ate}" max="${hoje}" data-rel="ate" /></label>
+              <span class="pz-seg pz-rel-atalhos">
+                <button type="button" data-rel-atalho="hoje">Hoje</button>
+                <button type="button" data-rel-atalho="7">7 dias</button>
+                <button type="button" data-rel-atalho="mes">Este mês</button>
+              </span>
+            </span>
             <button type="button" class="btn btn-primary btn-sm" data-rel="imprimir">Imprimir / salvar PDF</button>
             <button type="button" class="btn btn-ghost btn-sm" data-rel="csv">⬇ Planilha</button>
             <button type="button" class="btn btn-ghost btn-sm" data-rel="fechar">Fechar</button>
@@ -1467,22 +1533,30 @@
     };
     const esc_ = (ev) => ev.key === "Escape" && fechar();
     document.addEventListener("keydown", esc_);
+    const reabrir = (d1, d2) => {
+      document.removeEventListener("keydown", esc_);
+      abrirRelatorio(d1, d2);
+    };
     ov.addEventListener("click", (ev) => {
       if (ev.target === ov || ev.target.closest('[data-rel="fechar"]')) fechar();
       if (ev.target.closest('[data-rel="imprimir"]')) frame.contentWindow?.print();
-      if (ev.target.closest('[data-rel="csv"]')) baixarCsv(dia);
+      if (ev.target.closest('[data-rel="csv"]')) baixarCsv(linhas, de, ate);
+      const at = ev.target.closest("[data-rel-atalho]")?.dataset.relAtalho;
+      if (at === "hoje") reabrir(hoje, hoje);
+      if (at === "7") reabrir(somaDias(hoje, -6), hoje);
+      if (at === "mes") reabrir(`${hoje.slice(0, 7)}-01`, hoje);
     });
-    ov.querySelector('[data-rel="data"]').addEventListener("change", (ev) => {
-      if (/^\d{4}-\d{2}-\d{2}$/.test(ev.target.value)) {
-        document.removeEventListener("keydown", esc_);
-        abrirRelatorio(ev.target.value);
-      }
-    });
+    const valido = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v);
+    const inDe = ov.querySelector('[data-rel="de"]');
+    const inAte = ov.querySelector('[data-rel="ate"]');
+    for (const inp of [inDe, inAte]) {
+      inp.addEventListener("change", () => {
+        if (valido(inDe.value) && valido(inAte.value)) reabrir(inDe.value, inAte.value);
+      });
+    }
   }
 
-  function baixarCsv(dia) {
-    const linhas = linhasRelatorio(dia);
-    if (!linhas) return;
+  function baixarCsv(linhas, de, ate = de) {
     const cab = ["Data", "Venda", "Conta", "Modalidade", "Produto", "Qtd", "Comprador", "Situação", "Limite impressão",
       "Impresso às", "Horário estimado", "NF pendente", "Prazo despacho", "Saiu às", "Status final", "Atraso (min)", "Motivo provável"];
     const cel = (v) => {
@@ -1491,7 +1565,7 @@
     };
     const corpo = linhas.map((e) =>
       [
-        dia.split("-").reverse().join("/"), e.venda, e.conta, NOME_MODALIDADE[e.modalidade] || "", e.produto, e.qtd, e.comprador,
+        e.dia ? dataBr(e.dia) : "", e.venda, e.conta, NOME_MODALIDADE[e.modalidade] || "", e.produto, e.qtd, e.comprador,
         ROTULO_SIT_REL[e.situacao] || e.situacao, fmtHora(e.limiteImpressao), e.impressoEm ? fmtHora(e.impressoEm) : "",
         e.impressoEstimado ? "sim" : "", e.nfPendente ? "sim" : "", fmtHora(e.prazo), e.saiuEm ? fmtDiaHora(e.saiuEm) : "",
         e.statusFinal || (e.aindaNaLista ? "no CD" : ""), e.atrasoMin ?? "", e.motivo,
@@ -1501,7 +1575,7 @@
     const blob = new Blob(["﻿" + [cab.join(";"), ...corpo].join("\r\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `prazos-${dia}${contaSel.value ? "-" + contaSel.value : ""}.csv`;
+    a.download = `prazos-${de}${ate !== de ? "_a_" + ate : ""}${contaSel.value ? "-" + contaSel.value : ""}.csv`;
     document.body.appendChild(a);
     a.click();
     setTimeout(() => {
