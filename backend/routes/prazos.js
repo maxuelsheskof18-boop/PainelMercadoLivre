@@ -826,6 +826,96 @@ router.put("/prazos/config", express.json(), async (req, res) => {
   }
 });
 
+// Sonda: "o ML mostra N a imprimir e o painel mostra menos". Compara o que o
+// painel contou para a conta com o que a API tem em cada substatus.
+// Uso: /api/debug/probe-prazos-conta?sellerId=522101670
+const SUBSTATUS_RTS = [
+  "ready_to_print", "printed", "invoice_pending", "ready_to_pack", "packed", "in_packing_list",
+  "in_pickup_list", "ready_for_pkl_creation", "ready_for_pickup", "ready_for_dropoff",
+  "picked_up", "dropped_off", "in_hub", "authorized_by_carrier", "stale", "in_warehouse",
+];
+const SUBSTATUS_PENDING = ["buffered", "creating_route", "manufacturing", "cost_exceeded", "under_review", "waiting_for_label_generation"];
+
+router.get("/debug/probe-prazos-conta", async (req, res) => {
+  const sellerId = String(req.query.sellerId || "");
+  if (!sellerId) return res.status(400).json({ error: "Informe ?sellerId=..." });
+  try {
+    const token = await getValidAccessToken(sellerId);
+    const doPainel = estado.envios.filter((e) => e.sellerId === sellerId);
+
+    const contar = async (qs) => {
+      try {
+        const r = await mlGet(`/orders/search?seller=${sellerId}${qs}&limit=1`, token);
+        return r?.paging?.total ?? null;
+      } catch (err) {
+        return `erro ${err.status || err.message}`;
+      }
+    };
+    const porSubstatus = {};
+    for (const sub of SUBSTATUS_RTS) porSubstatus[`ready_to_ship/${sub}`] = await contar(`&shipping.status=ready_to_ship&shipping.substatus=${sub}`);
+    porSubstatus["ready_to_ship (todos)"] = await contar("&shipping.status=ready_to_ship");
+    porSubstatus["pending (todos)"] = await contar("&shipping.status=pending");
+    for (const sub of SUBSTATUS_PENDING) porSubstatus[`pending/${sub}`] = await contar(`&shipping.status=pending&shipping.substatus=${sub}`);
+
+    // Detalhe dos envios que NAO sao Full e o painel nao busca (ate 30).
+    const foraDoPainel = [];
+    const candidatos = [
+      ...SUBSTATUS_RTS.filter((s) => !["ready_to_print", "printed", "in_warehouse"].includes(s)).map((s) => ["ready_to_ship", s]),
+      ...SUBSTATUS_PENDING.map((s) => ["pending", s]),
+    ];
+    for (const [st, sub] of candidatos) {
+      const n = porSubstatus[`${st}/${sub}`];
+      if (typeof n !== "number" || n === 0 || foraDoPainel.length >= 30) continue;
+      const r = await mlGet(
+        `/orders/search?seller=${sellerId}&shipping.status=${st}&shipping.substatus=${sub}&sort=date_desc&limit=15`,
+        token
+      );
+      for (const o of r?.results || []) {
+        const shipId = o?.shipping?.id;
+        if (!shipId || foraDoPainel.length >= 30) continue;
+        const s = await fetchShipment(token, shipId).catch((err) => ({ erro: err.message }));
+        const lt = s?.logistic_type ?? s?.logistic?.type;
+        if (lt === "fulfillment") continue;
+        let sla = null;
+        try {
+          sla = await mlGet(`/shipments/${shipId}/sla`, token);
+        } catch (err) {
+          sla = { erro: err.status || err.message };
+        }
+        foraDoPainel.push({
+          venda: String(o.pack_id || o.id), order_id: o.id, shipping_id: shipId,
+          status: s?.status, substatus: s?.substatus, logistic_type: lt,
+          criado: o.date_created, sla, produto: o.order_items?.[0]?.item?.title,
+        });
+      }
+    }
+
+    res.json({
+      sellerId,
+      painel: {
+        atualizadoEm: estado.atualizadoEm,
+        pacotes: doPainel.length,
+        pedidos: doPainel.reduce((n, e) => n + e.pedidos.length, 0),
+        porModalidadeESituacao: doPainel.reduce((acc, e) => {
+          const k = `${e.modalidade}/${e.situacao}`;
+          acc[k] = (acc[k] || 0) + 1;
+          return acc;
+        }, {}),
+        coleta: doPainel
+          .filter((e) => e.modalidade === "coleta")
+          .map((e) => ({
+            venda: e.venda, pedidos: e.pedidos, shippingId: e.shippingId, situacao: e.situacao,
+            impresso: e.impresso, prazoSla: e.prazoSla, prazo: e.prazo, limite: e.limiteImpressao,
+          })),
+      },
+      apiPorSubstatus: porSubstatus,
+      foraDoPainel,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
 module.exports.iniciarColetorPrazos = iniciarColetorPrazos;
 // Exposto so para teste.
