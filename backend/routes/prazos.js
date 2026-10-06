@@ -708,38 +708,62 @@ router.get("/prazos/calendario", async (req, res) => {
   }
 });
 
+const isoOuNulo = (d) => (d ? new Date(d).toISOString() : null);
+function envioDoHistorico(r) {
+  return {
+    dia: r.dia,
+    shippingId: r.shipping_id,
+    sellerId: r.seller_id,
+    conta: r.conta,
+    venda: r.venda,
+    comprador: r.comprador,
+    itens: r.itens || [],
+    modalidade: r.modalidade,
+    prazo: isoOuNulo(r.prazo),
+    limiteImpressao: isoOuNulo(r.limite_impressao),
+    slaStatus: r.sla_status,
+    impressoEm: isoOuNulo(r.impresso_em),
+    impressoEstimado: r.impresso_estimado,
+    atrasou: r.atrasou,
+    saiuEm: isoOuNulo(r.saiu_em),
+    statusFinal: r.status_final,
+    aindaNaLista: !r.saiu_em,
+    nfPendente: !!r.nf_pendente,
+  };
+}
+
+async function enviosDoPeriodo(de, ate) {
+  await garantirTabelaHistorico();
+  const { rows } = await db.query(
+    `SELECT *, to_char(dia_prazo, 'YYYY-MM-DD') AS dia FROM prazos_envios
+      WHERE dia_prazo BETWEEN $1 AND $2
+      ORDER BY dia_prazo, limite_impressao NULLS LAST, venda`,
+    [de, ate]
+  );
+  return rows.map(envioDoHistorico);
+}
+
 router.get("/prazos/dia", async (req, res) => {
   const { data } = req.query;
   if (!DATA_RE.test(data || "")) return res.status(400).json({ error: "Informe ?data=AAAA-MM-DD" });
   try {
-    await garantirTabelaHistorico();
-    const { rows } = await db.query(
-      `SELECT * FROM prazos_envios WHERE dia_prazo = $1 ORDER BY limite_impressao NULLS LAST, venda`,
-      [data]
-    );
-    const iso = (d) => (d ? new Date(d).toISOString() : null);
-    res.json({
-      data,
-      envios: rows.map((r) => ({
-        shippingId: r.shipping_id,
-        sellerId: r.seller_id,
-        conta: r.conta,
-        venda: r.venda,
-        comprador: r.comprador,
-        itens: r.itens || [],
-        modalidade: r.modalidade,
-        prazo: iso(r.prazo),
-        limiteImpressao: iso(r.limite_impressao),
-        slaStatus: r.sla_status,
-        impressoEm: iso(r.impresso_em),
-        impressoEstimado: r.impresso_estimado,
-        atrasou: r.atrasou,
-        saiuEm: iso(r.saiu_em),
-        statusFinal: r.status_final,
-        aindaNaLista: !r.saiu_em,
-        nfPendente: !!r.nf_pendente,
-      })),
-    });
+    res.json({ data, envios: await enviosDoPeriodo(data, data) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Relatorio de um periodo (ex.: 01 a 06). Limite de 93 dias por consulta.
+router.get("/prazos/periodo", async (req, res) => {
+  const { de, ate } = req.query;
+  if (!DATA_RE.test(de || "") || !DATA_RE.test(ate || "") || de > ate) {
+    return res.status(400).json({ error: "Informe ?de=AAAA-MM-DD&ate=AAAA-MM-DD (de <= ate)" });
+  }
+  if ((Date.parse(ate) - Date.parse(de)) / 86400000 > 92) {
+    return res.status(400).json({ error: "Período máximo: 93 dias" });
+  }
+  try {
+    res.json({ de, ate, envios: await enviosDoPeriodo(de, ate) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
