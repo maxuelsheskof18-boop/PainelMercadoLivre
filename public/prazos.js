@@ -3,18 +3,30 @@
 // Separado do app.js de proposito: se o index.html publicado ainda nao tiver
 // o #prazos-pane (arquivos subidos em momentos diferentes no GitHub), este
 // script simplesmente nao faz nada e o resto do painel segue funcionando.
+//
+// Layout: cartoes de resumo no topo (clicaveis) + uma visao por vez —
+// "A imprimir" (3 colunas por modalidade), "Atrasados" (agrupados por idade),
+// "Impressos" e "Proximos dias". Atrasado e a imprimir nunca dividem a tela:
+// com muitos atrasados antigos, a lista do que ainda da tempo de imprimir
+// sumia la embaixo (pedido do usuario em 06/10).
 (function () {
   const pane = document.getElementById("prazos-pane");
   if (!pane) return;
 
   const $ = (id) => document.getElementById(id);
-  const colunasEl = $("prazos-colunas");
-  const atrasadosEl = $("prazos-atrasados");
+  // IDs reaproveitados do index.html da fase 2 (assim so este arquivo e o
+  // style.css precisam subir): #prazos-atrasados vira o topo (resumo + abas)
+  // e #prazos-colunas o corpo da visao escolhida.
+  const topoEl = $("prazos-atrasados");
+  const corpoEl = $("prazos-colunas");
   const statusEl = $("prazos-status");
   const contaSel = $("prazos-conta");
   const somBtn = $("prazos-som");
   const configForm = $("prazos-config");
   const badge = $("module-badge-prazos");
+
+  topoEl.className = "prazos-topo";
+  corpoEl.className = "prazos-corpo";
 
   const POLL_MS = 30_000;
   const MODALIDADES = [
@@ -22,6 +34,7 @@
     { id: "agencia", nome: "Agência", lts: ["xd_drop_off", "drop_off"] },
     { id: "flex", nome: "Flex", lts: [] },
   ];
+  const NOME_MODALIDADE = { coleta: "Coleta", agencia: "Agência", flex: "Flex" };
   const SITUACAO = {
     atrasado: { rotulo: "Atrasado", ordem: 0 },
     estourou: { rotulo: "Passou do limite", ordem: 1 },
@@ -31,7 +44,13 @@
     impresso: { rotulo: "Impresso", ordem: 5 },
     proximos: { rotulo: "Próximos dias", ordem: 6 },
   };
-  const ALERTA = new Set(["risco", "estourou", "atrasado"]);
+  const PENDENTE = new Set(["estourou", "risco", "no_prazo", "sem_prazo"]);
+  const VISOES = [
+    { id: "imprimir", nome: "A imprimir" },
+    { id: "atrasados", nome: "Atrasados" },
+    { id: "impressos", nome: "Impressos" },
+    { id: "proximos", nome: "Próximos dias" },
+  ];
 
   let dados = null;
   let visivel = false;
@@ -44,6 +63,7 @@
     try { localStorage.setItem(k, v); } catch { /* sem storage: so nao lembra */ }
   }
 
+  let visao = VISOES.some((v) => v.id === lsGet("prazos.visao")) ? lsGet("prazos.visao") : "imprimir";
   let alertasAtivos = lsGet("prazos.alertas") === "1";
   // shippingId:situacao ja avisados — um pedido avisa de novo so quando piora.
   const avisados = new Set();
@@ -51,24 +71,40 @@
   const esc = (s) =>
     String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+  const TZ = "America/Sao_Paulo";
   const fmtHora = (iso) =>
-    iso
-      ? new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" })
-      : "—";
+    iso ? new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: TZ }) : "—";
   const fmtDiaHora = (iso) =>
     iso
       ? new Date(iso).toLocaleString("pt-BR", {
-          weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
-          timeZone: "America/Sao_Paulo",
+          weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: TZ,
         })
       : "—";
+  const diaSP = (d) =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
 
+  function dur(min) {
+    if (min >= 2880) return `${Math.floor(min / 1440)} dias`;
+    if (min >= 60) return `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}`;
+    return `${min} min`;
+  }
   function fmtFalta(iso) {
     if (!iso) return "";
     const min = Math.round((Date.parse(iso) - Date.now()) / 60000);
-    const dur = (m) => (m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}` : `${m} min`);
     return min >= 0 ? `faltam ${dur(min)}` : `passou há ${dur(-min)}`;
   }
+
+  // Dias corridos (em Sao Paulo) entre o prazo e hoje: 0 = venceu hoje.
+  function diasDeAtraso(e) {
+    if (!e.prazo) return 0;
+    const ms = Date.parse(diaSP(new Date())) - Date.parse(diaSP(new Date(e.prazo)));
+    return Math.max(0, Math.round(ms / 86400000));
+  }
+
+  // O que exige acao hoje (selo do menu e titulo da aba). Atrasado de dias
+  // atras fica de fora: sao pedidos travados, que nao mudam com mais aviso.
+  const acionavel = (e) =>
+    e.situacao === "risco" || e.situacao === "estourou" || (e.situacao === "atrasado" && diasDeAtraso(e) === 0);
 
   // ---------- Mostrar/esconder (o app.js cuida das outras telas) ----------
   document.querySelectorAll(".module-nav-item").forEach((btn) => {
@@ -124,25 +160,73 @@
         ? `Atualizado às ${fmtHora(dados.atualizadoEm)} · busca automática a cada 3 min`
         : "Buscando no Mercado Livre...") + (erros ? `<br>${erros}` : "");
 
-    renderAtrasados(envios.filter((e) => e.situacao === "atrasado"));
-    colunasEl.innerHTML = MODALIDADES.map((m) =>
-      renderColuna(m, envios.filter((e) => e.modalidade === m.id && e.situacao !== "atrasado"))
-    ).join("");
+    const grupos = {
+      imprimir: envios.filter((e) => PENDENTE.has(e.situacao)),
+      atrasados: envios.filter((e) => e.situacao === "atrasado"),
+      impressos: envios.filter((e) => e.situacao === "impresso"),
+      proximos: envios.filter((e) => e.situacao === "proximos"),
+    };
+    topoEl.innerHTML = renderResumo(grupos) + renderAbas(grupos);
+
+    const corpo = {
+      imprimir: () => renderImprimir(grupos.imprimir),
+      atrasados: () => renderAtrasados(grupos.atrasados),
+      impressos: () => renderPorModalidade(grupos.impressos, "Nenhum pacote impresso aguardando despacho."),
+      proximos: () => renderProximos(grupos.proximos),
+    }[visao];
+    corpoEl.innerHTML = corpo();
   }
 
-  function renderAtrasados(lista) {
-    atrasadosEl.classList.toggle("hidden", !lista.length);
-    if (!lista.length) return;
-    atrasadosEl.innerHTML = `
-      <div class="prazos-atrasados-titulo">⚠ ${lista.length} ${lista.length === 1 ? "envio atrasado" : "envios atrasados"} — o Mercado Livre já conta contra a reputação</div>
-      <div class="prazos-cards">${lista
-        .sort((a, b) => Date.parse(a.prazo || 0) - Date.parse(b.prazo || 0))
-        .map((e) => card(e, `Prazo era ${fmtDiaHora(e.prazo)} · ${e.impresso ? "impresso" : "não impresso"}`))
-        .join("")}</div>`;
+  function renderResumo(g) {
+    const conta = (s) => g.imprimir.filter((e) => e.situacao === s).length;
+    const proxLimite = g.imprimir
+      .filter((e) => e.situacao !== "estourou")
+      .map((e) => e.limiteImpressao)
+      .filter(Boolean)
+      .sort()[0];
+    const atrasHoje = g.atrasados.filter((e) => diasDeAtraso(e) === 0).length;
+    const cartoes = [
+      {
+        visao: "imprimir", cls: "imprimir", n: g.imprimir.length, rotulo: "A imprimir",
+        sub: proxLimite ? `próximo limite ${fmtHora(proxLimite)} · ${fmtFalta(proxLimite)}` : "nada com prazo hoje",
+      },
+      { visao: "imprimir", cls: "risco", n: conta("risco"), rotulo: "Em risco", sub: "menos de 1h para o limite" },
+      { visao: "imprimir", cls: "estourou", n: conta("estourou"), rotulo: "Passou do limite", sub: "imprimir agora" },
+      {
+        visao: "atrasados", cls: "atrasado", n: g.atrasados.length, rotulo: "Atrasados",
+        sub: `${atrasHoje} de hoje · ${g.atrasados.length - atrasHoje} antigos`,
+      },
+      { visao: "impressos", cls: "impresso", n: g.impressos.length, rotulo: "Impressos", sub: "aguardando despacho" },
+    ];
+    return `<div class="prazos-resumo">${cartoes
+      .map(
+        (c) => `<button type="button" class="prazos-kpi kpi-${c.cls}${c.n ? "" : " zerado"}" data-visao="${c.visao}">
+          <span class="kpi-n">${c.n}</span>
+          <span class="kpi-rotulo">${c.rotulo}</span>
+          <span class="kpi-sub">${esc(c.sub)}</span>
+        </button>`
+      )
+      .join("")}</div>`;
   }
+
+  function renderAbas(g) {
+    return `<div class="prazos-abas" role="tablist">${VISOES.map(
+      (v) => `<button type="button" role="tab" class="prazos-aba aba-${v.id}${v.id === visao ? " ativa" : ""}" data-visao="${v.id}" aria-selected="${v.id === visao}">
+        ${v.nome}<span class="prazos-aba-n">${g[v.id].length}</span></button>`
+    ).join("")}</div>`;
+  }
+
+  // Clique nos cartoes/abas (delegado: o topo e recriado a cada render).
+  topoEl.addEventListener("click", (ev) => {
+    const alvo = ev.target.closest("[data-visao]");
+    if (!alvo) return;
+    visao = alvo.dataset.visao;
+    lsSet("prazos.visao", visao);
+    render();
+  });
 
   function janelasTexto(m) {
-    if (m.id === "flex") return `Limite configurado: ${esc(dados.config?.flex?.limite || "—")}`;
+    if (m.id === "flex") return `<span>Limite configurado: ${esc(dados.config?.flex?.limite || "—")}</span>`;
     const linhas = [];
     for (const c of dados.contas || []) {
       if (contaSel.value && c.sellerId !== contaSel.value) continue;
@@ -154,89 +238,143 @@
           : m.id === "coleta"
           ? `coleta ${j.de || "?"}–${j.ate || "?"}`
           : `entregar até ${j.de || "?"}`;
-        linhas.push(`<span><b>${esc(c.nickname)}</b>: ${esc(txt)}${j?.corte ? ` · corte ${esc(j.corte)}` : ""}</span>`);
+        linhas.push(`<span><b>${esc(c.nickname)}</b>: ${esc(txt)}</span>`);
       }
     }
-    return linhas.join("") || "Nenhuma conta com essa modalidade";
+    return linhas.join("");
   }
 
-  function renderColuna(m, lista) {
-    const conta = (s) => lista.filter((e) => e.situacao === s).length;
-    const pendentes = lista
-      .filter((e) => ["estourou", "risco", "no_prazo", "sem_prazo"].includes(e.situacao))
-      .sort(
-        (a, b) =>
-          SITUACAO[a.situacao].ordem - SITUACAO[b.situacao].ordem ||
-          Date.parse(a.limiteImpressao || 0) - Date.parse(b.limiteImpressao || 0)
-      );
-    const impressos = lista.filter((e) => e.situacao === "impresso");
-    const proximos = lista.filter((e) => e.situacao === "proximos");
+  const ordemUrgencia = (a, b) =>
+    SITUACAO[a.situacao].ordem - SITUACAO[b.situacao].ordem ||
+    Date.parse(a.limiteImpressao || 0) - Date.parse(b.limiteImpressao || 0);
 
-    // Limite mais proximo entre os nao impressos de hoje.
-    const proxLimite = pendentes
-      .map((e) => e.limiteImpressao)
-      .filter(Boolean)
-      .sort()[0];
-    const nivel = conta("estourou") ? "estourou" : conta("risco") ? "risco" : pendentes.length ? "no_prazo" : "ok";
+  function renderImprimir(lista) {
+    const colunas = MODALIDADES.map((m) => {
+      const itens = lista.filter((e) => e.modalidade === m.id).sort(ordemUrgencia);
+      const janelas = janelasTexto(m);
+      // Modalidade que nenhuma conta usa e sem pedidos: nao ocupa espaco.
+      if (!itens.length && !janelas) return "";
+      const n = (s) => itens.filter((e) => e.situacao === s).length;
+      const proxLimite = itens.map((e) => e.limiteImpressao).filter(Boolean).sort()[0];
+      const nivel = n("estourou") ? "estourou" : n("risco") ? "risco" : itens.length ? "no_prazo" : "ok";
+      return `
+        <section class="prazos-coluna">
+          <header class="prazos-coluna-topo nivel-${nivel}">
+            <div class="prazos-coluna-linha">
+              <span class="prazos-coluna-nome">${m.nome}</span>
+              <span class="prazos-coluna-qtd">${itens.length} ${itens.length === 1 ? "pacote" : "pacotes"}</span>
+            </div>
+            <div class="prazos-coluna-limite">${
+              proxLimite
+                ? `Imprimir até <b>${fmtHora(proxLimite)}</b> <span>${fmtFalta(proxLimite)}</span>`
+                : itens.length
+                ? "Sem prazo informado"
+                : "Tudo impresso ✓"
+            }</div>
+            <div class="prazos-janelas">${janelas}</div>
+          </header>
+          <div class="prazos-linhas">${itens.map((e) => linha(e)).join("") || '<p class="prazos-vazio">Nada a imprimir.</p>'}</div>
+        </section>`;
+    }).join("");
+    return `<div class="prazos-colunas">${colunas}</div>`;
+  }
 
-    return `
-      <section class="prazos-coluna">
-        <header class="prazos-coluna-topo nivel-${nivel}">
-          <div class="prazos-coluna-nome">${esc(m.nome)}</div>
-          <div class="prazos-coluna-limite">${
-            proxLimite
-              ? `Imprimir até <b>${fmtHora(proxLimite)}</b> <span>${fmtFalta(proxLimite)}</span>`
-              : pendentes.length
-              ? "Sem prazo informado"
-              : "Nada a imprimir hoje ✓"
-          }</div>
-          <div class="prazos-janelas">${janelasTexto(m)}</div>
-          <div class="prazos-contadores">
-            <span class="cont"><b>${pendentes.length}</b> a imprimir</span>
-            <span class="cont sit-risco"><b>${conta("risco")}</b> em risco</span>
-            <span class="cont sit-estourou"><b>${conta("estourou")}</b> passou do limite</span>
-            <span class="cont sit-impresso"><b>${impressos.length}</b> impressos</span>
-          </div>
-        </header>
-        <div class="prazos-cards">
-          ${pendentes.map((e) => card(e)).join("") || '<p class="muted empty-msg">Nenhum pedido aguardando impressão.</p>'}
-        </div>
-        ${grupo("Impressos hoje", impressos)}
-        ${grupo("Próximos dias", proximos, (e) => `Prazo ${fmtDiaHora(e.prazo)}`)}
+  function renderAtrasados(lista) {
+    if (!lista.length) return '<p class="prazos-vazio grande">Nenhum envio atrasado. ✓</p>';
+    const faixas = [
+      { titulo: "Venceu hoje", nota: "despachar o quanto antes", filtro: (d) => d === 0 },
+      { titulo: "Venceu ontem", nota: "", filtro: (d) => d === 1 },
+      {
+        titulo: "Há 2 dias ou mais",
+        nota: "provavelmente travados — conferir no Mercado Livre (cancelamento, mediação ou pacote que saiu sem ser lido)",
+        filtro: (d) => d >= 2,
+      },
+    ];
+    return faixas
+      .map((f) => {
+        const itens = lista
+          .filter((e) => f.filtro(diasDeAtraso(e)))
+          .sort((a, b) => Date.parse(b.prazo || 0) - Date.parse(a.prazo || 0));
+        if (!itens.length) return "";
+        return `<section class="prazos-faixa">
+          <h3>${f.titulo} <span class="prazos-faixa-n">${itens.length}</span>${f.nota ? ` <small>${esc(f.nota)}</small>` : ""}</h3>
+          <div class="prazos-linhas">${itens
+            .map((e) =>
+              linha(e, {
+                modalidade: true,
+                direita: `<b>venceu ${fmtDiaHora(e.prazo)}</b><span>${e.impresso ? "etiqueta impressa" : "não impresso"}</span>`,
+              })
+            )
+            .join("")}</div>
+        </section>`;
+      })
+      .join("");
+  }
+
+  function renderPorModalidade(lista, vazio) {
+    if (!lista.length) return `<p class="prazos-vazio grande">${vazio}</p>`;
+    return MODALIDADES.map((m) => {
+      const itens = lista.filter((e) => e.modalidade === m.id);
+      if (!itens.length) return "";
+      return `<section class="prazos-faixa">
+        <h3>${m.nome} <span class="prazos-faixa-n">${itens.length}</span></h3>
+        <div class="prazos-linhas">${itens
+          .map((e) => linha(e, { direita: `<b>despachar até ${fmtHora(e.prazo)}</b>` }))
+          .join("")}</div>
       </section>`;
+    }).join("");
   }
 
-  function grupo(titulo, lista, detalhe) {
-    if (!lista.length) return "";
-    return `<details class="prazos-grupo"><summary>${esc(titulo)} (${lista.length})</summary>
-      <div class="prazos-cards">${lista.map((e) => card(e, detalhe?.(e))).join("")}</div></details>`;
+  function renderProximos(lista) {
+    if (!lista.length) return '<p class="prazos-vazio grande">Nenhum pedido para os próximos dias.</p>';
+    const porDia = new Map();
+    for (const e of [...lista].sort((a, b) => Date.parse(a.prazo || 0) - Date.parse(b.prazo || 0))) {
+      const dia = e.prazo ? diaSP(new Date(e.prazo)) : "—";
+      if (!porDia.has(dia)) porDia.set(dia, []);
+      porDia.get(dia).push(e);
+    }
+    return [...porDia.entries()]
+      .map(([dia, itens]) => {
+        const titulo =
+          dia === "—"
+            ? "Sem data"
+            : new Date(`${dia}T12:00:00-03:00`).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "2-digit", timeZone: TZ });
+        return `<section class="prazos-faixa">
+          <h3>${esc(titulo)} <span class="prazos-faixa-n">${itens.length}</span></h3>
+          <div class="prazos-linhas">${itens
+            .map((e) =>
+              linha(e, {
+                modalidade: true,
+                direita: `<b>imprimir até ${fmtHora(e.limiteImpressao)}</b><span>${e.impresso ? "já impresso" : "não impresso"}</span>`,
+              })
+            )
+            .join("")}</div>
+        </section>`;
+      })
+      .join("");
   }
 
-  function card(e, detalhe) {
-    const itens = e.itens
-      .slice(0, 3)
-      .map((i) => `${i.qtd}× ${esc(i.titulo)}`)
-      .join("<br>");
-    const mais = e.itens.length > 3 ? `<br><span class="muted">+${e.itens.length - 3} itens</span>` : "";
-    const linhaPrazo =
-      detalhe ||
+  // Uma linha por pacote: venda + conta | produto | prazo + situacao.
+  function linha(e, { modalidade = false, direita } = {}) {
+    const produto = e.itens.map((i) => `${i.qtd}× ${i.titulo}`).join(" · ");
+    const dir =
+      direita ||
       (e.limiteImpressao
-        ? `Imprimir até ${fmtHora(e.limiteImpressao)} · ${fmtFalta(e.limiteImpressao)}`
-        : "Mercado Livre não informou prazo");
+        ? `<b>até ${fmtHora(e.limiteImpressao)}</b><span>${fmtFalta(e.limiteImpressao)}</span>`
+        : `<b>sem prazo</b>`);
     return `
-      <article class="prazos-card sit-${e.situacao}">
-        <div class="prazos-card-topo">
-          <a href="https://www.mercadolivre.com.br/vendas/${encodeURIComponent(e.venda)}/detalhe" target="_blank" rel="noopener">#${esc(e.venda)}</a>
-          <span class="prazos-pill sit-${e.situacao}">${SITUACAO[e.situacao]?.rotulo || esc(e.situacao)}</span>
+      <article class="prazos-linha sit-${e.situacao}">
+        <div class="pl-id">
+          <a href="https://www.mercadolivre.com.br/vendas/${encodeURIComponent(e.venda)}/detalhe" target="_blank" rel="noopener" title="Abrir a venda no Mercado Livre">#${esc(e.venda)}</a>
+          <span>${esc(e.conta)}${modalidade ? ` · ${NOME_MODALIDADE[e.modalidade] || ""}` : ""}</span>
         </div>
-        <div class="prazos-card-conta">${esc(e.conta)}${e.comprador ? ` · ${esc(e.comprador)}` : ""}</div>
-        <div class="prazos-card-itens">${itens}${mais}</div>
-        <div class="prazos-card-prazo">${linhaPrazo}</div>
+        <div class="pl-produto" title="${esc(produto)}">${esc(produto)}<span>${esc(e.comprador || "")}</span></div>
+        <div class="pl-prazo">${dir}</div>
       </article>`;
   }
 
   function atualizarBadge() {
-    const n = (dados?.envios || []).filter((e) => ALERTA.has(e.situacao)).length;
+    const n = (dados?.envios || []).filter(acionavel).length;
     if (badge) {
       badge.textContent = n;
       badge.classList.toggle("hidden", !n);
@@ -292,7 +430,7 @@
 
   function verificarAlertas() {
     const novos = (dados?.envios || []).filter(
-      (e) => ALERTA.has(e.situacao) && !avisados.has(`${e.shippingId}:${e.situacao}`)
+      (e) => acionavel(e) && !avisados.has(`${e.shippingId}:${e.situacao}`)
     );
     novos.forEach((e) => avisados.add(`${e.shippingId}:${e.situacao}`));
     if (!novos.length || !alertasAtivos) return;
@@ -308,7 +446,7 @@
         .join(" · ");
       const corpo = novos
         .slice(0, 5)
-        .map((e) => `#${e.venda} ${e.conta} (${e.modalidade}) até ${fmtHora(e.limiteImpressao || e.prazo)}`)
+        .map((e) => `#${e.venda} ${e.conta} (${NOME_MODALIDADE[e.modalidade]}) até ${fmtHora(e.limiteImpressao || e.prazo)}`)
         .join("\n");
       try {
         const n = new Notification(`Prazos: ${titulo}`, { body: corpo, tag: "prazos-ml" });

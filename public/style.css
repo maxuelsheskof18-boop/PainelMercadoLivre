@@ -1146,6 +1146,7 @@ body {
 /* ---------- Prazos de despacho (prazos.js) ---------- */
 .prazos-pane {
   --sit-atrasado: #7f1d1d;
+  --sit-atrasado-soft: #fde8e8;
   --sit-estourou: var(--danger);
   --sit-estourou-soft: var(--danger-soft);
   --sit-risco: #d97706;
@@ -1179,118 +1180,164 @@ body {
 .prazos-config input[type="time"] { width: 96px; }
 .prazos-config-acoes { display: flex; gap: 8px; }
 
-.prazos-atrasados {
-  margin: 12px 20px 0;
-  padding: 12px;
-  border: 1px solid var(--sit-estourou);
-  border-radius: var(--radius-md);
-  background: var(--sit-estourou-soft);
-}
-.prazos-atrasados-titulo { font-weight: 600; color: var(--sit-atrasado); margin-bottom: 8px; font-size: 13.5px; }
-.prazos-atrasados .prazos-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
-
-.prazos-colunas {
-  flex: 1;
-  overflow-y: auto;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  padding: 16px 20px 20px;
-  align-items: start;
-}
-.prazos-coluna {
+/* Topo: cartoes de resumo + abas */
+.prazos-topo { padding: 14px 20px 0; border-bottom: 1px solid var(--border); }
+.prazos-resumo { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.prazos-kpi {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
+  border-left: 4px solid var(--border-strong);
   border-radius: var(--radius-md);
-  background: var(--bg);
+  background: var(--card);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
   min-width: 0;
 }
-.prazos-coluna-topo {
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
-  border-top: 4px solid var(--border-strong);
-  border-radius: var(--radius-md) var(--radius-md) 0 0;
-  background: var(--card);
+.prazos-kpi:hover { box-shadow: var(--shadow-sm); border-color: var(--border-strong); }
+.kpi-n { font-size: 28px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; color: var(--text); }
+.kpi-rotulo { font-size: 13px; font-weight: 600; color: var(--text-soft); }
+.kpi-sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.prazos-kpi.kpi-imprimir { border-left-color: var(--accent); }
+.prazos-kpi.kpi-risco { border-left-color: var(--sit-risco); }
+.prazos-kpi.kpi-estourou { border-left-color: var(--sit-estourou); }
+.prazos-kpi.kpi-atrasado { border-left-color: var(--sit-atrasado); }
+.prazos-kpi.kpi-impresso { border-left-color: var(--sit-ok); }
+.prazos-kpi.kpi-risco:not(.zerado) { background: var(--sit-risco-soft); }
+.prazos-kpi.kpi-risco:not(.zerado) .kpi-n { color: #92400e; }
+.prazos-kpi.kpi-estourou:not(.zerado) { background: var(--sit-estourou-soft); }
+.prazos-kpi.kpi-estourou:not(.zerado) .kpi-n { color: var(--sit-estourou); }
+.prazos-kpi.kpi-atrasado:not(.zerado) .kpi-n { color: var(--sit-atrasado); }
+.prazos-kpi.zerado .kpi-n { color: var(--muted); }
+
+.prazos-abas { display: flex; gap: 4px; margin-top: 12px; overflow-x: auto; scrollbar-width: none; }
+.prazos-abas::-webkit-scrollbar { display: none; }
+.prazos-aba {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
 }
+.prazos-aba:hover { color: var(--text); }
+.prazos-aba.ativa { color: var(--accent); border-bottom-color: var(--accent); }
+.prazos-aba.aba-atrasados.ativa { color: var(--sit-atrasado); border-bottom-color: var(--sit-atrasado); }
+.prazos-aba-n {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.prazos-aba.aba-atrasados .prazos-aba-n { background: var(--sit-atrasado-soft); border-color: transparent; color: var(--sit-atrasado); }
+
+/* Corpo da visao escolhida */
+.prazos-corpo { flex: 1; overflow-y: auto; padding: 16px 20px 20px; }
+.prazos-vazio { margin: 0; padding: 14px 8px; text-align: center; font-size: 13px; color: var(--muted); }
+.prazos-vazio.grande { padding: 48px 16px; font-size: 14px; }
+
+.prazos-colunas {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.prazos-coluna { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); min-width: 0; overflow: hidden; }
+.prazos-coluna-topo { padding: 12px 14px; border-top: 4px solid var(--border-strong); border-bottom: 1px solid var(--border); background: var(--bg); }
 .prazos-coluna-topo.nivel-ok { border-top-color: var(--sit-ok); }
 .prazos-coluna-topo.nivel-no_prazo { border-top-color: var(--accent); }
 .prazos-coluna-topo.nivel-risco { border-top-color: var(--sit-risco); }
 .prazos-coluna-topo.nivel-estourou { border-top-color: var(--sit-estourou); }
+.prazos-coluna-linha { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .prazos-coluna-nome { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+.prazos-coluna-qtd { font-size: 12px; font-weight: 600; color: var(--text-soft); }
 .prazos-coluna-limite { margin-top: 4px; font-size: 13px; color: var(--text-soft); }
-.prazos-coluna-limite b { font-size: 18px; color: var(--text); font-variant-numeric: tabular-nums; }
+.prazos-coluna-limite b { font-size: 20px; color: var(--text); font-variant-numeric: tabular-nums; }
 .prazos-coluna-limite span { color: var(--muted); margin-left: 4px; }
-.prazos-janelas { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; font-size: 11.5px; color: var(--muted); }
-.prazos-contadores { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.prazos-contadores .cont {
+.prazos-coluna-topo.nivel-estourou .prazos-coluna-limite span { color: var(--sit-estourou); font-weight: 600; }
+.prazos-janelas { display: flex; flex-direction: column; gap: 1px; margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+
+/* Faixas (atrasados por idade, impressos, proximos dias) */
+.prazos-faixa + .prazos-faixa { margin-top: 20px; }
+.prazos-faixa h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; margin: 0 0 8px; font-size: 14px; }
+.prazos-faixa h3 small { font-size: 12px; font-weight: 400; color: var(--muted); }
+.prazos-faixa-n {
   font-size: 11.5px;
-  padding: 3px 8px;
+  padding: 1px 8px;
   border-radius: 999px;
   background: var(--bg);
   border: 1px solid var(--border);
-  color: var(--text-soft);
-  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
-.prazos-contadores .cont b { font-variant-numeric: tabular-nums; }
-.prazos-contadores .cont.sit-risco { background: var(--sit-risco-soft); border-color: transparent; }
-.prazos-contadores .cont.sit-estourou { background: var(--sit-estourou-soft); border-color: transparent; }
-.prazos-contadores .cont.sit-impresso { background: var(--sit-ok-soft); border-color: transparent; }
+.prazos-faixa .prazos-linhas { border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; background: var(--card); }
 
-.prazos-coluna > .prazos-cards { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
-.prazos-coluna .empty-msg { padding: 16px 8px; }
-.prazos-card {
-  background: var(--card);
-  border: 1px solid var(--border);
+/* Linha de pacote */
+.prazos-linha {
+  display: grid;
+  grid-template-columns: minmax(150px, 210px) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
   border-left: 4px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  padding: 8px 10px;
   font-size: 12.5px;
-  min-width: 0;
 }
-.prazos-card.sit-no_prazo { border-left-color: var(--accent); }
-.prazos-card.sit-risco { border-left-color: var(--sit-risco); }
-.prazos-card.sit-estourou { border-left-color: var(--sit-estourou); background: var(--sit-estourou-soft); }
-.prazos-card.sit-atrasado { border-left-color: var(--sit-atrasado); }
-.prazos-card.sit-impresso { border-left-color: var(--sit-ok); }
-.prazos-card-topo { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.prazos-card-topo a { font-weight: 600; color: var(--text); text-decoration: none; font-variant-numeric: tabular-nums; }
-.prazos-card-topo a:hover { color: var(--accent); text-decoration: underline; }
-.prazos-card-conta { color: var(--muted); font-size: 11.5px; margin-top: 2px; overflow-wrap: anywhere; }
-.prazos-card-itens { margin-top: 4px; color: var(--text-soft); overflow-wrap: anywhere; }
-.prazos-card-prazo { margin-top: 6px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.prazos-card.sit-estourou .prazos-card-prazo,
-.prazos-card.sit-atrasado .prazos-card-prazo { color: var(--sit-estourou); }
-.prazos-card.sit-risco .prazos-card-prazo { color: var(--sit-risco); }
-.prazos-pill {
-  flex-shrink: 0;
-  font-size: 10.5px;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--bg);
-  color: var(--text-soft);
-}
-.prazos-pill.sit-risco { background: var(--sit-risco-soft); color: #92400e; }
-.prazos-pill.sit-estourou { background: var(--sit-estourou); color: #fff; }
-.prazos-pill.sit-atrasado { background: var(--sit-atrasado); color: #fff; }
-.prazos-pill.sit-impresso { background: var(--sit-ok-soft); color: #166534; }
-
-.prazos-grupo { border-top: 1px solid var(--border); }
-.prazos-grupo summary { padding: 10px 14px; cursor: pointer; font-size: 12.5px; color: var(--text-soft); font-weight: 600; }
-.prazos-grupo .prazos-cards { display: flex; flex-direction: column; gap: 8px; padding: 0 10px 10px; }
+.prazos-linha + .prazos-linha { border-top: 1px solid var(--border); }
+.prazos-coluna .prazos-linha { grid-template-columns: minmax(0, 1fr) auto; }
+.prazos-coluna .pl-produto { grid-column: 1 / -1; grid-row: 2; }
+.prazos-linha.sit-no_prazo { border-left-color: var(--accent); }
+.prazos-linha.sit-risco { border-left-color: var(--sit-risco); background: #fffbeb; }
+.prazos-linha.sit-estourou { border-left-color: var(--sit-estourou); background: #fff5f5; }
+.prazos-linha.sit-atrasado { border-left-color: var(--sit-atrasado); }
+.prazos-linha.sit-impresso { border-left-color: var(--sit-ok); }
+.pl-id { display: flex; flex-direction: column; min-width: 0; }
+.pl-id a { font-weight: 600; color: var(--text); text-decoration: none; font-variant-numeric: tabular-nums; }
+.pl-id a:hover { color: var(--accent); text-decoration: underline; }
+.pl-id span,
+.pl-produto span { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-produto { display: flex; flex-direction: column; min-width: 0; color: var(--text-soft); }
+.pl-produto,
+.pl-produto span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-prazo { display: flex; flex-direction: column; align-items: flex-end; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pl-prazo b { font-weight: 600; }
+.pl-prazo span { font-size: 11px; color: var(--muted); }
+.prazos-linha.sit-risco .pl-prazo,
+.prazos-linha.sit-risco .pl-prazo span { color: #b45309; }
+.prazos-linha.sit-estourou .pl-prazo,
+.prazos-linha.sit-estourou .pl-prazo span,
+.prazos-linha.sit-atrasado .pl-prazo b { color: var(--sit-estourou); }
 
 @media (max-width: 1200px) {
-  .prazos-colunas { grid-template-columns: minmax(0, 1fr); }
+  .prazos-resumo { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 900px) {
-  /* No celular a tela inteira de prazos rola junto (cabecalho + atrasados +
-     colunas empilhadas); com overflow hidden do .history-pane ficava cortada. */
+  /* No celular a tela inteira de prazos rola junto (cabecalho + resumo +
+     lista); com overflow hidden do .history-pane ficava cortada. */
   .prazos-pane { overflow-y: auto; }
-  .prazos-colunas { flex: none; padding: 12px; overflow-y: visible; }
+  .prazos-topo { padding: 12px 12px 0; }
+  .prazos-resumo { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .prazos-kpi.kpi-imprimir { grid-column: 1 / -1; }
+  .kpi-n { font-size: 24px; }
+  .prazos-corpo { flex: none; overflow-y: visible; padding: 12px; }
+  .prazos-colunas { grid-template-columns: minmax(0, 1fr); }
+  .prazos-linha { grid-template-columns: minmax(0, 1fr) auto; }
+  .prazos-linha .pl-produto { grid-column: 1 / -1; grid-row: 2; }
+  .prazos-config { padding: 12px; }
   /* Com 5 abas, a barra de modulos passa da largura do celular: as ultimas
      ficavam fora da tela, impossiveis de tocar. Agora a barra rola de lado. */
   .module-nav-items { min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .module-nav-items::-webkit-scrollbar { display: none; }
   .module-nav-item { flex: 1 0 auto; }
-  .prazos-atrasados { margin: 12px 12px 0; }
-  .prazos-config { padding: 12px; }
 }
