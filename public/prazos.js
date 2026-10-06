@@ -195,7 +195,7 @@
     const corpo = {
       imprimir: () => renderImprimir(grupos),
       atrasados: () => renderAtrasados(grupos.atrasados),
-      impressos: () => renderPorModalidade(grupos.impressos),
+      impressos: () => renderImpressos(grupos),
       proximos: () => renderProximos(grupos.proximos),
       calendario: () => renderCalendario(),
     }[visao];
@@ -252,9 +252,10 @@
 
   // Cliques no corpo: escolher modalidade, trocar modo do detalhe.
   corpoEl.addEventListener("click", (ev) => {
-    const alvo = ev.target.closest("[data-faixa],[data-cal-dia],[data-cal-mes],[data-cal-mod]");
+    const alvo = ev.target.closest("[data-faixa],[data-cal-dia],[data-cal-mes],[data-cal-mod],[data-imp-mod]");
     if (alvo) {
       const d = alvo.dataset;
+      if (d.impMod) impModSel = d.impMod;
       if (d.faixa) faixaSel = d.faixa;
       if (d.calDia) {
         calDia = d.calDia;
@@ -352,14 +353,27 @@
   // Linha do tempo do dia: uma faixa por modalidade, janela de coleta
   // sombreada, entrega na agencia como bandeira, limites de impressao como
   // bolhas com a quantidade e um marcador de "agora".
-  function renderLinhaDoTempo(mods) {
+  // opts permite reaproveitar na visao "Impressos" (bolhas = horario de
+  // saida em vez do limite de impressao).
+  function renderLinhaDoTempo(mods, opts = {}) {
+    const {
+      campo = "limiteImpressao",
+      itensDe = (m) => m.itens,
+      sel = modSel,
+      attr = "data-mod",
+      legendaBolha = "limite de impressão",
+      tituloBolha = (n, hh) => `${n} ${n === 1 ? "pacote" : "pacotes"} para imprimir até ${hh}`,
+      vazio = (m) => (m.impressos.length ? "tudo impresso ✓" : "sem pedidos hoje"),
+      nivelBolha = (b) =>
+        b.itens.some((e) => e.situacao === "estourou") ? "estourou" : b.itens.some((e) => e.situacao === "risco") ? "risco" : "no_prazo",
+    } = opts;
     const agora = minutosSP(new Date().toISOString());
     const marcos = [];
     const faixas = mods.map((m) => {
       const bolhas = new Map();
-      for (const e of m.itens) {
-        if (!e.limiteImpressao) continue;
-        const min = minutosSP(e.limiteImpressao);
+      for (const e of itensDe(m)) {
+        if (!e[campo]) continue;
+        const min = minutosSP(e[campo]);
         const b = bolhas.get(min) || { min, n: 0, itens: [] };
         b.n++;
         b.itens.push(e);
@@ -395,10 +409,8 @@
 
     const linhas = faixas
       .map(({ m, bolhas, janelas, bandeiras }) => {
-        const nivelBolha = (b) =>
-          b.itens.some((e) => e.situacao === "estourou") ? "estourou" : b.itens.some((e) => e.situacao === "risco") ? "risco" : "no_prazo";
         return `
-        <div class="pz-tl-faixa${m.id === modSel ? " sel" : ""}" data-mod="${m.id}">
+        <div class="pz-tl-faixa${m.id === sel ? " sel" : ""}" ${attr}="${m.id}">
           <div class="pz-tl-nome">${m.nome}</div>
           <div class="pz-tl-trilho">
             ${janelas
@@ -410,17 +422,17 @@
             ${bandeiras
               .map(
                 ([min, contas]) => `<div class="pz-tl-bandeira" style="left:${pos(min)}" title="Entregar na agência até ${minParaHhmm(min)}: ${esc(contas.join(", "))}">
-                  <span>entrega ${minParaHhmm(min)}</span></div>`
+                  ${bolhas.some((b) => Math.abs(b.min - min) < 20) ? "" : `<span>entrega ${minParaHhmm(min)}</span>`}</div>`
               )
               .join("")}
             ${bolhas
               .map(
                 (b) => `<div class="pz-tl-bolha nivel-${nivelBolha(b)}" style="left:${pos(b.min)}"
-                  title="${b.n} ${b.n === 1 ? "pacote" : "pacotes"} para imprimir até ${minParaHhmm(b.min)}">
+                  title="${tituloBolha(b.n, minParaHhmm(b.min))}">
                   <b>${b.n}</b><span>${minParaHhmm(b.min)}</span></div>`
               )
               .join("")}
-            ${!bolhas.length ? `<div class="pz-tl-ok">${m.impressos.length ? "tudo impresso ✓" : "sem pedidos hoje"}</div>` : ""}
+            ${!bolhas.length ? `<div class="pz-tl-ok">${vazio(m)}</div>` : ""}
           </div>
         </div>`;
       })
@@ -430,7 +442,7 @@
       <section class="pz-tl" aria-label="Linha do tempo de hoje">
         <div class="pz-tl-cabecalho">
           <span class="pz-titulo">Hoje</span>
-          <span class="pz-legenda"><i class="lg-janela"></i>janela de coleta <i class="lg-bandeira"></i>entrega na agência <i class="lg-bolha"></i>limite de impressão</span>
+          <span class="pz-legenda"><i class="lg-janela"></i>janela de coleta <i class="lg-bandeira"></i>entrega na agência <i class="lg-bolha"></i>${legendaBolha}</span>
         </div>
         <div class="pz-tl-corpo">
           <div class="pz-tl-grade">
@@ -591,13 +603,119 @@
     </section>`;
   }
 
-  function renderPorModalidade(lista) {
-    if (!lista.length) return '<p class="prazos-vazio grande">Nenhum pacote impresso aguardando despacho.</p>';
-    const colPrazo = { titulo: "Despachar até", valor: (e) => `<b>${fmtHora(e.prazo)}</b><small>${fmtFalta(e.prazo)}</small>` };
-    return MODALIDADES.map((m) => {
-      const itens = lista.filter((e) => e.modalidade === m.id);
-      return itens.length ? faixa(m.nome, itens.length, "", tabelaPacotes(itens, { colPrazo })) : "";
-    }).join("");
+  // ---------- Visao "Impressos" ----------
+  // Mesma ideia das outras: o que importa aqui e a SAIDA — quanto falta para
+  // a coleta passar, para levar na agencia ou para a rota do Flex.
+  let impModSel = null;
+  const SAIDA = { coleta: "para a coleta", agencia: "para levar na agência", flex: "para entregar ao cliente" };
+
+  const nivelSaida = (iso) => {
+    if (!iso) return "no_prazo";
+    const min = (Date.parse(iso) - Date.now()) / 60000;
+    return min < 0 ? "estourou" : min < 60 ? "risco" : "no_prazo";
+  };
+
+  function renderImpressos(g) {
+    if (!g.impressos.length) {
+      return `<div class="pz-vazio-bonito"><b>Nenhum pacote impresso aguardando despacho</b><span>Assim que uma etiqueta é impressa, o pacote aparece aqui até sair.</span></div>`;
+    }
+    const porPrazo = (a, b) => Date.parse(a.prazo || 0) - Date.parse(b.prazo || 0);
+    const mods = MODALIDADES.map((m) => {
+      const itens = g.impressos.filter((e) => e.modalidade === m.id).sort(porPrazo);
+      return { ...m, itens, impressos: itens, pendentes: g.imprimir.filter((e) => e.modalidade === m.id), janelas: janelasHoje(m) };
+    }).filter((m) => m.itens.length || m.pendentes.length);
+
+    if (!mods.some((m) => m.id === impModSel && m.itens.length)) {
+      impModSel = mods.filter((m) => m.itens.length).sort((a, b) => porPrazo(a.itens[0], b.itens[0]))[0].id;
+    }
+    const sel = mods.find((m) => m.id === impModSel);
+
+    return `
+      ${renderLinhaDoTempo(mods, {
+        campo: "prazo",
+        sel: impModSel,
+        attr: "data-imp-mod",
+        legendaBolha: "saída dos impressos",
+        tituloBolha: (n, hh) => `${n} ${n === 1 ? "impresso" : "impressos"} para sair até ${hh}`,
+        vazio: () => "nenhum impresso aguardando",
+        nivelBolha: (b) => nivelSaida(b.itens.map((e) => e.prazo).sort()[0]),
+      })}
+      <div class="pz-cards">${mods.map(cardImpressos).join("")}</div>
+      ${renderDetalhe({
+        ctx: "imp-" + sel.id,
+        nome: sel.nome,
+        itens: sel.itens,
+        sub: "prontos para despachar",
+        vazio: "Nenhum pacote impresso nesta modalidade.",
+        colPrazo: {
+          titulo: "Saída até",
+          valor: (e) =>
+            `<b>${fmtHora(e.prazo)}</b><small>${
+              e.impressoEm ? `impresso às ${fmtHora(e.impressoEm)}${e.impressoEstimado ? "*" : ""}` : fmtFalta(e.prazo)
+            }</small>`,
+        },
+        colGrupo: (envs) => {
+          const p = envs.map((e) => e.prazo).filter(Boolean).sort()[0];
+          return { b: p ? fmtHora(p) : "—", small: p ? fmtFalta(p) : "" };
+        },
+      })}
+      ${
+        sel.itens.some((e) => e.impressoEstimado)
+          ? '<div class="pz-nota pz-nota-rodape">* horário estimado: o pacote já estava impresso quando o monitor o viu pela primeira vez.</div>'
+          : ""
+      }`;
+  }
+
+  function cardImpressos(m) {
+    const n = m.itens.length;
+    const total = n + m.pendentes.length;
+    const pct = total ? Math.round((n / total) * 100) : 0;
+    const prox = m.itens.map((e) => e.prazo).filter(Boolean).sort()[0];
+    const min = prox ? Math.round((Date.parse(prox) - Date.now()) / 60000) : null;
+    const nivel = !n ? "vazio" : nivelSaida(prox);
+    const rotulo = { estourou: "Saída atrasada", risco: "Sai em breve", no_prazo: "Aguardando saída", vazio: "Nada impresso" }[nivel];
+
+    const horas = m.itens.map((e) => e.impressoEm).filter(Boolean).sort();
+    const impressaoTxt = horas.length
+      ? fmtHora(horas[0]) === fmtHora(horas[horas.length - 1])
+        ? `${horas.length === 1 ? "impresso" : "impressos"} às ${fmtHora(horas[0])}`
+        : `impressos entre ${fmtHora(horas[0])} e ${fmtHora(horas[horas.length - 1])}`
+      : "";
+
+    const porConta = new Map();
+    for (const e of m.itens) porConta.set(e.conta, (porConta.get(e.conta) || 0) + 1);
+    const contas = [...porConta.entries()].sort((a, b) => b[1] - a[1]);
+    const maxConta = Math.max(1, ...contas.map((c) => c[1]));
+
+    let relogio;
+    if (min == null) relogio = `<div class="pz-relogio"><b>—</b><span>${n ? "sem horário de saída" : `${m.pendentes.length} ainda a imprimir`}</span></div>`;
+    else if (min < 0) relogio = `<div class="pz-relogio passou"><b>+${dur(-min)}</b><span>passou da saída das ${fmtHora(prox)}</span></div>`;
+    else relogio = `<div class="pz-relogio"><b>${dur(min)}</b><span>${SAIDA[m.id]} até ${fmtHora(prox)}</span></div>`;
+
+    return `
+      <button type="button" class="pz-card nivel-${nivel}${m.id === impModSel ? " sel" : ""}" data-imp-mod="${m.id}" ${n ? "" : "disabled"}>
+        <div class="pz-card-topo">
+          <span class="pz-card-nome">${m.nome}</span>
+          <span class="pz-status nivel-${nivel}">${rotulo}</span>
+        </div>
+        <div class="pz-card-meio">
+          <div class="pz-anel" style="--p:${pct}" role="img" aria-label="${pct}% do dia já impresso">
+            <div><b>${n}</b><span>${n === 1 ? "pronto" : "prontos"}</span></div>
+          </div>
+          ${relogio}
+        </div>
+        <div class="pz-progresso-txt">${n} de ${total} pacotes do dia já impressos · ${pct}%${impressaoTxt ? `<br>${impressaoTxt}` : ""}</div>
+        <div class="pz-contas">${
+          contas.length
+            ? contas
+                .map(
+                  ([nome, q]) => `<div class="pz-conta"><span class="pz-conta-nome">${esc(nome)}</span>
+                    <span class="pz-conta-barra"><i style="width:${(q / maxConta) * 100}%"></i></span><b>${q}</b></div>`
+                )
+                .join("")
+            : '<div class="pz-conta-vazio">Nenhum pacote impresso ainda</div>'
+        }</div>
+      </button>`;
   }
 
   function renderProximos(lista) {
