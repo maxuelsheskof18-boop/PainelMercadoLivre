@@ -91,7 +91,7 @@ app.use("/api", claimsRoutes);
 // dois de cima, tambem sob /api/...
 app.use("/api", questionsRoutes);
 
-// Monitor de prazos de despacho (coleta/agencia/Flex) — fase 1: sonda.
+// Monitor de prazos de despacho (coleta/agencia/Flex): /api/prazos.
 app.use("/api", prazosRoutes);
 
 // Pagina principal exige login. IMPORTANTE: isso precisa vir ANTES do
@@ -114,6 +114,9 @@ db.init()
     app.listen(PORT, () => {
       console.log(`Painel rodando em http://localhost:${PORT}`);
     });
+
+    // Prazos de despacho: atualiza a lista de envios a imprimir a cada 3 min.
+    prazosRoutes.iniciarColetorPrazos();
 
     // Reconciliacao periodica: cobre qualquer webhook que eventualmente se
     // perca. Enquanto o servico estiver "dormindo" (plano gratuito do
