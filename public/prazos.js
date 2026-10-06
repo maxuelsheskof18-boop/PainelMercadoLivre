@@ -26,6 +26,14 @@
   const badge = $("module-badge-prazos");
 
   topoEl.className = "prazos-topo";
+
+  const relBtn = document.createElement("button");
+  relBtn.type = "button";
+  relBtn.className = "btn btn-ghost btn-sm";
+  relBtn.textContent = "📄 Relatório do dia";
+  relBtn.title = "Relatório detalhado de atrasos de um dia (imprimir/PDF ou planilha)";
+  $("prazos-config-btn").before(relBtn);
+  relBtn.addEventListener("click", () => abrirRelatorio(visao === "calendario" && calDia ? calDia : diaSP(new Date())));
   corpoEl.className = "prazos-corpo";
 
   const POLL_MS = 30_000;
@@ -464,6 +472,19 @@
       </section>`;
   }
 
+  // Janela de hoje + horario de corte de vendas, por conta (dados do ML).
+  function janelasCartao(m) {
+    if (m.id === "flex") {
+      return `<div class="pz-card-janelas"><span><b>Limite do Flex</b> ${esc(dados.config?.flex?.limite || "—")} <small>(⚙ Ajustes)</small></span></div>`;
+    }
+    const linhas = (m.janelas || []).map(({ conta, j }) => {
+      if (!j) return `<span><b>${esc(conta)}</b> não trabalha hoje</span>`;
+      const janela = m.id === "coleta" ? `coleta ${j.de}–${j.ate}` : `entregar até ${j.de}`;
+      return `<span><b>${esc(conta)}</b> ${janela}${j.corte ? ` · <em>vendas até ${esc(j.corte)}</em>` : ""}</span>`;
+    });
+    return linhas.length ? `<div class="pz-card-janelas">${linhas.join("")}</div>` : "";
+  }
+
   function cardModalidade(m) {
     const total = m.itens.length + m.impressos.length;
     const pct = total ? Math.round((m.impressos.length / total) * 100) : 0;
@@ -492,6 +513,7 @@
           </div>
           ${relogio}
         </div>
+        ${janelasCartao(m)}
         <div class="pz-progresso-txt">${m.impressos.length} de ${total} impressos hoje · ${pct}%${(() => {
           const nf = m.itens.filter((e) => e.nfPendente).length;
           return nf ? `<br><span class="pz-nf-txt">${nf} aguardando nota fiscal — o ML só libera a etiqueta depois da NF</span>` : "";
@@ -716,6 +738,7 @@
           </div>
           ${relogio}
         </div>
+        ${janelasCartao(m)}
         <div class="pz-progresso-txt">${n} de ${total} pacotes do dia já impressos · ${pct}%${impressaoTxt ? `<br>${impressaoTxt}` : ""}</div>
         <div class="pz-contas">${
           contas.length
@@ -1273,7 +1296,21 @@
     cancelado: "Cancelado",
   };
 
-  function abrirRelatorio(dia) {
+  async function carregarDia(dia) {
+    const c = cacheDia.get(dia);
+    if (c?.dados && Date.now() - c.em < CAL_TTL) return;
+    const res = await fetch(`/api/prazos/dia?data=${dia}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    cacheDia.set(dia, { em: Date.now(), dados: await res.json() });
+  }
+
+  async function abrirRelatorio(dia) {
+    try {
+      await carregarDia(dia);
+    } catch (err) {
+      alert(`Não foi possível carregar o dia: ${err.message}`);
+      return;
+    }
     const linhas = linhasRelatorio(dia);
     if (!linhas) return;
     const dataLonga = new Date(`${dia}T12:00:00-03:00`).toLocaleDateString("pt-BR", {
@@ -1349,6 +1386,7 @@
         @page { size: A4 landscape; margin: 10mm; }
       </style></head><body>
       <h1>Relatório de atrasos — ${esc(dataLonga)}</h1>
+      ${linhas.length ? "" : '<p style="padding:10px 12px;background:#fef3c7;border-radius:8px">Nenhum pacote registrado neste dia. O histórico só existe a partir do dia em que o monitor de prazos foi publicado.</p>'}
       <div class="sub">${esc(contaNome)} · gerado em ${new Date().toLocaleString("pt-BR", { timeZone: TZ })} · Painel de prazos (Mercado Livre)</div>
 
       <div class="kpis">
@@ -1397,12 +1435,12 @@
       * horário de impressão estimado (o pacote já estava impresso quando o monitor o viu pela primeira vez). Demais horários com precisão de ~3 min.
       Coleta: prazo = fim da janela de coleta.</div>
       </body></html>`;
-    mostrarRelatorio(html, `Relatório de atrasos — ${dia.split("-").reverse().join("/")}`);
+    mostrarRelatorio(html, `Relatório de atrasos — ${dia.split("-").reverse().join("/")}`, dia);
   }
 
   // Abre por cima do painel (iframe) em vez de window.open: pop-up costuma
   // ser bloqueado pelo navegador.
-  function mostrarRelatorio(html, titulo) {
+  function mostrarRelatorio(html, titulo, dia) {
     document.getElementById("pz-rel-overlay")?.remove();
     const ov = document.createElement("div");
     ov.id = "pz-rel-overlay";
@@ -1412,7 +1450,9 @@
         <div class="pz-rel-barra">
           <span class="pz-titulo">${esc(titulo)}</span>
           <span class="pz-rel-botoes">
+            <label class="pz-rel-data">Dia <input type="date" value="${dia}" max="${diaSP(new Date())}" data-rel="data" /></label>
             <button type="button" class="btn btn-primary btn-sm" data-rel="imprimir">Imprimir / salvar PDF</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-rel="csv">⬇ Planilha</button>
             <button type="button" class="btn btn-ghost btn-sm" data-rel="fechar">Fechar</button>
           </span>
         </div>
@@ -1430,6 +1470,13 @@
     ov.addEventListener("click", (ev) => {
       if (ev.target === ov || ev.target.closest('[data-rel="fechar"]')) fechar();
       if (ev.target.closest('[data-rel="imprimir"]')) frame.contentWindow?.print();
+      if (ev.target.closest('[data-rel="csv"]')) baixarCsv(dia);
+    });
+    ov.querySelector('[data-rel="data"]').addEventListener("change", (ev) => {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(ev.target.value)) {
+        document.removeEventListener("keydown", esc_);
+        abrirRelatorio(ev.target.value);
+      }
     });
   }
 

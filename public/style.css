@@ -1901,3 +1901,11 @@ body {
   .pz-rel-overlay { padding: 0; }
   .pz-rel-caixa { height: 100%; border-radius: 0; }
 }
+
+/* Janela + horario de corte dentro dos cartoes */
+.pz-card-janelas { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--text-soft); background: var(--bg); border-radius: var(--radius-sm); padding: 7px 9px; }
+.pz-card-janelas b { font-weight: 600; color: var(--text); }
+.pz-card-janelas em { font-style: normal; color: var(--accent-dark); font-weight: 600; }
+.pz-card-janelas small { color: var(--muted); }
+.pz-rel-data { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-soft); }
+.pz-rel-data input { padding: 5px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font: inherit; }
