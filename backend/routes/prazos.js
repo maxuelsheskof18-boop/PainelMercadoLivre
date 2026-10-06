@@ -380,12 +380,15 @@ async function slaDoEnvio(shipId, token) {
 
 // Limite de impressao de um envio, a partir do prazo de despacho (SLA) e da
 // janela configurada no ML para aquele dia da semana.
+// Devolve tambem o prazoEfetivo de despacho: na COLETA o SLA do ML traz o
+// INICIO da janela (ex.: 11:45), mas o motorista pode passar ate o FIM
+// (13:45) — so e atraso depois disso (relatado pelo usuario em 06/10).
 function calcularLimite({ modalidade, logisticType, prazo, janelas, config }) {
-  if (!prazo) return { limite: null, janela: null };
+  if (!prazo) return { limite: null, janela: null, prazoEfetivo: null };
   const { dia, semana } = partesSP(prazo);
 
   if (modalidade === "flex") {
-    return { limite: horaSP(dia, config.flex.limite), janela: { ate: config.flex.limite } };
+    return { limite: horaSP(dia, config.flex.limite), janela: { ate: config.flex.limite }, prazoEfetivo: prazo };
   }
 
   const det = janelas[logisticType]?.[semana]?.detail?.[0] || null;
@@ -393,16 +396,19 @@ function calcularLimite({ modalidade, logisticType, prazo, janelas, config }) {
 
   if (modalidade === "coleta") {
     // Fim da janela de coleta; sem janela, o proprio prazo do SLA.
-    const fim = det?.to ? horaSP(dia, det.to) : prazo;
-    return { limite: menosMin(fim, config.coleta.margemMin), janela };
+    let fim = det?.to ? horaSP(dia, det.to) : prazo;
+    if (fim < prazo) fim = prazo; // janela mudou/estranha: nunca antes do SLA
+    return { limite: menosMin(fim, config.coleta.margemMin), janela, prazoEfetivo: fim };
   }
   // Agencia: o schedule so traz "from" (= horario de entrega, igual ao SLA).
   const entrega = det?.from ? horaSP(dia, det.from) : prazo;
-  return { limite: menosMin(entrega, config.agencia.margemMin), janela };
+  return { limite: menosMin(entrega, config.agencia.margemMin), janela, prazoEfetivo: prazo };
 }
 
 function classificar({ impresso, prazo, limite, slaStatus, agora, hojeSP, avisoMin }) {
-  if (slaStatus === "delayed" || (prazo && agora > prazo)) return "atrasado";
+  // O prazo (efetivo) manda; o "delayed" do ML so conta quando nao ha prazo
+  // — senao a coleta viraria atrasada no inicio da janela.
+  if (prazo ? agora > prazo : slaStatus === "delayed") return "atrasado";
   if (prazo && partesSP(prazo).dia > hojeSP) return "proximos";
   if (impresso) return "impresso";
   if (!limite) return "sem_prazo";
@@ -452,11 +458,11 @@ async function coletarConta(acc, config, agora, hojeSP) {
     const modalidade = MODALIDADE[logistic_type];
     if (!modalidade) return null; // Full ou modalidade desconhecida
     const sla = await slaDoEnvio(e.shipId, token);
-    const prazo = sla.expected_date ? new Date(sla.expected_date) : null;
-    const { limite, janela } = calcularLimite({
+    const prazoSla = sla.expected_date ? new Date(sla.expected_date) : null;
+    const { limite, janela, prazoEfetivo: prazo } = calcularLimite({
       modalidade,
       logisticType: logistic_type,
-      prazo,
+      prazo: prazoSla,
       janelas,
       config,
     });
@@ -477,6 +483,7 @@ async function coletarConta(acc, config, agora, hojeSP) {
       impresso: e.impresso,
       slaStatus: sla.status,
       prazo: prazo ? prazo.toISOString() : null,
+      prazoSla: prazoSla ? prazoSla.toISOString() : null,
       limiteImpressao: limite ? limite.toISOString() : null,
       janela,
       situacao: classificar({
@@ -540,6 +547,14 @@ function garantirTabelaHistorico() {
           status_final TEXT
         )`);
       await db.query("CREATE INDEX IF NOT EXISTS prazos_envios_dia_idx ON prazos_envios (dia_prazo)");
+      // Correcao unica: ate 06/10/2026 a coleta usava o INICIO da janela como
+      // prazo e marcava "atrasou" quem saiu dentro da janela. Todas as janelas
+      // observadas tem 2h; o que saiu ate 2h depois desse prazo nao atrasou.
+      await db.query(
+        `UPDATE prazos_envios SET atrasou = false
+          WHERE modalidade = 'coleta' AND atrasou AND dia_prazo <= '2026-10-06'
+            AND saiu_em IS NOT NULL AND saiu_em <= prazo + interval '2 hours'`
+      );
     })().catch((err) => {
       tabelaHistorico = null;
       throw err;
@@ -589,7 +604,9 @@ async function gravarHistorico(envios, contasOk, agora) {
          impresso_estimado = CASE WHEN prazos_envios.impresso_em IS NULL AND EXCLUDED.impresso
                                   THEN false ELSE prazos_envios.impresso_estimado END,
          impresso_em = COALESCE(prazos_envios.impresso_em, EXCLUDED.impresso_em),
-         atrasou = prazos_envios.atrasou OR EXCLUDED.atrasou,
+         -- Se o prazo mudou (ex.: coleta passou a usar o fim da janela), o
+         -- "atrasou" calculado com o prazo antigo nao vale mais.
+         atrasou = EXCLUDED.atrasou OR (prazos_envios.atrasou AND prazos_envios.prazo IS NOT DISTINCT FROM EXCLUDED.prazo),
          ultimo_visto = EXCLUDED.ultimo_visto,
          saiu_em = NULL,
          status_final = NULL`,
