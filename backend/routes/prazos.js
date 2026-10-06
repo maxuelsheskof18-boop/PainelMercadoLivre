@@ -1,6 +1,8 @@
 // Monitor de prazos de despacho (coleta / agencia / Flex).
+// Rotas: GET /api/prazos, POST /api/prazos/atualizar, PUT /api/prazos/config
+// (fase 2, mais abaixo) e a sonda /api/debug/probe-prazos (fase 1).
 //
-// FASE 1 — so a sonda de diagnostico. Antes de construir o painel de prazos,
+// FASE 1 — sonda de diagnostico. Antes de construir o painel de prazos,
 // precisamos confirmar contra a API real tres coisas que a documentacao
 // publica nao deixa claras:
 //   1. se a janela de coleta/agencia/Flex configurada no Mercado Livre pode
@@ -175,4 +177,422 @@ router.get("/debug/probe-prazos", async (req, res) => {
   res.json(report);
 });
 
+
+// ===========================================================================
+// FASE 2 — coletor + API do painel de prazos.
+//
+// O que a sonda confirmou (contas reais, 06/10/2026):
+//   - GET /users/{id}/shipping/schedule/{logistic_type} devolve a janela por
+//     dia da semana: cross_docking (coleta) traz from/to/cutoff; xd_drop_off
+//     (agencia) traz so from (horario limite de entrega) e cutoff. Flex
+//     (self_service) NAO tem schedule (404) -> horario limite e configurado
+//     no proprio painel.
+//   - GET /shipments/{id}/sla -> { status: "on_time"|"delayed"|..., expected_date }
+//     e o prazo de despacho (agencia: 16:30, bate com o schedule). No Flex o
+//     expected_date e 23:00 = prazo de ENTREGA, nao serve de limite de
+//     impressao. Full (fulfillment) da 404 ou vazio — nao entra aqui.
+//   - orders/search aceita shipping.status=ready_to_ship +
+//     shipping.substatus=ready_to_print|printed (os totais mudam com o filtro).
+//
+// O estado fica em memoria (recalculado a cada ciclo). A unica coisa gravada
+// no banco e a configuracao (margens / horario do Flex).
+// ===========================================================================
+
+const { fetchShipment, fetchResource } = require("../ml/api");
+
+// mlFetch nao e exportado por ml/api.js; fetchResource e o mesmo mlFetch.
+const mlGet = (path, token) => fetchResource(token, path);
+
+const CICLO_MS = 3 * 60 * 1000;
+const SLA_TTL_MS = 10 * 60 * 1000;
+
+// Modalidades exibidas. Full (fulfillment) fica de fora: quem despacha e o ML.
+const MODALIDADE = {
+  cross_docking: "coleta",
+  drop_off: "agencia",
+  xd_drop_off: "agencia",
+  self_service: "flex",
+};
+
+const CONFIG_PADRAO = {
+  // Coleta: limite de impressao = FIM da janela de coleta - margem
+  // (regra do usuario: janela ate 14:45 -> tudo impresso ate 14:00).
+  coleta: { margemMin: 45 },
+  // Agencia: limite = horario de entrega na agencia - margem (tempo de
+  // separar, embalar e levar).
+  agencia: { margemMin: 60 },
+  // Flex: o ML nao informa janela; limite fixo do dia (saida da rota).
+  flex: { limite: "13:00" },
+  // Quanto tempo antes do limite o pedido nao impresso vira "em risco".
+  avisoMin: 60,
+};
+
+// --- Horario de Sao Paulo ---------------------------------------------------
+// O servidor roda em UTC (confirmado na sonda). O Brasil nao tem horario de
+// verao desde 2019, entao Sao Paulo e sempre -03:00.
+const TZ = "America/Sao_Paulo";
+const OFFSET_SP = "-03:00";
+
+function partesSP(date) {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      weekday: "long",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(date)
+      .map((x) => [x.type, x.value])
+  );
+  return {
+    dia: `${p.year}-${p.month}-${p.day}`,
+    semana: p.weekday.toLowerCase(),
+    hora: `${p.hour}:${p.minute}`,
+  };
+}
+
+function horaSP(dia, hhmm) {
+  return new Date(`${dia}T${hhmm}:00${OFFSET_SP}`);
+}
+
+const menosMin = (d, min) => new Date(d.getTime() - min * 60000);
+
+// --- Configuracao (tabela propria, criada sob demanda) ----------------------
+let configCache = null;
+
+function mesclarConfig(salva) {
+  const c = JSON.parse(JSON.stringify(CONFIG_PADRAO));
+  if (!salva) return c;
+  const num = (v, min, max) =>
+    v !== "" && v != null && Number.isFinite(+v) ? Math.min(Math.max(+v, min), max) : undefined;
+  c.coleta.margemMin = num(salva.coleta?.margemMin, 0, 600) ?? c.coleta.margemMin;
+  c.agencia.margemMin = num(salva.agencia?.margemMin, 0, 600) ?? c.agencia.margemMin;
+  if (/^\d{2}:\d{2}$/.test(salva.flex?.limite || "")) c.flex.limite = salva.flex.limite;
+  c.avisoMin = num(salva.avisoMin, 5, 600) ?? c.avisoMin;
+  return c;
+}
+
+async function lerConfig() {
+  if (configCache) return configCache;
+  try {
+    await db.query(
+      "CREATE TABLE IF NOT EXISTS prazos_config (id INTEGER PRIMARY KEY, data JSONB NOT NULL)"
+    );
+    const { rows } = await db.query("SELECT data FROM prazos_config WHERE id = 1");
+    configCache = mesclarConfig(rows[0]?.data);
+  } catch (err) {
+    console.error("[prazos] falha ao ler config, usando padrao:", err.message);
+    return mesclarConfig(null);
+  }
+  return configCache;
+}
+
+async function salvarConfig(nova) {
+  const c = mesclarConfig(nova);
+  await lerConfig(); // garante a tabela
+  await db.query(
+    `INSERT INTO prazos_config (id, data) VALUES (1, $1)
+     ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+    [JSON.stringify(c)]
+  );
+  configCache = c;
+  return c;
+}
+
+// --- Coleta de dados no Mercado Livre ---------------------------------------
+const cacheEnvio = new Map(); // shipping_id -> { logistic_type }
+const cacheSla = new Map(); // shipping_id -> { status, expected_date, em }
+const cacheJanelas = new Map(); // `${seller}:${lt}` -> { dia, schedule }
+
+let estado = { atualizadoEm: null, emAndamento: false, contas: [], envios: [], erros: [] };
+let cicloAtual = null;
+
+async function emLotes(itens, n, fn) {
+  const out = [];
+  for (let i = 0; i < itens.length; i += n) {
+    out.push(...(await Promise.all(itens.slice(i, i + n).map(fn))));
+  }
+  return out;
+}
+
+async function janelasDaConta(sellerId, token, hojeSP) {
+  const janelas = {};
+  for (const lt of ["cross_docking", "xd_drop_off", "drop_off"]) {
+    const chave = `${sellerId}:${lt}`;
+    const c = cacheJanelas.get(chave);
+    if (c && c.dia === hojeSP) {
+      if (c.schedule) janelas[lt] = c.schedule;
+      continue;
+    }
+    let schedule = null;
+    try {
+      const r = await mlGet(`/users/${sellerId}/shipping/schedule/${lt}`, token);
+      schedule = r?.schedule || null;
+    } catch (err) {
+      if (err.status !== 404) throw err; // 404 = conta nao usa essa modalidade
+    }
+    cacheJanelas.set(chave, { dia: hojeSP, schedule });
+    if (schedule) janelas[lt] = schedule;
+  }
+  return janelas;
+}
+
+async function buscarPedidos(sellerId, token, substatus) {
+  const pedidos = [];
+  for (let offset = 0; offset < 1000; offset += 50) {
+    const r = await mlGet(
+      `/orders/search?seller=${sellerId}&shipping.status=ready_to_ship` +
+        `&shipping.substatus=${substatus}&sort=date_asc&limit=50&offset=${offset}`,
+      token
+    );
+    pedidos.push(...(r?.results || []));
+    if (offset + 50 >= (r?.paging?.total || 0)) break;
+  }
+  return pedidos;
+}
+
+async function tipoLogistico(shipId, token) {
+  if (cacheEnvio.has(shipId)) return cacheEnvio.get(shipId);
+  const s = await fetchShipment(token, shipId);
+  const info = { logistic_type: s?.logistic_type ?? s?.logistic?.type ?? null };
+  cacheEnvio.set(shipId, info);
+  return info;
+}
+
+async function slaDoEnvio(shipId, token) {
+  const c = cacheSla.get(shipId);
+  if (c && Date.now() - c.em < SLA_TTL_MS) return c;
+  let sla = { status: null, expected_date: null, em: Date.now() };
+  try {
+    const r = await mlGet(`/shipments/${shipId}/sla`, token);
+    sla = { status: r?.status || null, expected_date: r?.expected_date || null, em: Date.now() };
+  } catch (err) {
+    if (err.status !== 404) throw err;
+  }
+  cacheSla.set(shipId, sla);
+  return sla;
+}
+
+// Limite de impressao de um envio, a partir do prazo de despacho (SLA) e da
+// janela configurada no ML para aquele dia da semana.
+function calcularLimite({ modalidade, logisticType, prazo, janelas, config }) {
+  if (!prazo) return { limite: null, janela: null };
+  const { dia, semana } = partesSP(prazo);
+
+  if (modalidade === "flex") {
+    return { limite: horaSP(dia, config.flex.limite), janela: { ate: config.flex.limite } };
+  }
+
+  const det = janelas[logisticType]?.[semana]?.detail?.[0] || null;
+  const janela = det ? { de: det.from || null, ate: det.to || null, corte: det.cutoff || null } : null;
+
+  if (modalidade === "coleta") {
+    // Fim da janela de coleta; sem janela, o proprio prazo do SLA.
+    const fim = det?.to ? horaSP(dia, det.to) : prazo;
+    return { limite: menosMin(fim, config.coleta.margemMin), janela };
+  }
+  // Agencia: o schedule so traz "from" (= horario de entrega, igual ao SLA).
+  const entrega = det?.from ? horaSP(dia, det.from) : prazo;
+  return { limite: menosMin(entrega, config.agencia.margemMin), janela };
+}
+
+function classificar({ impresso, prazo, limite, slaStatus, agora, hojeSP, avisoMin }) {
+  if (slaStatus === "delayed" || (prazo && agora > prazo)) return "atrasado";
+  if (prazo && partesSP(prazo).dia > hojeSP) return "proximos";
+  if (impresso) return "impresso";
+  if (!limite) return "sem_prazo";
+  if (agora > limite) return "estourou";
+  if (agora > menosMin(limite, avisoMin)) return "risco";
+  return "no_prazo";
+}
+
+function resumoJanelas(janelas, semana) {
+  const out = {};
+  for (const [lt, sched] of Object.entries(janelas)) {
+    const d = sched?.[semana];
+    out[lt] =
+      d?.work && d.detail?.[0]
+        ? { de: d.detail[0].from || null, ate: d.detail[0].to || null, corte: d.detail[0].cutoff || null }
+        : null; // nao trabalha hoje
+  }
+  return out;
+}
+
+async function coletarConta(acc, config, agora, hojeSP) {
+  const sellerId = String(acc.id);
+  const token = await getValidAccessToken(sellerId);
+  const janelas = await janelasDaConta(sellerId, token, hojeSP);
+
+  const [aImprimir, impressos] = await Promise.all([
+    buscarPedidos(sellerId, token, "ready_to_print"),
+    buscarPedidos(sellerId, token, "printed"),
+  ]);
+
+  // Pedidos de um mesmo carrinho (pack) dividem o mesmo envio.
+  const porEnvio = new Map();
+  for (const [lista, impresso] of [
+    [aImprimir, false],
+    [impressos, true],
+  ]) {
+    for (const o of lista) {
+      const shipId = o?.shipping?.id;
+      if (!shipId) continue;
+      if (!porEnvio.has(shipId)) porEnvio.set(shipId, { shipId, impresso, pedidos: [] });
+      porEnvio.get(shipId).pedidos.push(o);
+    }
+  }
+
+  const envios = await emLotes([...porEnvio.values()], 5, async (e) => {
+    const { logistic_type } = await tipoLogistico(e.shipId, token);
+    const modalidade = MODALIDADE[logistic_type];
+    if (!modalidade) return null; // Full ou modalidade desconhecida
+    const sla = await slaDoEnvio(e.shipId, token);
+    const prazo = sla.expected_date ? new Date(sla.expected_date) : null;
+    const { limite, janela } = calcularLimite({
+      modalidade,
+      logisticType: logistic_type,
+      prazo,
+      janelas,
+      config,
+    });
+    const o = e.pedidos[0];
+    return {
+      sellerId,
+      conta: acc.nickname,
+      shippingId: e.shipId,
+      venda: String(o.pack_id || o.id),
+      pedidos: e.pedidos.map((p) => String(p.id)),
+      comprador: o.buyer?.nickname || null,
+      itens: e.pedidos.flatMap((p) =>
+        (p.order_items || []).map((it) => ({ titulo: it.item?.title, qtd: it.quantity }))
+      ),
+      criadoEm: o.date_created,
+      modalidade,
+      logisticType: logistic_type,
+      impresso: e.impresso,
+      slaStatus: sla.status,
+      prazo: prazo ? prazo.toISOString() : null,
+      limiteImpressao: limite ? limite.toISOString() : null,
+      janela,
+      situacao: classificar({
+        impresso: e.impresso,
+        prazo,
+        limite,
+        slaStatus: sla.status,
+        agora,
+        hojeSP,
+        avisoMin: config.avisoMin,
+      }),
+    };
+  });
+
+  return {
+    conta: {
+      sellerId,
+      nickname: acc.nickname,
+      janelasHoje: resumoJanelas(janelas, partesSP(agora).semana),
+    },
+    envios: envios.filter(Boolean),
+  };
+}
+
+async function rodarCiclo() {
+  if (cicloAtual) return cicloAtual;
+  cicloAtual = (async () => {
+    estado.emAndamento = true;
+    const agora = new Date();
+    const hojeSP = partesSP(agora).dia;
+    const config = await lerConfig();
+    const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts ORDER BY nickname");
+    const contas = [];
+    const envios = [];
+    const erros = [];
+    for (const acc of accounts) {
+      try {
+        const r = await coletarConta(acc, config, agora, hojeSP);
+        contas.push(r.conta);
+        envios.push(...r.envios);
+      } catch (err) {
+        console.error(`[prazos] conta ${acc.nickname}:`, err.message);
+        erros.push({ sellerId: String(acc.id), conta: acc.nickname, erro: err.message });
+      }
+    }
+    // Esquece envios que ja sairam da lista (despachados/cancelados).
+    const vivos = new Set(envios.map((e) => e.shippingId));
+    for (const id of cacheSla.keys()) if (!vivos.has(id)) cacheSla.delete(id);
+    for (const id of cacheEnvio.keys()) if (!vivos.has(id)) cacheEnvio.delete(id);
+
+    estado = { atualizadoEm: agora.toISOString(), emAndamento: false, contas, envios, erros };
+  })()
+    .catch((err) => {
+      console.error("[prazos] ciclo falhou:", err.message);
+      estado.emAndamento = false;
+      estado.erros = [{ erro: err.message }];
+    })
+    .finally(() => {
+      cicloAtual = null;
+    });
+  return cicloAtual;
+}
+
+// A situacao depende da hora: reclassifica na leitura em vez de esperar o
+// proximo ciclo (um pedido vira "em risco" no minuto certo).
+async function estadoAtual() {
+  const config = await lerConfig();
+  const agora = new Date();
+  const hojeSP = partesSP(agora).dia;
+  const envios = estado.envios.map((e) => ({
+    ...e,
+    situacao: classificar({
+      impresso: e.impresso,
+      prazo: e.prazo ? new Date(e.prazo) : null,
+      limite: e.limiteImpressao ? new Date(e.limiteImpressao) : null,
+      slaStatus: e.slaStatus,
+      agora,
+      hojeSP,
+      avisoMin: config.avisoMin,
+    }),
+  }));
+  return { ...estado, envios, agora: agora.toISOString(), hojeSP, config };
+}
+
+function iniciarColetorPrazos() {
+  setTimeout(() => rodarCiclo(), 15_000);
+  setInterval(() => rodarCiclo(), CICLO_MS);
+}
+
+router.get("/prazos", async (req, res) => {
+  // Render gratuito dorme e para o setInterval: se o dado estiver velho,
+  // atualiza agora (e espera, se ainda nao houver nada).
+  const idade = estado.atualizadoEm ? Date.now() - Date.parse(estado.atualizadoEm) : Infinity;
+  if (idade > CICLO_MS + 30_000) {
+    const p = rodarCiclo();
+    if (!estado.atualizadoEm) await p;
+  }
+  res.json(await estadoAtual());
+});
+
+router.post("/prazos/atualizar", async (req, res) => {
+  await rodarCiclo();
+  res.json(await estadoAtual());
+});
+
+router.put("/prazos/config", express.json(), async (req, res) => {
+  try {
+    const config = await salvarConfig(req.body || {});
+    // Os limites de impressao sao calculados no ciclo: recalcula ja.
+    await rodarCiclo();
+    res.json(await estadoAtual());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
+module.exports.iniciarColetorPrazos = iniciarColetorPrazos;
+// Exposto so para teste.
+module.exports._interno = { partesSP, horaSP, calcularLimite, classificar, mesclarConfig };
