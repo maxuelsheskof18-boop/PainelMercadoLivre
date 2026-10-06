@@ -1,931 +1,1656 @@
-// Monitor de prazos de despacho (coleta / agencia / Flex).
-// Rotas: GET /api/prazos, POST /api/prazos/atualizar, PUT /api/prazos/config,
-// GET /api/prazos/calendario e /api/prazos/dia (historico)
-// (fase 2, mais abaixo) e a sonda /api/debug/probe-prazos (fase 1).
+// Prazos de despacho (coleta / agencia / Flex) — tela + alertas.
 //
-// FASE 1 — sonda de diagnostico. Antes de construir o painel de prazos,
-// precisamos confirmar contra a API real tres coisas que a documentacao
-// publica nao deixa claras:
-//   1. se a janela de coleta/agencia/Flex configurada no Mercado Livre pode
-//      ser lida pela API (endpoint de "schedule" — nome nao confirmado);
-//   2. qual campo traz o prazo de despacho de cada envio (/sla, /lead_time
-//      ou dentro do proprio /shipments) e se bate com o site do ML;
-//   3. se o filtro "a imprimir" (substatus ready_to_print) funciona na busca
-//      de pedidos — e o que vai alimentar o alerta de "nao impresso".
+// Separado do app.js de proposito: se o index.html publicado ainda nao tiver
+// o #prazos-pane (arquivos subidos em momentos diferentes no GitHub), este
+// script simplesmente nao faz nada e o resto do painel segue funcionando.
 //
-// Uso: abrir no navegador (ja logado no painel) /api/debug/probe-prazos
-// Opcional: ?sellerId=... (uma conta so) e ?limit=N (envios por conta, max 15).
+// Layout: cartoes de resumo no topo (clicaveis) + uma visao por vez —
+// "A imprimir" (3 colunas por modalidade), "Atrasados" (agrupados por idade),
+// "Impressos" e "Proximos dias". Atrasado e a imprimir nunca dividem a tela:
+// com muitos atrasados antigos, a lista do que ainda da tempo de imprimir
+// sumia la embaixo (pedido do usuario em 06/10).
+(function () {
+  const pane = document.getElementById("prazos-pane");
+  if (!pane) return;
 
-const express = require("express");
-const db = require("../db");
-const { requireLogin } = require("../authMiddleware");
-const { getValidAccessToken } = require("../ml/tokens");
-const { fetchRecentOrders } = require("../ml/api");
+  const $ = (id) => document.getElementById(id);
+  // IDs reaproveitados do index.html da fase 2 (assim so este arquivo e o
+  // style.css precisam subir): #prazos-atrasados vira o topo (resumo + abas)
+  // e #prazos-colunas o corpo da visao escolhida.
+  const topoEl = $("prazos-atrasados");
+  const corpoEl = $("prazos-colunas");
+  const statusEl = $("prazos-status");
+  const contaSel = $("prazos-conta");
+  const somBtn = $("prazos-som");
+  const configForm = $("prazos-config");
+  const badge = $("module-badge-prazos");
 
-const API_BASE = "https://api.mercadolibre.com";
-const router = express.Router();
-router.use(requireLogin);
+  topoEl.className = "prazos-topo";
 
-// Chamada crua: devolve status + corpo mesmo em erro (numa sonda o 404/403
-// e tao informativo quanto o 200 — mlFetch lancaria excecao e perderiamos
-// o corpo da resposta).
-async function rawGet(path, accessToken, extraHeaders = {}) {
-  try {
-    const res = await fetch(`${API_BASE}${path}`, {
-      signal: AbortSignal.timeout(20_000),
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: "application/json",
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        ...extraHeaders,
-      },
-    });
-    const text = await res.text();
-    let body;
-    try {
-      body = text ? JSON.parse(text) : null;
-    } catch {
-      body = text.slice(0, 500);
-    }
-    return { status: res.status, body };
-  } catch (err) {
-    return { status: "erro", body: err.message };
-  }
-}
+  const relBtn = document.createElement("button");
+  relBtn.type = "button";
+  relBtn.className = "btn btn-ghost btn-sm";
+  relBtn.textContent = "📄 Relatório do dia";
+  relBtn.title = "Relatório detalhado de atrasos de um dia (imprimir/PDF ou planilha)";
+  $("prazos-config-btn").before(relBtn);
+  relBtn.addEventListener("click", () => abrirRelatorio(visao === "calendario" && calDia ? calDia : diaSP(new Date())));
+  corpoEl.className = "prazos-corpo";
 
-const LOGISTIC_TYPES = ["cross_docking", "drop_off", "xd_drop_off", "self_service"];
-
-router.get("/debug/probe-prazos", async (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 6, 15);
-  const { rows: accounts } = req.query.sellerId
-    ? await db.query("SELECT id, nickname FROM accounts WHERE id = $1", [req.query.sellerId])
-    : await db.query("SELECT id, nickname FROM accounts");
-
-  const report = {
-    horaServidor: new Date().toISOString(),
-    fusoServidor: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    contas: [],
+  const POLL_MS = 30_000;
+  const MODALIDADES = [
+    { id: "coleta", nome: "Coleta", lts: ["cross_docking"] },
+    { id: "agencia", nome: "Agência", lts: ["xd_drop_off", "drop_off"] },
+    { id: "flex", nome: "Flex", lts: [] },
+  ];
+  const NOME_MODALIDADE = { coleta: "Coleta", agencia: "Agência", flex: "Flex" };
+  const SITUACAO = {
+    atrasado: { rotulo: "Atrasado", ordem: 0 },
+    estourou: { rotulo: "Passou do limite", ordem: 1 },
+    risco: { rotulo: "Em risco", ordem: 2 },
+    no_prazo: { rotulo: "No prazo", ordem: 3 },
+    sem_prazo: { rotulo: "Sem prazo", ordem: 4 },
+    impresso: { rotulo: "Impresso", ordem: 5 },
+    proximos: { rotulo: "Próximos dias", ordem: 6 },
+    // So no calendario (historico):
+    tarde: { rotulo: "Impresso após o limite", ordem: 2 },
+    cancelado: { rotulo: "Cancelado", ordem: 8 },
   };
+  const PENDENTE = new Set(["estourou", "risco", "no_prazo", "sem_prazo"]);
+  const VISOES = [
+    { id: "imprimir", nome: "A imprimir" },
+    { id: "atrasados", nome: "Atrasados" },
+    { id: "impressos", nome: "Impressos" },
+    { id: "proximos", nome: "Próximos dias" },
+    { id: "calendario", nome: "Calendário" },
+  ];
 
-  for (const acc of accounts) {
-    const sellerId = acc.id;
-    const entry = { sellerId, nickname: acc.nickname };
-    report.contas.push(entry);
+  let dados = null;
+  let visivel = false;
+  const tituloOriginal = document.title;
 
-    let accessToken;
-    try {
-      accessToken = await getValidAccessToken(sellerId);
-    } catch (err) {
-      entry.erroToken = err.message;
-      continue;
-    }
-
-    // 1) Janelas configuradas (coleta/agencia/Flex). Variantes de endpoint
-    //    testadas lado a lado — so uma (ou nenhuma) deve responder 200.
-    entry.janelas = {};
-    entry.janelas.shipping_preferences = await rawGet(
-      `/users/${sellerId}/shipping_preferences`,
-      accessToken
-    );
-    for (const lt of LOGISTIC_TYPES) {
-      entry.janelas[`schedule_${lt}`] = await rawGet(
-        `/users/${sellerId}/shipping/schedule/${lt}`,
-        accessToken
-      );
-    }
-
-    // 2) Filtros da busca de pedidos: quantos ha em cada recorte. O
-    //    paging.total diz se o filtro foi reconhecido (um filtro ignorado
-    //    devolve o mesmo total que a busca sem filtro).
-    const base = `seller=${sellerId}&limit=1`;
-    entry.filtros = {};
-    for (const [nome, qs] of Object.entries({
-      semFiltro: "",
-      ready_to_ship: "&shipping.status=ready_to_ship",
-      a_imprimir: "&shipping.status=ready_to_ship&shipping.substatus=ready_to_print",
-      impresso: "&shipping.status=ready_to_ship&shipping.substatus=printed",
-      atrasado_tag: "&tags=delayed",
-    })) {
-      const r = await rawGet(`/orders/search?${base}${qs}`, accessToken);
-      entry.filtros[nome] =
-        r.status === 200 ? { total: r.body?.paging?.total } : { status: r.status, body: r.body };
-    }
-
-    // 3) Amostra de envios ainda nao despachados: tudo que pode carregar o
-    //    prazo, pra comparar com o que o site do ML mostra pra mesma venda.
-    entry.envios = [];
-    let orders = [];
-    try {
-      const r = await rawGet(
-        `/orders/search?seller=${sellerId}&shipping.status=ready_to_ship&sort=date_desc&limit=${limit}`,
-        accessToken
-      );
-      orders = r.status === 200 ? r.body?.results || [] : [];
-      if (r.status !== 200) entry.erroBuscaReadyToShip = r;
-    } catch (err) {
-      entry.erroBuscaReadyToShip = err.message;
-    }
-    // Plano B: se o filtro shipping.status nao existir, pega os mais recentes.
-    if (!orders.length) {
-      try {
-        const r = await fetchRecentOrders(accessToken, sellerId, { limit });
-        orders = r?.results || [];
-        entry.amostraSemFiltro = true;
-      } catch (err) {
-        entry.erroBuscaRecentes = err.message;
-      }
-    }
-
-    for (const order of orders) {
-      const shipId = order?.shipping?.id;
-      const envio = {
-        order_id: order.id,
-        pack_id: order.pack_id || null,
-        date_created: order.date_created,
-        date_closed: order.date_closed,
-        order_tags: order.tags,
-        shipping_id: shipId || null,
-      };
-      entry.envios.push(envio);
-      if (!shipId) continue;
-
-      const ship = await rawGet(`/shipments/${shipId}`, accessToken, { "x-format-new": "true" });
-      if (ship.status === 200) {
-        const s = ship.body || {};
-        envio.shipment = {
-          logistic_type: s.logistic?.type ?? s.logistic_type,
-          mode: s.logistic?.mode ?? s.mode,
-          status: s.status,
-          substatus: s.substatus,
-          tags: s.tags,
-          // Campos candidatos ao prazo de despacho:
-          lead_time: s.lead_time ?? null,
-          shipping_option: s.shipping_option ?? null,
-          status_history: s.status_history ?? null,
-          date_created: s.date_created,
-          last_updated: s.last_updated,
-        };
-      } else {
-        envio.shipment = ship;
-      }
-
-      envio.sla = await rawGet(`/shipments/${shipId}/sla`, accessToken);
-      envio.lead_time = await rawGet(`/shipments/${shipId}/lead_time`, accessToken);
-    }
+  function lsGet(k) {
+    try { return localStorage.getItem(k); } catch { return null; }
+  }
+  function lsSet(k, v) {
+    try { localStorage.setItem(k, v); } catch { /* sem storage: so nao lembra */ }
   }
 
-  res.json(report);
-});
+  let visao = VISOES.some((v) => v.id === lsGet("prazos.visao")) ? lsGet("prazos.visao") : "imprimir";
+  let alertasAtivos = lsGet("prazos.alertas") === "1";
+  // shippingId:situacao ja avisados — um pedido avisa de novo so quando piora.
+  const avisados = new Set();
 
+  const esc = (s) =>
+    String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-// ===========================================================================
-// FASE 2 — coletor + API do painel de prazos.
-//
-// O que a sonda confirmou (contas reais, 06/10/2026):
-//   - GET /users/{id}/shipping/schedule/{logistic_type} devolve a janela por
-//     dia da semana: cross_docking (coleta) traz from/to/cutoff; xd_drop_off
-//     (agencia) traz so from (horario limite de entrega) e cutoff. Flex
-//     (self_service) NAO tem schedule (404) -> horario limite e configurado
-//     no proprio painel.
-//   - GET /shipments/{id}/sla -> { status: "on_time"|"delayed"|..., expected_date }
-//     e o prazo de despacho (agencia: 16:30, bate com o schedule). No Flex o
-//     expected_date e 23:00 = prazo de ENTREGA, nao serve de limite de
-//     impressao. Full (fulfillment) da 404 ou vazio — nao entra aqui.
-//   - orders/search aceita shipping.status=ready_to_ship +
-//     shipping.substatus=ready_to_print|printed (os totais mudam com o filtro).
-//
-// O estado fica em memoria (recalculado a cada ciclo). A unica coisa gravada
-// no banco e a configuracao (margens / horario do Flex).
-// ===========================================================================
+  const TZ = "America/Sao_Paulo";
+  const fmtHora = (iso) =>
+    iso ? new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: TZ }) : "—";
+  const fmtDiaHora = (iso) =>
+    iso
+      ? new Date(iso).toLocaleString("pt-BR", {
+          weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: TZ,
+        })
+      : "—";
+  const diaSP = (d) =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
 
-const { fetchShipment, fetchResource } = require("../ml/api");
-
-// mlFetch nao e exportado por ml/api.js; fetchResource e o mesmo mlFetch.
-const mlGet = (path, token) => fetchResource(token, path);
-
-const CICLO_MS = 3 * 60 * 1000;
-const SLA_TTL_MS = 10 * 60 * 1000;
-
-// Modalidades exibidas. Full (fulfillment) fica de fora: quem despacha e o ML.
-const MODALIDADE = {
-  cross_docking: "coleta",
-  drop_off: "agencia",
-  xd_drop_off: "agencia",
-  self_service: "flex",
-};
-
-const CONFIG_PADRAO = {
-  // Coleta: limite de impressao = FIM da janela de coleta - margem
-  // (regra do usuario: janela ate 14:45 -> tudo impresso ate 14:00).
-  coleta: { margemMin: 45 },
-  // Agencia: limite = horario de entrega na agencia - margem (tempo de
-  // separar, embalar e levar).
-  agencia: { margemMin: 60 },
-  // Flex: o ML nao informa janela; limite fixo do dia (saida da rota).
-  flex: { limite: "13:00" },
-  // Quanto tempo antes do limite o pedido nao impresso vira "em risco".
-  avisoMin: 60,
-};
-
-// --- Horario de Sao Paulo ---------------------------------------------------
-// O servidor roda em UTC (confirmado na sonda). O Brasil nao tem horario de
-// verao desde 2019, entao Sao Paulo e sempre -03:00.
-const TZ = "America/Sao_Paulo";
-const OFFSET_SP = "-03:00";
-
-function partesSP(date) {
-  const p = Object.fromEntries(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: TZ,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      weekday: "long",
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-    })
-      .formatToParts(date)
-      .map((x) => [x.type, x.value])
-  );
-  return {
-    dia: `${p.year}-${p.month}-${p.day}`,
-    semana: p.weekday.toLowerCase(),
-    hora: `${p.hour}:${p.minute}`,
-  };
-}
-
-function horaSP(dia, hhmm) {
-  return new Date(`${dia}T${hhmm}:00${OFFSET_SP}`);
-}
-
-const menosMin = (d, min) => new Date(d.getTime() - min * 60000);
-
-// --- Configuracao (tabela propria, criada sob demanda) ----------------------
-let configCache = null;
-
-function mesclarConfig(salva) {
-  const c = JSON.parse(JSON.stringify(CONFIG_PADRAO));
-  if (!salva) return c;
-  const num = (v, min, max) =>
-    v !== "" && v != null && Number.isFinite(+v) ? Math.min(Math.max(+v, min), max) : undefined;
-  c.coleta.margemMin = num(salva.coleta?.margemMin, 0, 600) ?? c.coleta.margemMin;
-  c.agencia.margemMin = num(salva.agencia?.margemMin, 0, 600) ?? c.agencia.margemMin;
-  if (/^\d{2}:\d{2}$/.test(salva.flex?.limite || "")) c.flex.limite = salva.flex.limite;
-  c.avisoMin = num(salva.avisoMin, 5, 600) ?? c.avisoMin;
-  return c;
-}
-
-async function lerConfig() {
-  if (configCache) return configCache;
-  try {
-    await db.query(
-      "CREATE TABLE IF NOT EXISTS prazos_config (id INTEGER PRIMARY KEY, data JSONB NOT NULL)"
-    );
-    const { rows } = await db.query("SELECT data FROM prazos_config WHERE id = 1");
-    configCache = mesclarConfig(rows[0]?.data);
-  } catch (err) {
-    console.error("[prazos] falha ao ler config, usando padrao:", err.message);
-    return mesclarConfig(null);
+  function dur(min) {
+    if (min >= 2880) return `${Math.floor(min / 1440)} dias`;
+    if (min >= 60) return `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}`;
+    return `${min} min`;
   }
-  return configCache;
-}
-
-async function salvarConfig(nova) {
-  const c = mesclarConfig(nova);
-  await lerConfig(); // garante a tabela
-  await db.query(
-    `INSERT INTO prazos_config (id, data) VALUES (1, $1)
-     ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
-    [JSON.stringify(c)]
-  );
-  configCache = c;
-  return c;
-}
-
-// --- Coleta de dados no Mercado Livre ---------------------------------------
-const cacheEnvio = new Map(); // shipping_id -> { logistic_type }
-const cacheSla = new Map(); // shipping_id -> { status, expected_date, em }
-const cacheJanelas = new Map(); // `${seller}:${lt}` -> { dia, schedule }
-
-let estado = { atualizadoEm: null, emAndamento: false, contas: [], envios: [], erros: [] };
-let cicloAtual = null;
-
-async function emLotes(itens, n, fn) {
-  const out = [];
-  for (let i = 0; i < itens.length; i += n) {
-    out.push(...(await Promise.all(itens.slice(i, i + n).map(fn))));
-  }
-  return out;
-}
-
-async function janelasDaConta(sellerId, token, hojeSP) {
-  const janelas = {};
-  for (const lt of ["cross_docking", "xd_drop_off", "drop_off"]) {
-    const chave = `${sellerId}:${lt}`;
-    const c = cacheJanelas.get(chave);
-    if (c && c.dia === hojeSP) {
-      if (c.schedule) janelas[lt] = c.schedule;
-      continue;
-    }
-    let schedule = null;
-    try {
-      const r = await mlGet(`/users/${sellerId}/shipping/schedule/${lt}`, token);
-      schedule = r?.schedule || null;
-    } catch (err) {
-      if (err.status !== 404) throw err; // 404 = conta nao usa essa modalidade
-    }
-    cacheJanelas.set(chave, { dia: hojeSP, schedule });
-    if (schedule) janelas[lt] = schedule;
-  }
-  return janelas;
-}
-
-async function buscarPedidos(sellerId, token, substatus) {
-  const pedidos = [];
-  for (let offset = 0; offset < 1000; offset += 50) {
-    const r = await mlGet(
-      `/orders/search?seller=${sellerId}&shipping.status=ready_to_ship` +
-        `&shipping.substatus=${substatus}&sort=date_asc&limit=50&offset=${offset}`,
-      token
-    );
-    pedidos.push(...(r?.results || []));
-    if (offset + 50 >= (r?.paging?.total || 0)) break;
-  }
-  return pedidos;
-}
-
-async function tipoLogistico(shipId, token) {
-  if (cacheEnvio.has(shipId)) return cacheEnvio.get(shipId);
-  const s = await fetchShipment(token, shipId);
-  const info = { logistic_type: s?.logistic_type ?? s?.logistic?.type ?? null };
-  cacheEnvio.set(shipId, info);
-  return info;
-}
-
-async function slaDoEnvio(shipId, token) {
-  const c = cacheSla.get(shipId);
-  if (c && Date.now() - c.em < SLA_TTL_MS) return c;
-  let sla = { status: null, expected_date: null, em: Date.now() };
-  try {
-    const r = await mlGet(`/shipments/${shipId}/sla`, token);
-    sla = { status: r?.status || null, expected_date: r?.expected_date || null, em: Date.now() };
-  } catch (err) {
-    if (err.status !== 404) throw err;
-  }
-  cacheSla.set(shipId, sla);
-  return sla;
-}
-
-// Limite de impressao de um envio, a partir do prazo de despacho (SLA) e da
-// janela configurada no ML para aquele dia da semana.
-// Devolve tambem o prazoEfetivo de despacho: na COLETA o SLA do ML traz o
-// INICIO da janela (ex.: 11:45), mas o motorista pode passar ate o FIM
-// (13:45) — so e atraso depois disso (relatado pelo usuario em 06/10).
-function calcularLimite({ modalidade, logisticType, prazo, janelas, config }) {
-  if (!prazo) return { limite: null, janela: null, prazoEfetivo: null };
-  const { dia, semana } = partesSP(prazo);
-
-  if (modalidade === "flex") {
-    return { limite: horaSP(dia, config.flex.limite), janela: { ate: config.flex.limite }, prazoEfetivo: prazo };
+  function fmtFalta(iso) {
+    if (!iso) return "";
+    const min = Math.round((Date.parse(iso) - Date.now()) / 60000);
+    return min >= 0 ? `faltam ${dur(min)}` : `passou há ${dur(-min)}`;
   }
 
-  const det = janelas[logisticType]?.[semana]?.detail?.[0] || null;
-  const janela = det ? { de: det.from || null, ate: det.to || null, corte: det.cutoff || null } : null;
-
-  if (modalidade === "coleta") {
-    // Fim da janela de coleta; sem janela, o proprio prazo do SLA.
-    let fim = det?.to ? horaSP(dia, det.to) : prazo;
-    if (fim < prazo) fim = prazo; // janela mudou/estranha: nunca antes do SLA
-    return { limite: menosMin(fim, config.coleta.margemMin), janela, prazoEfetivo: fim };
-  }
-  // Agencia: o schedule so traz "from" (= horario de entrega, igual ao SLA).
-  const entrega = det?.from ? horaSP(dia, det.from) : prazo;
-  return { limite: menosMin(entrega, config.agencia.margemMin), janela, prazoEfetivo: prazo };
-}
-
-function classificar({ impresso, prazo, limite, slaStatus, agora, hojeSP, avisoMin }) {
-  // O prazo (efetivo) manda; o "delayed" do ML so conta quando nao ha prazo
-  // — senao a coleta viraria atrasada no inicio da janela.
-  if (prazo ? agora > prazo : slaStatus === "delayed") return "atrasado";
-  if (prazo && partesSP(prazo).dia > hojeSP) return "proximos";
-  if (impresso) return "impresso";
-  if (!limite) return "sem_prazo";
-  if (agora > limite) return "estourou";
-  if (agora > menosMin(limite, avisoMin)) return "risco";
-  return "no_prazo";
-}
-
-function resumoJanelas(janelas, semana) {
-  const out = {};
-  for (const [lt, sched] of Object.entries(janelas)) {
-    const d = sched?.[semana];
-    out[lt] =
-      d?.work && d.detail?.[0]
-        ? { de: d.detail[0].from || null, ate: d.detail[0].to || null, corte: d.detail[0].cutoff || null }
-        : null; // nao trabalha hoje
-  }
-  return out;
-}
-
-async function coletarConta(acc, config, agora, hojeSP) {
-  const sellerId = String(acc.id);
-  const token = await getValidAccessToken(sellerId);
-  const janelas = await janelasDaConta(sellerId, token, hojeSP);
-
-  // Substatus que ainda estao no CD (confirmado com /debug/probe-prazos-conta
-  // em 06/10): invoice_pending = falta a nota fiscal, o ML nem libera a
-  // etiqueta (contas com NF obrigatoria); ready_for_pickup = impresso e
-  // esperando o motorista da coleta. picked_up/dropped_off/in_hub ja sairam.
-  const [aImprimir, nfPendente, impressos, prontosColeta] = await Promise.all([
-    buscarPedidos(sellerId, token, "ready_to_print"),
-    buscarPedidos(sellerId, token, "invoice_pending"),
-    buscarPedidos(sellerId, token, "printed"),
-    buscarPedidos(sellerId, token, "ready_for_pickup"),
-  ]);
-
-  // Pedidos de um mesmo carrinho (pack) dividem o mesmo envio.
-  const porEnvio = new Map();
-  for (const [lista, impresso, nf] of [
-    [aImprimir, false, false],
-    [nfPendente, false, true],
-    [impressos, true, false],
-    [prontosColeta, true, false],
-  ]) {
-    for (const o of lista) {
-      const shipId = o?.shipping?.id;
-      if (!shipId) continue;
-      if (!porEnvio.has(shipId)) porEnvio.set(shipId, { shipId, impresso, nfPendente: nf, pedidos: [] });
-      porEnvio.get(shipId).pedidos.push(o);
-    }
+  // Dias corridos (em Sao Paulo) entre o prazo e hoje: 0 = venceu hoje.
+  function diasDeAtraso(e) {
+    if (!e.prazo) return 0;
+    const ms = Date.parse(diaSP(new Date())) - Date.parse(diaSP(new Date(e.prazo)));
+    return Math.max(0, Math.round(ms / 86400000));
   }
 
-  const envios = await emLotes([...porEnvio.values()], 5, async (e) => {
-    const { logistic_type } = await tipoLogistico(e.shipId, token);
-    const modalidade = MODALIDADE[logistic_type];
-    if (!modalidade) return null; // Full ou modalidade desconhecida
-    const sla = await slaDoEnvio(e.shipId, token);
-    const prazoSla = sla.expected_date ? new Date(sla.expected_date) : null;
-    const { limite, janela, prazoEfetivo: prazo } = calcularLimite({
-      modalidade,
-      logisticType: logistic_type,
-      prazo: prazoSla,
-      janelas,
-      config,
+  // O que exige acao hoje (selo do menu e titulo da aba). Atrasado de dias
+  // atras fica de fora: sao pedidos travados, que nao mudam com mais aviso.
+  const acionavel = (e) =>
+    e.situacao === "risco" || e.situacao === "estourou" || (e.situacao === "atrasado" && diasDeAtraso(e) === 0);
+
+  // ---------- Mostrar/esconder (o app.js cuida das outras telas) ----------
+  document.querySelectorAll(".module-nav-item").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      visivel = btn.dataset.module === "prazos";
+      pane.classList.toggle("hidden", !visivel);
+      if (visivel) render();
     });
-    const o = e.pedidos[0];
-    return {
-      sellerId,
-      conta: acc.nickname,
-      shippingId: e.shipId,
-      venda: String(o.pack_id || o.id),
-      pedidos: e.pedidos.map((p) => String(p.id)),
-      comprador: o.buyer?.nickname || null,
-      itens: e.pedidos.flatMap((p) =>
-        (p.order_items || []).map((it) => ({ titulo: it.item?.title, qtd: it.quantity }))
-      ),
-      criadoEm: o.date_created,
-      modalidade,
-      logisticType: logistic_type,
-      impresso: e.impresso,
-      nfPendente: e.nfPendente,
-      slaStatus: sla.status,
-      prazo: prazo ? prazo.toISOString() : null,
-      prazoSla: prazoSla ? prazoSla.toISOString() : null,
-      limiteImpressao: limite ? limite.toISOString() : null,
-      janela,
-      situacao: classificar({
-        impresso: e.impresso,
-        prazo,
-        limite,
-        slaStatus: sla.status,
-        agora,
-        hojeSP,
-        avisoMin: config.avisoMin,
-      }),
-    };
   });
 
-  return {
-    conta: {
-      sellerId,
-      nickname: acc.nickname,
-      janelasHoje: resumoJanelas(janelas, partesSP(agora).semana),
-    },
-    envios: envios.filter(Boolean),
-  };
-}
-
-// --- Historico (calendario) -------------------------------------------------
-// A API do ML so mostra o que ainda esta "pronto para enviar": o que foi
-// despachado ontem some. Para poder voltar num dia e ver o que foi impresso,
-// cada ciclo grava os envios em prazos_envios:
-//   - impresso_em: primeiro ciclo em que o envio apareceu como "impresso"
-//     (precisao de ~3 min). impresso_estimado=true quando ja chegou impresso
-//     no primeiro ciclo (ou saiu despachado sem nunca ter sido visto impresso).
-//   - atrasou: em algum ciclo ficou pendente depois do prazo de despacho.
-//   - saiu_em / status_final: quando deixou a lista e por que (shipped,
-//     cancelled...), conferido no /shipments.
-// O historico comeca no dia em que esta versao foi publicada.
-let tabelaHistorico = null;
-
-function garantirTabelaHistorico() {
-  if (!tabelaHistorico) {
-    tabelaHistorico = (async () => {
-      await db.query(`
-        CREATE TABLE IF NOT EXISTS prazos_envios (
-          shipping_id TEXT PRIMARY KEY,
-          seller_id TEXT NOT NULL,
-          conta TEXT,
-          venda TEXT,
-          comprador TEXT,
-          itens JSONB,
-          modalidade TEXT,
-          prazo TIMESTAMPTZ,
-          limite_impressao TIMESTAMPTZ,
-          dia_prazo DATE,
-          sla_status TEXT,
-          impresso BOOLEAN NOT NULL DEFAULT false,
-          impresso_em TIMESTAMPTZ,
-          impresso_estimado BOOLEAN NOT NULL DEFAULT false,
-          atrasou BOOLEAN NOT NULL DEFAULT false,
-          visto_em TIMESTAMPTZ NOT NULL,
-          ultimo_visto TIMESTAMPTZ NOT NULL,
-          saiu_em TIMESTAMPTZ,
-          status_final TEXT
-        )`);
-      await db.query("CREATE INDEX IF NOT EXISTS prazos_envios_dia_idx ON prazos_envios (dia_prazo)");
-      // Correcao unica: ate 06/10/2026 a coleta usava o INICIO da janela como
-      // prazo e marcava "atrasou" quem saiu dentro da janela. Todas as janelas
-      // observadas tem 2h; o que saiu ate 2h depois desse prazo nao atrasou.
-      await db.query(
-        `UPDATE prazos_envios SET atrasou = false
-          WHERE modalidade = 'coleta' AND atrasou AND dia_prazo <= '2026-10-06'
-            AND saiu_em IS NOT NULL AND saiu_em <= prazo + interval '2 hours'`
-      );
-    })().catch((err) => {
-      tabelaHistorico = null;
-      throw err;
-    });
-  }
-  return tabelaHistorico;
-}
-
-const COLUNAS_HIST = [
-  "shipping_id", "seller_id", "conta", "venda", "comprador", "itens", "modalidade", "prazo",
-  "limite_impressao", "dia_prazo", "sla_status", "impresso", "impresso_em", "impresso_estimado",
-  "atrasou", "visto_em", "ultimo_visto",
-];
-
-async function gravarHistorico(envios, contasOk, agora) {
-  await garantirTabelaHistorico();
-
-  for (let i = 0; i < envios.length; i += 100) {
-    const lote = envios.slice(i, i + 100);
-    const params = [];
-    const linhas = lote.map((e) => {
-      const valores = [
-        String(e.shippingId), e.sellerId, e.conta, e.venda, e.comprador, JSON.stringify(e.itens),
-        e.modalidade, e.prazo, e.limiteImpressao, e.prazo ? partesSP(new Date(e.prazo)).dia : null,
-        e.slaStatus, e.impresso, e.impresso ? agora : null, e.impresso,
-        e.situacao === "atrasado", agora, agora,
-      ];
-      const ph = valores.map((v) => {
-        params.push(v);
-        return `$${params.length}`;
+  // ---------- Dados ----------
+  async function carregar({ forcar = false } = {}) {
+    try {
+      const res = await fetch(forcar ? "/api/prazos/atualizar" : "/api/prazos", {
+        method: forcar ? "POST" : "GET",
       });
-      return `(${ph.join(",")})`;
-    });
-    await db.query(
-      `INSERT INTO prazos_envios (${COLUNAS_HIST.join(",")}) VALUES ${linhas.join(",")}
-       ON CONFLICT (shipping_id) DO UPDATE SET
-         conta = EXCLUDED.conta,
-         comprador = EXCLUDED.comprador,
-         itens = EXCLUDED.itens,
-         modalidade = EXCLUDED.modalidade,
-         prazo = EXCLUDED.prazo,
-         limite_impressao = EXCLUDED.limite_impressao,
-         dia_prazo = EXCLUDED.dia_prazo,
-         sla_status = EXCLUDED.sla_status,
-         impresso = EXCLUDED.impresso,
-         -- Virou "impresso" agora (antes nao era): horario observado, nao estimado.
-         impresso_estimado = CASE WHEN prazos_envios.impresso_em IS NULL AND EXCLUDED.impresso
-                                  THEN false ELSE prazos_envios.impresso_estimado END,
-         impresso_em = COALESCE(prazos_envios.impresso_em, EXCLUDED.impresso_em),
-         -- Se o prazo mudou (ex.: coleta passou a usar o fim da janela), o
-         -- "atrasou" calculado com o prazo antigo nao vale mais.
-         atrasou = EXCLUDED.atrasou OR (prazos_envios.atrasou AND prazos_envios.prazo IS NOT DISTINCT FROM EXCLUDED.prazo),
-         ultimo_visto = EXCLUDED.ultimo_visto,
-         saiu_em = NULL,
-         status_final = NULL`,
-      params
-    );
+      if (res.status === 401) return; // sessao expirou: o app.js ja trata
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      dados = await res.json();
+      atualizarFiltroContas();
+      render();
+      atualizarBadge();
+      verificarAlertas();
+    } catch (err) {
+      statusEl.textContent = `Falha ao carregar: ${err.message}`;
+    }
   }
 
-  // Saiu da lista neste ciclo: so para contas que foram lidas com sucesso
-  // (falha de rede numa conta nao pode "despachar" os envios dela).
-  if (!contasOk.length) return;
-  const { rows: sairam } = await db.query(
-    `UPDATE prazos_envios SET saiu_em = $1
-      WHERE saiu_em IS NULL AND ultimo_visto < $1 AND seller_id = ANY($2)
-      RETURNING shipping_id, seller_id`,
-    [agora, contasOk]
+  function enviosFiltrados() {
+    const conta = contaSel.value;
+    return (dados?.envios || []).filter((e) => !conta || e.sellerId === conta);
+  }
+
+  function atualizarFiltroContas() {
+    const atual = contaSel.value;
+    const opcoes = (dados?.contas || []).map(
+      (c) => `<option value="${esc(c.sellerId)}">${esc(c.nickname)}</option>`
+    );
+    contaSel.innerHTML = `<option value="">Todas as contas</option>${opcoes.join("")}`;
+    contaSel.value = atual;
+  }
+
+  // ---------- Render ----------
+  // Visao "A imprimir" (pedido do usuario 06/10: "mais sofisticado", sem a
+  // parede de linhas repetidas): linha do tempo do dia + um cartao por
+  // modalidade (anel de progresso, contagem regressiva, barras por conta) +
+  // detalhe da modalidade escolhida, agrupado por produto ou por pacote.
+  let modSel = null; // modalidade aberta no detalhe (null = a mais urgente)
+  let modoDetalhe = lsGet("prazos.modo") === "pacotes" ? "pacotes" : "produtos";
+  // Produtos expandidos: a tela se redesenha a cada 30s e nao pode fechar
+  // o que o operador abriu.
+  const produtosAbertos = new Set();
+  corpoEl.addEventListener(
+    "toggle",
+    (ev) => {
+      const d = ev.target;
+      if (!d.matches?.(".pz-produto")) return;
+      if (d.open) produtosAbertos.add(d.dataset.chave);
+      else produtosAbertos.delete(d.dataset.chave);
+    },
+    true
   );
-  await emLotes(sairam, 5, async (r) => {
-    try {
-      const token = await getValidAccessToken(r.seller_id);
-      const s = await fetchShipment(token, r.shipping_id);
-      await db.query(
-        `UPDATE prazos_envios SET status_final = $2,
-           impresso_estimado = CASE WHEN impresso_em IS NULL AND $2 IN ('shipped','delivered') THEN true ELSE impresso_estimado END,
-           impresso_em = CASE WHEN impresso_em IS NULL AND $2 IN ('shipped','delivered') THEN saiu_em ELSE impresso_em END
-         WHERE shipping_id = $1`,
-        [r.shipping_id, s?.status || null]
-      );
-    } catch (err) {
-      console.error(`[prazos] status final ${r.shipping_id}:`, err.message);
+
+  function render() {
+    if (!dados || !visivel) return;
+    const envios = enviosFiltrados();
+
+    const erros = (dados.erros || [])
+      .map((e) => `<span class="prazos-erro">⚠ ${esc(e.conta || "")}: ${esc(e.erro)}</span>`)
+      .join(" ");
+    statusEl.innerHTML =
+      (dados.atualizadoEm
+        ? `Atualizado às ${fmtHora(dados.atualizadoEm)} · busca automática a cada 3 min`
+        : "Buscando no Mercado Livre...") + (erros ? `<br>${erros}` : "");
+
+    const grupos = {
+      imprimir: envios.filter((e) => PENDENTE.has(e.situacao)),
+      atrasados: envios.filter((e) => e.situacao === "atrasado"),
+      impressos: envios.filter((e) => e.situacao === "impresso"),
+      proximos: envios.filter((e) => e.situacao === "proximos"),
+    };
+    topoEl.innerHTML = renderResumo(grupos) + renderAbas(grupos);
+
+    const corpo = {
+      imprimir: () => renderImprimir(grupos),
+      atrasados: () => renderAtrasados(grupos.atrasados),
+      impressos: () => renderImpressos(grupos),
+      proximos: () => renderProximos(grupos.proximos),
+      calendario: () => renderCalendario(),
+    }[visao];
+    corpoEl.innerHTML = corpo();
+  }
+
+  function renderResumo(g) {
+    const conta = (s) => g.imprimir.filter((e) => e.situacao === s).length;
+    const proxLimite = g.imprimir
+      .filter((e) => e.situacao !== "estourou")
+      .map((e) => e.limiteImpressao)
+      .filter(Boolean)
+      .sort()[0];
+    const atrasHoje = g.atrasados.filter((e) => diasDeAtraso(e) === 0).length;
+    const cartoes = [
+      {
+        visao: "imprimir", cls: "imprimir", n: g.imprimir.length, rotulo: "A imprimir",
+        sub: proxLimite ? `próximo limite ${fmtHora(proxLimite)} · ${fmtFalta(proxLimite)}` : "nada com prazo hoje",
+      },
+      { visao: "imprimir", cls: "risco", n: conta("risco"), rotulo: "Em risco", sub: "menos de 1h para o limite" },
+      { visao: "imprimir", cls: "estourou", n: conta("estourou"), rotulo: "Passou do limite", sub: "imprimir agora" },
+      {
+        visao: "atrasados", cls: "atrasado", n: g.atrasados.length, rotulo: "Atrasados",
+        sub: `${atrasHoje} de hoje · ${g.atrasados.length - atrasHoje} antigos`,
+      },
+      { visao: "impressos", cls: "impresso", n: g.impressos.length, rotulo: "Impressos", sub: "aguardando despacho" },
+    ];
+    return `<div class="prazos-resumo">${cartoes
+      .map(
+        (c) => `<button type="button" class="prazos-kpi kpi-${c.cls}${c.n ? "" : " zerado"}" data-visao="${c.visao}">
+          <span class="kpi-n">${c.n}</span>
+          <span class="kpi-rotulo">${c.rotulo}</span>
+          <span class="kpi-sub">${esc(c.sub)}</span>
+        </button>`
+      )
+      .join("")}</div>`;
+  }
+
+  function renderAbas(g) {
+    return `<div class="prazos-abas" role="tablist">${VISOES.map(
+      (v) => `<button type="button" role="tab" class="prazos-aba aba-${v.id}${v.id === visao ? " ativa" : ""}" data-visao="${v.id}" aria-selected="${v.id === visao}">
+        ${v.nome}${g[v.id] ? `<span class="prazos-aba-n">${g[v.id].length}</span>` : ""}</button>`
+    ).join("")}</div>`;
+  }
+
+  // Clique nos cartoes/abas (delegado: o topo e recriado a cada render).
+  topoEl.addEventListener("click", (ev) => {
+    const alvo = ev.target.closest("[data-visao]");
+    if (!alvo) return;
+    visao = alvo.dataset.visao;
+    lsSet("prazos.visao", visao);
+    render();
+  });
+
+  // Cliques no corpo: escolher modalidade, trocar modo do detalhe.
+  corpoEl.addEventListener("click", (ev) => {
+    const rel = ev.target.closest("[data-relatorio]");
+    if (rel) {
+      if (rel.dataset.relatorio === "pdf") abrirRelatorio(calDia);
+      else baixarCsv(calDia);
+      return;
+    }
+    const alvo = ev.target.closest("[data-faixa],[data-cal-dia],[data-cal-mes],[data-cal-mod],[data-imp-mod]");
+    if (alvo) {
+      const d = alvo.dataset;
+      if (d.impMod) impModSel = d.impMod;
+      if (d.faixa) faixaSel = d.faixa;
+      if (d.calDia) {
+        calDia = d.calDia;
+        calMes = d.calDia.slice(0, 7);
+      }
+      if (d.calMes) {
+        const [a, m] = calMes.split("-").map(Number);
+        const n = new Date(Date.UTC(a, m - 1 + Number(d.calMes), 1));
+        calMes = n.toISOString().slice(0, 7);
+      }
+      if (d.calMod) calModSel = calModSel === d.calMod ? null : d.calMod;
+      render();
+      return;
+    }
+    const mod = ev.target.closest("[data-mod]");
+    if (mod) {
+      modSel = mod.dataset.mod;
+      render();
+      return;
+    }
+    const modo = ev.target.closest("[data-modo]");
+    if (modo) {
+      modoDetalhe = modo.dataset.modo;
+      lsSet("prazos.modo", modoDetalhe);
+      render();
     }
   });
-}
 
-const DATA_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-router.get("/prazos/calendario", async (req, res) => {
-  const { de, ate } = req.query;
-  if (!DATA_RE.test(de || "") || !DATA_RE.test(ate || "")) {
-    return res.status(400).json({ error: "Informe ?de=AAAA-MM-DD&ate=AAAA-MM-DD" });
-  }
-  try {
-    await garantirTabelaHistorico();
-    const { rows } = await db.query(
-      `SELECT to_char(dia_prazo, 'YYYY-MM-DD') AS dia,
-              count(*) FILTER (WHERE status_final IS DISTINCT FROM 'cancelled')::int AS total,
-              count(*) FILTER (WHERE impresso_em IS NOT NULL)::int AS impressos,
-              count(*) FILTER (WHERE impresso_em IS NOT NULL
-                                 AND (limite_impressao IS NULL OR impresso_em <= limite_impressao))::int AS no_limite,
-              count(*) FILTER (WHERE impresso_em IS NULL AND status_final IS DISTINCT FROM 'cancelled')::int AS nao_impressos,
-              count(*) FILTER (WHERE atrasou)::int AS atrasados,
-              count(*) FILTER (WHERE status_final = 'cancelled')::int AS cancelados
-         FROM prazos_envios
-        WHERE dia_prazo BETWEEN $1 AND $2
-        GROUP BY dia_prazo
-        ORDER BY dia_prazo`,
-      [de, ate]
+  // ---------- Helpers de hora (minutos do dia em Sao Paulo) ----------
+  function minutosSP(iso) {
+    const p = Object.fromEntries(
+      new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+        .formatToParts(new Date(iso))
+        .map((x) => [x.type, x.value])
     );
-    const { rows: ini } = await db.query(
-      "SELECT to_char(min(visto_em) AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD') AS inicio FROM prazos_envios"
-    );
-    res.json({ dias: rows, inicio: ini[0]?.inicio || null });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    return +p.hour * 60 + +p.minute;
   }
-});
+  const hhmmParaMin = (s) => (/^\d{2}:\d{2}$/.test(s || "") ? +s.slice(0, 2) * 60 + +s.slice(3) : null);
+  const minParaHhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 
-router.get("/prazos/dia", async (req, res) => {
-  const { data } = req.query;
-  if (!DATA_RE.test(data || "")) return res.status(400).json({ error: "Informe ?data=AAAA-MM-DD" });
-  try {
-    await garantirTabelaHistorico();
-    const { rows } = await db.query(
-      `SELECT * FROM prazos_envios WHERE dia_prazo = $1 ORDER BY limite_impressao NULLS LAST, venda`,
-      [data]
-    );
-    const iso = (d) => (d ? new Date(d).toISOString() : null);
-    res.json({
-      data,
-      envios: rows.map((r) => ({
-        shippingId: r.shipping_id,
-        sellerId: r.seller_id,
-        conta: r.conta,
-        venda: r.venda,
-        comprador: r.comprador,
-        itens: r.itens || [],
-        modalidade: r.modalidade,
-        prazo: iso(r.prazo),
-        limiteImpressao: iso(r.limite_impressao),
-        slaStatus: r.sla_status,
-        impressoEm: iso(r.impresso_em),
-        impressoEstimado: r.impresso_estimado,
-        atrasou: r.atrasou,
-        saiuEm: iso(r.saiu_em),
-        statusFinal: r.status_final,
-        aindaNaLista: !r.saiu_em,
-      })),
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  function nivelDe(itens, impressos) {
+    if (itens.some((e) => e.situacao === "estourou")) return "estourou";
+    if (itens.some((e) => e.situacao === "risco")) return "risco";
+    if (itens.length) return "no_prazo";
+    return impressos ? "concluido" : "vazio";
   }
-});
+  const ROTULO_NIVEL = {
+    estourou: "Passou do limite",
+    risco: "Em risco",
+    no_prazo: "No prazo",
+    concluido: "Tudo impresso",
+    vazio: "Sem pedidos",
+  };
 
-async function rodarCiclo() {
-  if (cicloAtual) return cicloAtual;
-  cicloAtual = (async () => {
-    estado.emAndamento = true;
-    const agora = new Date();
-    const hojeSP = partesSP(agora).dia;
-    const config = await lerConfig();
-    const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts ORDER BY nickname");
-    const contas = [];
-    const envios = [];
-    const erros = [];
-    const contasOk = [];
-    for (const acc of accounts) {
-      try {
-        const r = await coletarConta(acc, config, agora, hojeSP);
-        contas.push(r.conta);
-        envios.push(...r.envios);
-        contasOk.push(String(acc.id));
-      } catch (err) {
-        console.error(`[prazos] conta ${acc.nickname}:`, err.message);
-        erros.push({ sellerId: String(acc.id), conta: acc.nickname, erro: err.message });
+  // Janelas de hoje por modalidade, de todas as contas visiveis.
+  function janelasHoje(m) {
+    const out = [];
+    for (const c of dados.contas || []) {
+      if (contaSel.value && c.sellerId !== contaSel.value) continue;
+      for (const lt of m.lts) {
+        if (!(lt in (c.janelasHoje || {}))) continue;
+        out.push({ conta: c.nickname, j: c.janelasHoje[lt] });
       }
     }
-    // Esquece envios que ja sairam da lista (despachados/cancelados).
-    const vivos = new Set(envios.map((e) => e.shippingId));
-    for (const id of cacheSla.keys()) if (!vivos.has(id)) cacheSla.delete(id);
-    for (const id of cacheEnvio.keys()) if (!vivos.has(id)) cacheEnvio.delete(id);
+    return out;
+  }
 
-    estado = { atualizadoEm: agora.toISOString(), emAndamento: false, contas, envios, erros };
+  // ---------- Visao "A imprimir" ----------
+  function renderImprimir(g) {
+    const mods = MODALIDADES.map((m) => {
+      const itens = g.imprimir.filter((e) => e.modalidade === m.id).sort(ordemUrgencia);
+      const impressos = g.impressos.filter((e) => e.modalidade === m.id);
+      return { ...m, itens, impressos, janelas: janelasHoje(m), nivel: nivelDe(itens, impressos.length) };
+    }).filter((m) => m.itens.length || m.impressos.length || m.janelas.length);
 
-    // Historico (calendario): falha no banco nao pode derrubar a tela ao vivo.
-    try {
-      await gravarHistorico(envios, contasOk, agora);
-      // A tela de impressos mostra a que horas cada pacote foi impresso.
-      const impressos = envios.filter((e) => e.impresso);
-      if (impressos.length) {
-        const { rows } = await db.query(
-          "SELECT shipping_id, impresso_em, impresso_estimado FROM prazos_envios WHERE shipping_id = ANY($1)",
-          [impressos.map((e) => String(e.shippingId))]
-        );
-        const porId = new Map(rows.map((r) => [r.shipping_id, r]));
-        for (const e of impressos) {
-          const r = porId.get(String(e.shippingId));
-          if (r?.impresso_em) {
-            e.impressoEm = new Date(r.impresso_em).toISOString();
-            e.impressoEstimado = r.impresso_estimado;
-          }
+    if (!mods.length) return '<p class="prazos-vazio grande">Nenhum pedido para imprimir hoje. ✓</p>';
+
+    // Sem escolha do usuario (ou escolha sumiu): abre a mais urgente.
+    const peso = { estourou: 0, risco: 1, no_prazo: 2, concluido: 3, vazio: 4 };
+    if (!mods.some((m) => m.id === modSel)) {
+      modSel = [...mods].sort(
+        (a, b) =>
+          peso[a.nivel] - peso[b.nivel] ||
+          Date.parse(a.itens[0]?.limiteImpressao || "9999") - Date.parse(b.itens[0]?.limiteImpressao || "9999")
+      )[0].id;
+    }
+    const sel = mods.find((m) => m.id === modSel);
+
+    return `
+      ${renderLinhaDoTempo(mods)}
+      <div class="pz-cards">${mods.map(cardModalidade).join("")}</div>
+      ${renderDetalhe(sel)}`;
+  }
+
+  // Linha do tempo do dia: uma faixa por modalidade, janela de coleta
+  // sombreada, entrega na agencia como bandeira, limites de impressao como
+  // bolhas com a quantidade e um marcador de "agora".
+  // opts permite reaproveitar na visao "Impressos" (bolhas = horario de
+  // saida em vez do limite de impressao).
+  function renderLinhaDoTempo(mods, opts = {}) {
+    const {
+      campo = "limiteImpressao",
+      itensDe = (m) => m.itens,
+      sel = modSel,
+      attr = "data-mod",
+      legendaBolha = "limite de impressão",
+      tituloBolha = (n, hh) => `${n} ${n === 1 ? "pacote" : "pacotes"} para imprimir até ${hh}`,
+      vazio = (m) => (m.impressos.length ? "tudo impresso ✓" : "sem pedidos hoje"),
+      nivelBolha = (b) =>
+        b.itens.some((e) => e.situacao === "estourou") ? "estourou" : b.itens.some((e) => e.situacao === "risco") ? "risco" : "no_prazo",
+    } = opts;
+    const agora = minutosSP(new Date().toISOString());
+    const marcos = [];
+    const faixas = mods.map((m) => {
+      const bolhas = new Map();
+      for (const e of itensDe(m)) {
+        if (!e[campo]) continue;
+        const min = minutosSP(e[campo]);
+        const b = bolhas.get(min) || { min, n: 0, itens: [] };
+        b.n++;
+        b.itens.push(e);
+        bolhas.set(min, b);
+        marcos.push(min);
+      }
+      const janelas = [];
+      const bandeiras = new Map();
+      for (const { conta, j } of m.janelas) {
+        if (!j) continue;
+        const de = hhmmParaMin(j.de);
+        const ate = hhmmParaMin(j.ate);
+        if (m.id === "coleta" && de != null && ate != null) {
+          janelas.push({ de, ate, conta });
+          marcos.push(de, ate);
+        } else if (de != null) {
+          const lista = bandeiras.get(de) || [];
+          lista.push(conta);
+          bandeiras.set(de, lista);
+          marcos.push(de);
         }
       }
-    } catch (err) {
-      console.error("[prazos] falha ao gravar historico:", err.message);
-    }
-  })()
-    .catch((err) => {
-      console.error("[prazos] ciclo falhou:", err.message);
-      estado.emAndamento = false;
-      estado.erros = [{ erro: err.message }];
-    })
-    .finally(() => {
-      cicloAtual = null;
+      return { m, bolhas: [...bolhas.values()], janelas, bandeiras: [...bandeiras.entries()] };
     });
-  return cicloAtual;
-}
 
-// A situacao depende da hora: reclassifica na leitura em vez de esperar o
-// proximo ciclo (um pedido vira "em risco" no minuto certo).
-async function estadoAtual() {
-  const config = await lerConfig();
-  const agora = new Date();
-  const hojeSP = partesSP(agora).dia;
-  const envios = estado.envios.map((e) => ({
-    ...e,
-    situacao: classificar({
-      impresso: e.impresso,
-      prazo: e.prazo ? new Date(e.prazo) : null,
-      limite: e.limiteImpressao ? new Date(e.limiteImpressao) : null,
-      slaStatus: e.slaStatus,
-      agora,
-      hojeSP,
-      avisoMin: config.avisoMin,
-    }),
-  }));
-  return { ...estado, envios, agora: agora.toISOString(), hojeSP, config };
-}
+    const ini = Math.max(0, Math.floor(Math.min(8 * 60, agora - 60, ...marcos.map((x) => x - 30)) / 60) * 60);
+    const fim = Math.min(24 * 60, Math.ceil(Math.max(18 * 60, agora + 60, ...marcos.map((x) => x + 30)) / 60) * 60);
+    const frac = (min) => ((Math.min(Math.max(min, ini), fim) - ini) / (fim - ini)).toFixed(4);
+    const pos = (min) => `${(frac(min) * 100).toFixed(2)}%`;
 
-function iniciarColetorPrazos() {
-  setTimeout(() => rodarCiclo(), 15_000);
-  setInterval(() => rodarCiclo(), CICLO_MS);
-}
+    const horas = [];
+    for (let h = ini; h <= fim; h += 60) horas.push(h);
 
-router.get("/prazos", async (req, res) => {
-  // Render gratuito dorme e para o setInterval: se o dado estiver velho,
-  // atualiza agora (e espera, se ainda nao houver nada).
-  const idade = estado.atualizadoEm ? Date.now() - Date.parse(estado.atualizadoEm) : Infinity;
-  if (idade > CICLO_MS + 30_000) {
-    const p = rodarCiclo();
-    if (!estado.atualizadoEm) await p;
+    const linhas = faixas
+      .map(({ m, bolhas, janelas, bandeiras }) => {
+        return `
+        <div class="pz-tl-faixa${m.id === sel ? " sel" : ""}" ${attr}="${m.id}">
+          <div class="pz-tl-nome">${m.nome}</div>
+          <div class="pz-tl-trilho">
+            ${janelas
+              .map(
+                (j) => `<div class="pz-tl-janela" style="left:${pos(j.de)};width:calc(${pos(j.ate)} - ${pos(j.de)})"
+                  title="${esc(j.conta)}: coleta ${minParaHhmm(j.de)}–${minParaHhmm(j.ate)}"><span>coleta ${minParaHhmm(j.de)}–${minParaHhmm(j.ate)}</span></div>`
+              )
+              .join("")}
+            ${bandeiras
+              .map(
+                ([min, contas]) => `<div class="pz-tl-bandeira" style="left:${pos(min)}" title="Entregar na agência até ${minParaHhmm(min)}: ${esc(contas.join(", "))}">
+                  ${bolhas.some((b) => Math.abs(b.min - min) < 20) ? "" : `<span>entrega ${minParaHhmm(min)}</span>`}</div>`
+              )
+              .join("")}
+            ${bolhas
+              .map(
+                (b) => `<div class="pz-tl-bolha nivel-${nivelBolha(b)}" style="left:${pos(b.min)}"
+                  title="${tituloBolha(b.n, minParaHhmm(b.min))}">
+                  <b>${b.n}</b><span>${minParaHhmm(b.min)}</span></div>`
+              )
+              .join("")}
+            ${!bolhas.length ? `<div class="pz-tl-ok">${vazio(m)}</div>` : ""}
+          </div>
+        </div>`;
+      })
+      .join("");
+
+    return `
+      <section class="pz-tl" aria-label="Linha do tempo de hoje">
+        <div class="pz-tl-cabecalho">
+          <span class="pz-titulo">Hoje</span>
+          <span class="pz-legenda"><i class="lg-janela"></i>janela de coleta <i class="lg-bandeira"></i>entrega na agência <i class="lg-bolha"></i>${legendaBolha}</span>
+        </div>
+        <div class="pz-tl-corpo">
+          <div class="pz-tl-grade">
+            <div class="pz-tl-nome"></div>
+            <div class="pz-tl-trilho pz-tl-horas">
+              ${horas.map((h) => `<span style="left:${pos(h)}">${String(h / 60).padStart(2, "0")}h</span>`).join("")}
+            </div>
+          </div>
+          ${linhas}
+          <div class="pz-tl-passado" style="--x:${frac(agora)}"></div>
+          <div class="pz-tl-agora" style="--x:${frac(agora)}"><span>agora ${minParaHhmm(agora)}</span></div>
+        </div>
+      </section>`;
   }
-  res.json(await estadoAtual());
-});
 
-router.post("/prazos/atualizar", async (req, res) => {
-  await rodarCiclo();
-  res.json(await estadoAtual());
-});
-
-router.put("/prazos/config", express.json(), async (req, res) => {
-  try {
-    const config = await salvarConfig(req.body || {});
-    // Os limites de impressao sao calculados no ciclo: recalcula ja.
-    await rodarCiclo();
-    res.json(await estadoAtual());
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  // Janela de hoje + horario de corte de vendas, por conta (dados do ML).
+  function janelasCartao(m) {
+    if (m.id === "flex") {
+      return `<div class="pz-card-janelas"><span><b>Limite do Flex</b> ${esc(dados.config?.flex?.limite || "—")} <small>(⚙ Ajustes)</small></span></div>`;
+    }
+    const linhas = (m.janelas || []).map(({ conta, j }) => {
+      if (!j) return `<span><b>${esc(conta)}</b> não trabalha hoje</span>`;
+      const janela = m.id === "coleta" ? `coleta ${j.de}–${j.ate}` : `entregar até ${j.de}`;
+      return `<span><b>${esc(conta)}</b> ${janela}${j.corte ? ` · <em>vendas até ${esc(j.corte)}</em>` : ""}</span>`;
+    });
+    return linhas.length ? `<div class="pz-card-janelas">${linhas.join("")}</div>` : "";
   }
-});
 
-// Sonda: "o ML mostra N a imprimir e o painel mostra menos". Compara o que o
-// painel contou para a conta com o que a API tem em cada substatus.
-// Uso: /api/debug/probe-prazos-conta?sellerId=522101670
-const SUBSTATUS_RTS = [
-  "ready_to_print", "printed", "invoice_pending", "ready_to_pack", "packed", "in_packing_list",
-  "in_pickup_list", "ready_for_pkl_creation", "ready_for_pickup", "ready_for_dropoff",
-  "picked_up", "dropped_off", "in_hub", "authorized_by_carrier", "stale", "in_warehouse",
-];
-const SUBSTATUS_PENDING = ["buffered", "creating_route", "manufacturing", "cost_exceeded", "under_review", "waiting_for_label_generation"];
+  function cardModalidade(m) {
+    const total = m.itens.length + m.impressos.length;
+    const pct = total ? Math.round((m.impressos.length / total) * 100) : 0;
+    const prox = m.itens.map((e) => e.limiteImpressao).filter(Boolean).sort()[0];
+    const min = prox ? Math.round((Date.parse(prox) - Date.now()) / 60000) : null;
 
-router.get("/debug/probe-prazos-conta", async (req, res) => {
-  const sellerId = String(req.query.sellerId || "");
-  if (!sellerId) return res.status(400).json({ error: "Informe ?sellerId=..." });
-  try {
-    const token = await getValidAccessToken(sellerId);
-    const doPainel = estado.envios.filter((e) => e.sellerId === sellerId);
+    const porConta = new Map();
+    for (const e of m.itens) porConta.set(e.conta, (porConta.get(e.conta) || 0) + 1);
+    const contas = [...porConta.entries()].sort((a, b) => b[1] - a[1]);
+    const maxConta = Math.max(1, ...contas.map((c) => c[1]));
 
-    const contar = async (qs) => {
-      try {
-        const r = await mlGet(`/orders/search?seller=${sellerId}${qs}&limit=1`, token);
-        return r?.paging?.total ?? null;
-      } catch (err) {
-        return `erro ${err.status || err.message}`;
+    let relogio;
+    if (min == null) relogio = `<div class="pz-relogio"><b>${m.itens.length ? "—" : "✓"}</b><span>${m.itens.length ? "sem prazo informado" : "nada pendente"}</span></div>`;
+    else if (min < 0) relogio = `<div class="pz-relogio passou"><b>+${dur(-min)}</b><span>passou do limite das ${fmtHora(prox)}</span></div>`;
+    else relogio = `<div class="pz-relogio"><b>${dur(min)}</b><span>para imprimir até ${fmtHora(prox)}</span></div>`;
+
+    return `
+      <button type="button" class="pz-card nivel-${m.nivel}${m.id === modSel ? " sel" : ""}" data-mod="${m.id}" aria-pressed="${m.id === modSel}">
+        <div class="pz-card-topo">
+          <span class="pz-card-nome">${m.nome}</span>
+          <span class="pz-status nivel-${m.nivel}">${ROTULO_NIVEL[m.nivel]}</span>
+        </div>
+        <div class="pz-card-meio">
+          <div class="pz-anel" style="--p:${pct}" role="img" aria-label="${pct}% impresso">
+            <div><b>${m.itens.length}</b><span>a imprimir</span></div>
+          </div>
+          ${relogio}
+        </div>
+        ${janelasCartao(m)}
+        <div class="pz-progresso-txt">${m.impressos.length} de ${total} impressos hoje · ${pct}%${(() => {
+          const nf = m.itens.filter((e) => e.nfPendente).length;
+          return nf ? `<br><span class="pz-nf-txt">${nf} aguardando nota fiscal — o ML só libera a etiqueta depois da NF</span>` : "";
+        })()}</div>
+        <div class="pz-contas">${
+          contas.length
+            ? contas
+                .map(
+                  ([nome, n]) => `<div class="pz-conta"><span class="pz-conta-nome">${esc(nome)}</span>
+                    <span class="pz-conta-barra"><i style="width:${(n / maxConta) * 100}%"></i></span><b>${n}</b></div>`
+                )
+                .join("")
+            : '<div class="pz-conta-vazio">Nenhuma conta com pendência</div>'
+        }</div>
+      </button>`;
+  }
+
+  // Detalhe: por produto (agrupa pacotes iguais) ou por pacote (tabela).
+  // m: { nome, itens, ctx?, sub?, vazio?, modalidade?, colPrazo?, colGrupo? }
+  function renderDetalhe(m) {
+    const modos = `<div class="pz-seg" role="group" aria-label="Agrupar">
+      <button type="button" data-modo="produtos" class="${modoDetalhe === "produtos" ? "on" : ""}">Por produto</button>
+      <button type="button" data-modo="pacotes" class="${modoDetalhe === "pacotes" ? "on" : ""}">Por pacote</button>
+    </div>`;
+    const opcoes = { ctx: m.ctx || m.id, modalidade: m.modalidade, colPrazo: m.colPrazo, colGrupo: m.colGrupo };
+    const corpo = !m.itens.length
+      ? `<p class="prazos-vazio grande">${m.vazio || "Nada a imprimir nesta modalidade. ✓"}</p>`
+      : modoDetalhe === "produtos"
+      ? tabelaProdutos(m.itens, opcoes)
+      : tabelaPacotes(m.itens, opcoes);
+    return `
+      <section class="pz-detalhe">
+        <div class="pz-detalhe-topo">
+          <div><span class="pz-titulo">${m.nome}</span> <span class="pz-sub">${m.itens.length} ${m.itens.length === 1 ? "pacote" : "pacotes"} ${m.sub || "a imprimir"}</span></div>
+          ${modos}
+        </div>
+        ${corpo}
+      </section>`;
+  }
+
+  function tabelaProdutos(itens, { ctx = "", modalidade = false, colPrazo, colGrupo } = {}) {
+    const grupos = new Map();
+    for (const e of itens) {
+      for (const it of e.itens) {
+        const chave = it.titulo || "(sem título)";
+        const gr = grupos.get(chave) || { titulo: chave, un: 0, envios: new Map(), contas: new Set(), limite: null, pior: 9 };
+        gr.un += it.qtd || 0;
+        gr.envios.set(e.shippingId, e);
+        gr.contas.add(e.conta);
+        if (e.limiteImpressao && (!gr.limite || e.limiteImpressao < gr.limite)) gr.limite = e.limiteImpressao;
+        gr.pior = Math.min(gr.pior, SITUACAO[e.situacao].ordem);
+        grupos.set(chave, gr);
       }
+    }
+    const lista = [...grupos.values()].sort((a, b) => a.pior - b.pior || b.envios.size - a.envios.size);
+    const situacaoPorOrdem = Object.fromEntries(Object.entries(SITUACAO).map(([k, v]) => [v.ordem, k]));
+    return `<div class="pz-produtos">${lista
+      .map((gr) => {
+        const sit = situacaoPorOrdem[gr.pior];
+        const vendas = [...gr.envios.values()];
+        const chave = `${ctx}|${gr.titulo}`;
+        const grupoCol = colGrupo
+          ? colGrupo(vendas)
+          : { b: gr.limite ? fmtHora(gr.limite) : "—", small: gr.limite ? fmtFalta(gr.limite) : "" };
+        return `<details class="pz-produto sit-${sit}" data-chave="${esc(chave)}"${produtosAbertos.has(chave) ? " open" : ""}>
+          <summary>
+            <span class="pz-produto-qtd"><b>${gr.envios.size}</b><small>${gr.envios.size === 1 ? "pacote" : "pacotes"}</small></span>
+            <span class="pz-produto-nome">${esc(gr.titulo)}<small>${esc([...gr.contas].join(" · "))}${(() => {
+              const nf = vendas.filter((e) => e.nfPendente).length;
+              return nf ? ` · <span class="pz-nf-txt">${nf} com NF pendente</span>` : "";
+            })()}</small></span>
+            <span class="pz-produto-un"><b>${gr.un}</b><small>unid.</small></span>
+            <span class="pz-produto-limite"><b>${grupoCol.b}</b><small>${grupoCol.small}</small></span>
+          </summary>
+          ${tabelaPacotes(vendas, { compacta: true, modalidade, colPrazo })}
+        </details>`;
+      })
+      .join("")}</div>`;
+  }
+
+  // Tabela de pacotes. colunas extras por visao (modalidade, prazo vencido...).
+  function tabelaPacotes(lista, { compacta = false, modalidade = false, colPrazo } = {}) {
+    const prazoCol = colPrazo || {
+      titulo: "Imprimir até",
+      valor: (e) =>
+        e.limiteImpressao ? `<b>${fmtHora(e.limiteImpressao)}</b><small>${fmtFalta(e.limiteImpressao)}</small>` : "<b>—</b>",
     };
-    const porSubstatus = {};
-    for (const sub of SUBSTATUS_RTS) porSubstatus[`ready_to_ship/${sub}`] = await contar(`&shipping.status=ready_to_ship&shipping.substatus=${sub}`);
-    porSubstatus["ready_to_ship (todos)"] = await contar("&shipping.status=ready_to_ship");
-    porSubstatus["pending (todos)"] = await contar("&shipping.status=pending");
-    for (const sub of SUBSTATUS_PENDING) porSubstatus[`pending/${sub}`] = await contar(`&shipping.status=pending&shipping.substatus=${sub}`);
-
-    // Detalhe dos envios que NAO sao Full e o painel nao busca (ate 30).
-    const foraDoPainel = [];
-    const candidatos = [
-      ...SUBSTATUS_RTS.filter((s) => !["ready_to_print", "printed", "in_warehouse"].includes(s)).map((s) => ["ready_to_ship", s]),
-      ...SUBSTATUS_PENDING.map((s) => ["pending", s]),
-    ];
-    for (const [st, sub] of candidatos) {
-      const n = porSubstatus[`${st}/${sub}`];
-      if (typeof n !== "number" || n === 0 || foraDoPainel.length >= 30) continue;
-      const r = await mlGet(
-        `/orders/search?seller=${sellerId}&shipping.status=${st}&shipping.substatus=${sub}&sort=date_desc&limit=15`,
-        token
-      );
-      for (const o of r?.results || []) {
-        const shipId = o?.shipping?.id;
-        if (!shipId || foraDoPainel.length >= 30) continue;
-        const s = await fetchShipment(token, shipId).catch((err) => ({ erro: err.message }));
-        const lt = s?.logistic_type ?? s?.logistic?.type;
-        if (lt === "fulfillment") continue;
-        let sla = null;
-        try {
-          sla = await mlGet(`/shipments/${shipId}/sla`, token);
-        } catch (err) {
-          sla = { erro: err.status || err.message };
-        }
-        foraDoPainel.push({
-          venda: String(o.pack_id || o.id), order_id: o.id, shipping_id: shipId,
-          status: s?.status, substatus: s?.substatus, logistic_type: lt,
-          criado: o.date_created, sla, produto: o.order_items?.[0]?.item?.title,
-        });
-      }
-    }
-
-    res.json({
-      sellerId,
-      painel: {
-        atualizadoEm: estado.atualizadoEm,
-        pacotes: doPainel.length,
-        pedidos: doPainel.reduce((n, e) => n + e.pedidos.length, 0),
-        porModalidadeESituacao: doPainel.reduce((acc, e) => {
-          const k = `${e.modalidade}/${e.situacao}`;
-          acc[k] = (acc[k] || 0) + 1;
-          return acc;
-        }, {}),
-        coleta: doPainel
-          .filter((e) => e.modalidade === "coleta")
-          .map((e) => ({
-            venda: e.venda, pedidos: e.pedidos, shippingId: e.shippingId, situacao: e.situacao,
-            impresso: e.impresso, prazoSla: e.prazoSla, prazo: e.prazo, limite: e.limiteImpressao,
-          })),
-      },
-      apiPorSubstatus: porSubstatus,
-      foraDoPainel,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    return `<table class="pz-tabela${compacta ? " compacta" : ""}">
+      <thead><tr>
+        <th>Venda</th><th>Conta</th>${modalidade ? "<th>Modalidade</th>" : ""}<th>Produto</th><th class="num">Qtd</th><th>Comprador</th><th class="dir">${prazoCol.titulo}</th>
+      </tr></thead>
+      <tbody>${lista
+        .map((e) => {
+          const qtd = e.itens.reduce((s, i) => s + (i.qtd || 0), 0);
+          const produto = e.itens.map((i) => i.titulo).join(" · ");
+          return `<tr class="sit-${e.situacao}">
+            <td data-label="Venda"><a href="https://www.mercadolivre.com.br/vendas/${encodeURIComponent(e.venda)}/detalhe" target="_blank" rel="noopener" title="Abrir no Mercado Livre">#${esc(e.venda)}</a></td>
+            <td data-label="Conta">${esc(e.conta)}</td>
+            ${modalidade ? `<td data-label="Modalidade">${NOME_MODALIDADE[e.modalidade] || ""}</td>` : ""}
+            <td data-label="Produto" class="pz-td-produto" title="${esc(produto)}">${e.nfPendente ? '<span class="pz-tag-nf" title="Falta emitir a nota fiscal: o Mercado Livre só libera a etiqueta depois dela">NF pendente</span>' : ""}${esc(produto)}</td>
+            <td data-label="Qtd" class="num">${qtd}</td>
+            <td data-label="Comprador" class="pz-td-comprador">${esc(e.comprador || "")}</td>
+            <td data-label="${prazoCol.titulo}" class="dir pz-td-prazo">${prazoCol.valor(e)}</td>
+          </tr>`;
+        })
+        .join("")}</tbody>
+    </table>`;
   }
-});
 
-module.exports = router;
-module.exports.iniciarColetorPrazos = iniciarColetorPrazos;
-// Exposto so para teste.
-module.exports._interno = { partesSP, horaSP, calcularLimite, classificar, mesclarConfig };
+  // ---------- Outras visoes ----------
+  const ordemUrgencia = (a, b) =>
+    SITUACAO[a.situacao].ordem - SITUACAO[b.situacao].ordem ||
+    Date.parse(a.limiteImpressao || 0) - Date.parse(b.limiteImpressao || 0);
+
+  function faixa(titulo, n, nota, conteudo) {
+    return `<section class="pz-detalhe">
+      <div class="pz-detalhe-topo">
+        <div><span class="pz-titulo">${titulo}</span> <span class="pz-sub">${n} ${n === 1 ? "pacote" : "pacotes"}</span>${nota ? `<div class="pz-nota">${esc(nota)}</div>` : ""}</div>
+      </div>
+      ${conteudo}
+    </section>`;
+  }
+
+  // ---------- Visao "Impressos" ----------
+  // Mesma ideia das outras: o que importa aqui e a SAIDA — quanto falta para
+  // a coleta passar, para levar na agencia ou para a rota do Flex.
+  let impModSel = null;
+  const SAIDA = { coleta: "para a coleta", agencia: "para levar na agência", flex: "para entregar ao cliente" };
+
+  const nivelSaida = (iso) => {
+    if (!iso) return "no_prazo";
+    const min = (Date.parse(iso) - Date.now()) / 60000;
+    return min < 0 ? "estourou" : min < 60 ? "risco" : "no_prazo";
+  };
+
+  function renderImpressos(g) {
+    if (!g.impressos.length) {
+      return `<div class="pz-vazio-bonito"><b>Nenhum pacote impresso aguardando despacho</b><span>Assim que uma etiqueta é impressa, o pacote aparece aqui até sair.</span></div>`;
+    }
+    const porPrazo = (a, b) => Date.parse(a.prazo || 0) - Date.parse(b.prazo || 0);
+    const mods = MODALIDADES.map((m) => {
+      const itens = g.impressos.filter((e) => e.modalidade === m.id).sort(porPrazo);
+      return { ...m, itens, impressos: itens, pendentes: g.imprimir.filter((e) => e.modalidade === m.id), janelas: janelasHoje(m) };
+    }).filter((m) => m.itens.length || m.pendentes.length);
+
+    if (!mods.some((m) => m.id === impModSel && m.itens.length)) {
+      impModSel = mods.filter((m) => m.itens.length).sort((a, b) => porPrazo(a.itens[0], b.itens[0]))[0].id;
+    }
+    const sel = mods.find((m) => m.id === impModSel);
+
+    return `
+      ${renderLinhaDoTempo(mods, {
+        campo: "prazo",
+        sel: impModSel,
+        attr: "data-imp-mod",
+        legendaBolha: "saída dos impressos",
+        tituloBolha: (n, hh) => `${n} ${n === 1 ? "impresso" : "impressos"} para sair até ${hh}`,
+        vazio: () => "nenhum impresso aguardando",
+        nivelBolha: (b) => nivelSaida(b.itens.map((e) => e.prazo).sort()[0]),
+      })}
+      <div class="pz-cards">${mods.map(cardImpressos).join("")}</div>
+      ${renderDetalhe({
+        ctx: "imp-" + sel.id,
+        nome: sel.nome,
+        itens: sel.itens,
+        sub: "prontos para despachar",
+        vazio: "Nenhum pacote impresso nesta modalidade.",
+        colPrazo: {
+          titulo: "Saída até",
+          valor: (e) =>
+            `<b>${fmtHora(e.prazo)}</b><small>${
+              e.impressoEm ? `impresso às ${fmtHora(e.impressoEm)}${e.impressoEstimado ? "*" : ""}` : fmtFalta(e.prazo)
+            }</small>`,
+        },
+        colGrupo: (envs) => {
+          const p = envs.map((e) => e.prazo).filter(Boolean).sort()[0];
+          return { b: p ? fmtHora(p) : "—", small: p ? fmtFalta(p) : "" };
+        },
+      })}
+      ${
+        sel.itens.some((e) => e.impressoEstimado)
+          ? '<div class="pz-nota pz-nota-rodape">* horário estimado: o pacote já estava impresso quando o monitor o viu pela primeira vez.</div>'
+          : ""
+      }`;
+  }
+
+  function cardImpressos(m) {
+    const n = m.itens.length;
+    const total = n + m.pendentes.length;
+    const pct = total ? Math.round((n / total) * 100) : 0;
+    const prox = m.itens.map((e) => e.prazo).filter(Boolean).sort()[0];
+    const min = prox ? Math.round((Date.parse(prox) - Date.now()) / 60000) : null;
+    const nivel = !n ? "vazio" : nivelSaida(prox);
+    const rotulo = { estourou: "Saída atrasada", risco: "Sai em breve", no_prazo: "Aguardando saída", vazio: "Nada impresso" }[nivel];
+
+    const horas = m.itens.map((e) => e.impressoEm).filter(Boolean).sort();
+    const impressaoTxt = horas.length
+      ? fmtHora(horas[0]) === fmtHora(horas[horas.length - 1])
+        ? `${horas.length === 1 ? "impresso" : "impressos"} às ${fmtHora(horas[0])}`
+        : `impressos entre ${fmtHora(horas[0])} e ${fmtHora(horas[horas.length - 1])}`
+      : "";
+
+    const porConta = new Map();
+    for (const e of m.itens) porConta.set(e.conta, (porConta.get(e.conta) || 0) + 1);
+    const contas = [...porConta.entries()].sort((a, b) => b[1] - a[1]);
+    const maxConta = Math.max(1, ...contas.map((c) => c[1]));
+
+    let relogio;
+    if (min == null) relogio = `<div class="pz-relogio"><b>—</b><span>${n ? "sem horário de saída" : `${m.pendentes.length} ainda a imprimir`}</span></div>`;
+    else if (min < 0) relogio = `<div class="pz-relogio passou"><b>+${dur(-min)}</b><span>passou da saída das ${fmtHora(prox)}</span></div>`;
+    else relogio = `<div class="pz-relogio"><b>${dur(min)}</b><span>${SAIDA[m.id]} até ${fmtHora(prox)}</span></div>`;
+
+    return `
+      <button type="button" class="pz-card nivel-${nivel}${m.id === impModSel ? " sel" : ""}" data-imp-mod="${m.id}" ${n ? "" : "disabled"}>
+        <div class="pz-card-topo">
+          <span class="pz-card-nome">${m.nome}</span>
+          <span class="pz-status nivel-${nivel}">${rotulo}</span>
+        </div>
+        <div class="pz-card-meio">
+          <div class="pz-anel" style="--p:${pct}" role="img" aria-label="${pct}% do dia já impresso">
+            <div><b>${n}</b><span>${n === 1 ? "pronto" : "prontos"}</span></div>
+          </div>
+          ${relogio}
+        </div>
+        ${janelasCartao(m)}
+        <div class="pz-progresso-txt">${n} de ${total} pacotes do dia já impressos · ${pct}%${impressaoTxt ? `<br>${impressaoTxt}` : ""}</div>
+        <div class="pz-contas">${
+          contas.length
+            ? contas
+                .map(
+                  ([nome, q]) => `<div class="pz-conta"><span class="pz-conta-nome">${esc(nome)}</span>
+                    <span class="pz-conta-barra"><i style="width:${(q / maxConta) * 100}%"></i></span><b>${q}</b></div>`
+                )
+                .join("")
+            : '<div class="pz-conta-vazio">Nenhum pacote impresso ainda</div>'
+        }</div>
+      </button>`;
+  }
+
+  function renderProximos(lista) {
+    if (!lista.length) return '<p class="prazos-vazio grande">Nenhum pedido para os próximos dias.</p>';
+    const porDia = new Map();
+    for (const e of [...lista].sort((a, b) => Date.parse(a.prazo || 0) - Date.parse(b.prazo || 0))) {
+      const dia = e.prazo ? diaSP(new Date(e.prazo)) : "—";
+      if (!porDia.has(dia)) porDia.set(dia, []);
+      porDia.get(dia).push(e);
+    }
+    const colPrazo = {
+      titulo: "Imprimir até",
+      valor: (e) => `<b>${fmtHora(e.limiteImpressao)}</b><small>${e.impresso ? "já impresso" : "não impresso"}</small>`,
+    };
+    return [...porDia.entries()]
+      .map(([dia, itens]) => {
+        const titulo =
+          dia === "—"
+            ? "Sem data"
+            : new Date(`${dia}T12:00:00-03:00`).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "2-digit", timeZone: TZ });
+        return faixa(titulo.charAt(0).toUpperCase() + titulo.slice(1), itens.length, "", tabelaPacotes(itens, { modalidade: true, colPrazo }));
+      })
+      .join("");
+  }
+
+  // ---------- Visao "Atrasados" ----------
+  // Mesma ideia da "A imprimir": grafico de envelhecimento (quantos dias de
+  // atraso, por modalidade) + um cartao por faixa de idade + detalhe.
+  const FAIXAS_ATRASO = [
+    { id: "hoje", nome: "Venceu hoje", acao: "Despachar hoje", nivel: "estourou", de: 0, ate: 0 },
+    { id: "ontem", nome: "Venceu ontem", acao: "Despachar agora", nivel: "atrasado", de: 1, ate: 1 },
+    { id: "semana", nome: "2 a 7 dias", acao: "Conferir no ML", nivel: "risco", de: 2, ate: 7 },
+    { id: "antigos", nome: "Mais de 7 dias", acao: "Provavelmente travado", nivel: "vazio", de: 8, ate: Infinity },
+  ];
+  let faixaSel = null;
+  const COR_MOD = { coleta: "var(--mod-coleta)", agencia: "var(--mod-agencia)", flex: "var(--mod-flex)" };
+
+  function renderAtrasados(lista) {
+    if (!lista.length) {
+      return `<div class="pz-vazio-bonito"><b>Nenhum envio atrasado</b><span>Tudo o que venceu já foi despachado. ✓</span></div>`;
+    }
+    const faixas = FAIXAS_ATRASO.map((f) => {
+      const itens = lista
+        .filter((e) => {
+          const d = diasDeAtraso(e);
+          return d >= f.de && d <= f.ate;
+        })
+        .sort((a, b) => Date.parse(b.prazo || 0) - Date.parse(a.prazo || 0));
+      return { ...f, itens };
+    });
+    if (!faixas.some((f) => f.id === faixaSel && f.itens.length)) {
+      faixaSel = faixas.find((f) => f.itens.length).id;
+    }
+    const sel = faixas.find((f) => f.id === faixaSel);
+    const colPrazo = {
+      titulo: "Venceu",
+      valor: (e) => `<b>${fmtDiaHora(e.prazo)}</b><small>${idadeTexto(e)} · ${e.impresso ? "etiqueta impressa" : "não impresso"}</small>`,
+    };
+    return `
+      ${graficoEnvelhecimento(lista)}
+      <div class="pz-cards pz-cards-4">${faixas.map(cardFaixa).join("")}</div>
+      ${renderDetalhe({
+        ctx: "atr-" + sel.id,
+        nome: sel.nome,
+        itens: sel.itens,
+        sub: "em atraso",
+        vazio: "Nenhum envio nesta faixa.",
+        modalidade: true,
+        colPrazo,
+        colGrupo: (envs) => {
+          const maisAntigo = envs.reduce((a, e) => Math.max(a, diasDeAtraso(e)), 0);
+          return { b: maisAntigo ? `${maisAntigo} ${maisAntigo === 1 ? "dia" : "dias"}` : "hoje", small: "mais antigo" };
+        },
+      })}`;
+  }
+
+  const idadeTexto = (e) => {
+    const d = diasDeAtraso(e);
+    return d === 0 ? "hoje" : d === 1 ? "ontem" : `há ${d} dias`;
+  };
+
+  function graficoEnvelhecimento(lista) {
+    const colunas = [];
+    for (let d = 0; d <= 14; d++) colunas.push({ rot: d === 0 ? "hoje" : `${d}d`, de: d, ate: d });
+    colunas.push({ rot: "15d+", de: 15, ate: Infinity });
+    for (const c of colunas) {
+      c.porMod = { coleta: 0, agencia: 0, flex: 0 };
+      for (const e of lista) {
+        const d = diasDeAtraso(e);
+        if (d >= c.de && d <= c.ate) c.porMod[e.modalidade] = (c.porMod[e.modalidade] || 0) + 1;
+      }
+      c.total = Object.values(c.porMod).reduce((a, b) => a + b, 0);
+      c.faixa = FAIXAS_ATRASO.find((f) => c.de >= f.de && c.de <= f.ate).id;
+    }
+    const max = Math.max(1, ...colunas.map((c) => c.total));
+    return `
+      <section class="pz-tl">
+        <div class="pz-tl-cabecalho">
+          <span class="pz-titulo">Há quanto tempo estão atrasados</span>
+          <span class="pz-legenda">${MODALIDADES.map((m) => `<i style="background:${COR_MOD[m.id]}"></i>${m.nome}`).join(" ")}</span>
+        </div>
+        <div class="pz-barras">
+          ${colunas
+            .map(
+              (c) => `<button type="button" class="pz-barra${c.faixa === faixaSel ? " sel" : ""}" data-faixa="${c.faixa}"
+                  title="${c.total} ${c.total === 1 ? "envio" : "envios"} · ${c.rot === "hoje" ? "venceu hoje" : c.rot === "15d+" ? "15 dias ou mais" : `há ${c.de} ${c.de === 1 ? "dia" : "dias"}`}">
+                <span class="pz-barra-n">${c.total || ""}</span>
+                <span class="pz-barra-pilha" style="height:${(c.total / max) * 100}%">
+                  ${MODALIDADES.map((m) =>
+                    c.porMod[m.id] ? `<i style="flex:${c.porMod[m.id]};background:${COR_MOD[m.id]}"></i>` : ""
+                  ).join("")}
+                </span>
+                <span class="pz-barra-rot">${c.rot}</span>
+              </button>`
+            )
+            .join("")}
+        </div>
+      </section>`;
+  }
+
+  function cardFaixa(f) {
+    const n = f.itens.length;
+    const impressos = f.itens.filter((e) => e.impresso).length;
+    const pct = n ? Math.round((impressos / n) * 100) : 0;
+    const porConta = new Map();
+    for (const e of f.itens) porConta.set(e.conta, (porConta.get(e.conta) || 0) + 1);
+    const contas = [...porConta.entries()].sort((a, b) => b[1] - a[1]);
+    const maxConta = Math.max(1, ...contas.map((c) => c[1]));
+    const nivel = n ? f.nivel : "concluido";
+    return `
+      <button type="button" class="pz-card nivel-${nivel}${f.id === faixaSel ? " sel" : ""}" data-faixa="${f.id}" ${n ? "" : "disabled"}>
+        <div class="pz-card-topo">
+          <span class="pz-card-nome">${f.nome}</span>
+          <span class="pz-status nivel-${nivel}">${n ? f.acao : "Nenhum"}</span>
+        </div>
+        <div class="pz-card-meio">
+          <div class="pz-anel" style="--p:${pct}" role="img" aria-label="${pct}% com etiqueta impressa">
+            <div><b>${n}</b><span>${n === 1 ? "envio" : "envios"}</span></div>
+          </div>
+          <div class="pz-relogio"><b>${n - impressos}</b><span>sem etiqueta impressa<br>${impressos} já impressos</span></div>
+        </div>
+        <div class="pz-contas">${
+          contas.length
+            ? contas
+                .map(
+                  ([nome, q]) => `<div class="pz-conta"><span class="pz-conta-nome">${esc(nome)}</span>
+                    <span class="pz-conta-barra"><i style="width:${(q / maxConta) * 100}%"></i></span><b>${q}</b></div>`
+                )
+                .join("")
+            : '<div class="pz-conta-vazio">Nada nesta faixa ✓</div>'
+        }</div>
+      </button>`;
+  }
+
+  // ---------- Visao "Calendario" (historico gravado no banco) ----------
+  const MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
+  let calMes = null; // "AAAA-MM"
+  let calDia = null; // "AAAA-MM-DD"
+  let calModSel = null;
+  const cacheCal = new Map(); // mes -> { em, dados } | { carregando }
+  const cacheDia = new Map(); // dia -> { em, dados } | { carregando }
+  const CAL_TTL = 60_000;
+
+  const somaDias = (dia, n) => {
+    const d = new Date(`${dia}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+
+  function gradeDoMes(mes) {
+    const primeiro = `${mes}-01`;
+    const semana = new Date(`${primeiro}T12:00:00Z`).getUTCDay(); // 0 = domingo
+    const inicio = somaDias(primeiro, -((semana + 6) % 7)); // comeca na segunda
+    const dias = [];
+    for (let i = 0; i < 42; i++) dias.push(somaDias(inicio, i));
+    // Corta a ultima semana se ela for toda do mes seguinte.
+    while (dias.length > 35 && dias.slice(-7).every((d) => d.slice(0, 7) !== mes)) dias.splice(-7);
+    return dias;
+  }
+
+  async function buscarCache(cache, chave, url) {
+    const c = cache.get(chave);
+    if (c?.carregando || (c?.dados && Date.now() - c.em < CAL_TTL)) return;
+    cache.set(chave, { ...c, carregando: true });
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      cache.set(chave, { em: Date.now(), dados: await res.json() });
+    } catch (err) {
+      cache.set(chave, { em: Date.now(), erro: err.message, dados: c?.dados });
+    }
+    if (visivel && visao === "calendario") render();
+  }
+
+  function renderCalendario() {
+    const hoje = diaSP(new Date());
+    calDia = calDia || hoje;
+    calMes = calMes || calDia.slice(0, 7);
+    const grade = gradeDoMes(calMes);
+    buscarCache(cacheCal, calMes, `/api/prazos/calendario?de=${grade[0]}&ate=${grade[grade.length - 1]}`);
+    buscarCache(cacheDia, calDia, `/api/prazos/dia?data=${calDia}`);
+
+    const cal = cacheCal.get(calMes);
+    const porDia = new Map((cal?.dados?.dias || []).map((d) => [d.dia, d]));
+    const inicio = cal?.dados?.inicio;
+    const [ano, m] = calMes.split("-").map(Number);
+
+    const celulas = grade
+      .map((dia) => {
+        const d = porDia.get(dia);
+        const fora = dia.slice(0, 7) !== calMes;
+        const futuro = dia > hoje;
+        let nivel = "sem";
+        let pct = null;
+        if (d && d.total) {
+          pct = Math.round((d.no_limite / d.total) * 100);
+          // Cor = % impresso no limite; atraso aparece a parte (bolinha), senao
+          // um unico atraso por dia pintaria o mes inteiro de vermelho.
+          nivel = pct < 80 ? "ruim" : pct < 95 ? "atencao" : "bom";
+        }
+        return `<button type="button" class="pz-cal-dia nivel-${nivel}${fora ? " fora" : ""}${dia === hoje ? " hoje" : ""}${dia === calDia ? " sel" : ""}"
+            data-cal-dia="${dia}" ${futuro ? "disabled" : ""} title="${d ? `${d.total} pacotes · ${pct ?? 0}% impressos no limite · ${d.atrasados} atrasados` : "sem registro"}">
+          <span class="pz-cal-num">${Number(dia.slice(8))}</span>
+          ${d && d.total ? `<span class="pz-cal-total">${d.total}</span><span class="pz-cal-barra"><i style="width:${pct}%"></i></span>` : ""}
+          ${d && d.atrasados ? `<span class="pz-cal-atraso" aria-label="${d.atrasados} atrasados">${d.atrasados}</span>` : ""}
+        </button>`;
+      })
+      .join("");
+
+    const calendario = `
+      <section class="pz-cal">
+        <div class="pz-cal-topo">
+          <button type="button" class="pz-cal-nav" data-cal-mes="-1" aria-label="Mês anterior">‹</button>
+          <span class="pz-titulo">${MESES[m - 1]} ${ano}</span>
+          <button type="button" class="pz-cal-nav" data-cal-mes="1" aria-label="Próximo mês" ${calMes >= hoje.slice(0, 7) ? "disabled" : ""}>›</button>
+        </div>
+        <div class="pz-cal-semana">${["seg", "ter", "qua", "qui", "sex", "sáb", "dom"].map((s) => `<span>${s}</span>`).join("")}</div>
+        <div class="pz-cal-grade">${celulas}</div>
+        <div class="pz-cal-legenda">
+          <span><i class="bom"></i>95%+ no limite</span><span><i class="atencao"></i>80–94%</span><span><i class="ruim"></i>abaixo de 80%</span><span><b class="pz-cal-atraso">n</b>atrasados</span>
+        </div>
+        ${
+          inicio
+            ? `<div class="pz-nota">Histórico gravado desde ${inicio.split("-").reverse().join("/")}.</div>`
+            : cal?.carregando || !cal
+            ? '<div class="pz-nota">Carregando…</div>'
+            : '<div class="pz-nota">O histórico começa a ser gravado a partir de agora.</div>'
+        }
+        ${cal?.erro ? `<div class="pz-nota prazos-erro">Falha ao carregar: ${esc(cal.erro)}</div>` : ""}
+        <button type="button" class="btn btn-ghost btn-sm pz-cal-hoje" data-cal-dia="${hoje}">Ir para hoje</button>
+      </section>`;
+
+    return `<div class="pz-cal-layout">${calendario}<div class="pz-cal-relatorio">${relatorioDoDia(calDia)}</div></div>${renderHorariosSemana()}`;
+  }
+
+  // Situacao final de um envio do historico (cores iguais as da tela ao vivo).
+  function situacaoHistorica(e) {
+    if (e.statusFinal === "cancelled") return "cancelado";
+    if (e.atrasou) return "atrasado";
+    if (e.impressoEm) {
+      return !e.limiteImpressao || e.impressoEm <= e.limiteImpressao ? "impresso" : "tarde";
+    }
+    if (e.limiteImpressao && Date.now() > Date.parse(e.limiteImpressao)) return "estourou";
+    return "no_prazo";
+  }
+
+  function relatorioDoDia(dia) {
+    const c = cacheDia.get(dia);
+    const titulo = new Date(`${dia}T12:00:00-03:00`).toLocaleDateString("pt-BR", {
+      weekday: "long", day: "2-digit", month: "long", timeZone: TZ,
+    });
+    const temDados = !!c?.dados?.envios?.length;
+    const cabecalho = `<div class="pz-dia-topo"><span class="pz-titulo">${esc(titulo.charAt(0).toUpperCase() + titulo.slice(1))}</span>
+      ${dia === diaSP(new Date()) ? '<span class="pz-status nivel-no_prazo">hoje · ao vivo</span>' : ""}
+      ${
+        temDados
+          ? `<span class="pz-dia-acoes">
+              <button type="button" class="btn btn-primary btn-sm" data-relatorio="pdf" title="Abre o relatório detalhado do dia para imprimir ou salvar em PDF">📄 Relatório de atrasos</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-relatorio="csv" title="Baixa todos os pacotes do dia em planilha (abre no Excel)">⬇ Planilha</button>
+            </span>`
+          : ""
+      }</div>`;
+    if (!c?.dados) {
+      return cabecalho + `<div class="pz-vazio-bonito"><b>${c?.erro ? "Falha ao carregar" : "Carregando…"}</b>${c?.erro ? `<span>${esc(c.erro)}</span>` : ""}</div>`;
+    }
+    const conta = contaSel.value;
+    const todos = c.dados.envios
+      .filter((e) => !conta || e.sellerId === conta)
+      .map((e) => ({ ...e, situacao: situacaoHistorica(e), impresso: !!e.impressoEm }));
+    if (!todos.length) {
+      return cabecalho + `<div class="pz-vazio-bonito"><b>Nenhum pacote registrado neste dia</b><span>O histórico só existe a partir do dia em que o monitor foi publicado.</span></div>`;
+    }
+    const ativos = todos.filter((e) => e.situacao !== "cancelado");
+    const n = (s) => ativos.filter((e) => e.situacao === s).length;
+    const noLimite = n("impresso");
+    const pct = ativos.length ? Math.round((noLimite / ativos.length) * 100) : 0;
+    const naoImpressos = ativos.filter((e) => !e.impressoEm).length;
+
+    const kpis = [
+      { cls: "imprimir", n: ativos.length, rot: "Pacotes do dia", sub: `${todos.length - ativos.length} cancelados` },
+      { cls: "impresso", n: noLimite, rot: "Impressos no limite", sub: `${pct}% do dia` },
+      { cls: "risco", n: n("tarde"), rot: "Após o limite", sub: "impressos em cima da hora" },
+      { cls: "estourou", n: naoImpressos, rot: "Não impressos", sub: "sem etiqueta" },
+      { cls: "atrasado", n: n("atrasado"), rot: "Atrasaram", sub: "após o prazo de despacho" },
+    ];
+
+    const mods = MODALIDADES.map((m) => ({ ...m, itens: ativos.filter((e) => e.modalidade === m.id) })).filter((m) => m.itens.length);
+    if (calModSel && !mods.some((m) => m.id === calModSel)) calModSel = null;
+    const detalheItens = calModSel ? todos.filter((e) => e.modalidade === calModSel) : todos;
+
+    const colPrazo = {
+      titulo: "Impresso às",
+      valor: (e) => {
+        const quando = e.impressoEm
+          ? `<b>${fmtHora(e.impressoEm)}${e.impressoEstimado ? "*" : ""}</b>`
+          : `<b>${e.statusFinal === "cancelled" ? "cancelado" : "—"}</b>`;
+        const saida =
+          e.statusFinal === "cancelled" ? "" : e.saiuEm ? ` · saiu ${fmtHora(e.saiuEm)}` : " · ainda na lista";
+        return `${quando}<small>limite ${fmtHora(e.limiteImpressao)}${saida}</small>`;
+      },
+    };
+
+    return `
+      ${cabecalho}
+      <div class="prazos-resumo pz-resumo-dia">${kpis
+        .map(
+          (k) => `<div class="prazos-kpi kpi-${k.cls}${k.n ? "" : " zerado"}"><span class="kpi-n">${k.n}</span>
+            <span class="kpi-rotulo">${k.rot}</span><span class="kpi-sub">${esc(k.sub)}</span></div>`
+        )
+        .join("")}</div>
+      ${graficoImpressoes(ativos)}
+      <div class="pz-cards">${mods.map(cardModalidadeDia).join("")}</div>
+      ${renderDetalhe({
+        ctx: "dia-" + dia + (calModSel || ""),
+        nome: calModSel ? NOME_MODALIDADE[calModSel] : "Todos os pacotes",
+        itens: detalheItens,
+        sub: calModSel ? "· clique no cartão de novo para ver todos" : "do dia",
+        vazio: "Nenhum pacote.",
+        modalidade: !calModSel,
+        colPrazo,
+        colGrupo: (envs) => {
+          const ok = envs.filter((e) => e.situacao === "impresso").length;
+          return { b: `${ok}/${envs.length}`, small: "no limite" };
+        },
+      })}
+      <div class="pz-nota">* horário estimado: o pacote já estava impresso quando o monitor o viu pela primeira vez, ou saiu sem ser visto impresso. Os demais horários têm precisão de ~3 min.</div>`;
+  }
+
+  function graficoImpressoes(ativos) {
+    const comHora = ativos.filter((e) => e.impressoEm && !e.impressoEstimado);
+    const estimados = ativos.filter((e) => e.impressoEm && e.impressoEstimado).length;
+    const horas = comHora.map((e) => Math.floor(minutosSP(e.impressoEm) / 60));
+    const limites = new Map();
+    for (const e of ativos) {
+      if (!e.limiteImpressao) continue;
+      const min = minutosSP(e.limiteImpressao);
+      const chave = `${e.modalidade}-${min}`;
+      if (!limites.has(chave)) limites.set(chave, { min, mod: e.modalidade });
+    }
+    const todasHoras = [...horas, ...[...limites.values()].map((l) => Math.floor(l.min / 60))];
+    const ini = Math.min(7, ...todasHoras);
+    const fim = Math.max(18, ...todasHoras);
+    const barras = [];
+    for (let h = ini; h <= fim; h++) {
+      const daHora = comHora.filter((e) => Math.floor(minutosSP(e.impressoEm) / 60) === h);
+      barras.push({ h, ok: daHora.filter((e) => e.situacao === "impresso").length, tarde: daHora.filter((e) => e.situacao !== "impresso").length });
+    }
+    const max = Math.max(1, ...barras.map((b) => b.ok + b.tarde));
+    const pos = (min) => `${(((min - ini * 60) / ((fim + 1 - ini) * 60)) * 100).toFixed(2)}%`;
+    return `
+      <section class="pz-tl">
+        <div class="pz-tl-cabecalho">
+          <span class="pz-titulo">Impressões ao longo do dia</span>
+          <span class="pz-legenda"><i style="background:var(--sit-ok)"></i>no limite <i style="background:var(--sit-risco)"></i>após o limite <i class="lg-bandeira"></i>limite de impressão</span>
+        </div>
+        ${
+          comHora.length
+            ? `<div class="pz-hist">
+                <div class="pz-hist-barras">${barras
+                  .map(
+                    (b) => `<div class="pz-hist-col" title="${b.ok + b.tarde} impressos entre ${b.h}h e ${b.h + 1}h">
+                      <span class="pz-barra-n">${b.ok + b.tarde || ""}</span>
+                      <span class="pz-barra-pilha" style="height:${((b.ok + b.tarde) / max) * 100}%">
+                        ${b.tarde ? `<i style="flex:${b.tarde};background:var(--sit-risco)"></i>` : ""}${b.ok ? `<i style="flex:${b.ok};background:var(--sit-ok)"></i>` : ""}
+                      </span>
+                      <span class="pz-barra-rot">${String(b.h).padStart(2, "0")}h</span>
+                    </div>`
+                  )
+                  .join("")}</div>
+                ${linhasDeLimite(limites, pos)}
+              </div>`
+            : '<p class="prazos-vazio">Nenhuma impressão com horário registrado neste dia.</p>'
+        }
+        ${estimados ? `<div class="pz-nota">+ ${estimados} ${estimados === 1 ? "pacote" : "pacotes"} com horário estimado (fora do gráfico).</div>` : ""}
+      </section>`;
+  }
+
+  // Limites no mesmo horario viram um rotulo so ("Coleta · Flex 13:00");
+  // rotulos vizinhos alternam de altura para nao se sobreporem.
+  function linhasDeLimite(limites, pos) {
+    const porMin = new Map();
+    for (const l of limites.values()) {
+      const nomes = porMin.get(l.min) || [];
+      if (!nomes.includes(NOME_MODALIDADE[l.mod])) nomes.push(NOME_MODALIDADE[l.mod]);
+      porMin.set(l.min, nomes);
+    }
+    return [...porMin.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(
+        ([min, nomes], i) =>
+          `<div class="pz-hist-limite" style="left:${pos(min)}"><span style="top:${(i % 2) * 16}px">${esc(nomes.join(" · "))} ${minParaHhmm(min)}</span></div>`
+      )
+      .join("");
+  }
+
+  function cardModalidadeDia(m) {
+    const total = m.itens.length;
+    const ok = m.itens.filter((e) => e.situacao === "impresso").length;
+    const atr = m.itens.filter((e) => e.situacao === "atrasado").length;
+    const tarde = m.itens.filter((e) => e.situacao === "tarde").length;
+    const pct = total ? Math.round((ok / total) * 100) : 0;
+    const nivel = atr ? "estourou" : pct >= 95 ? "concluido" : pct >= 80 ? "risco" : "estourou";
+    const rotulo = atr ? `${atr} ${atr === 1 ? "atrasou" : "atrasaram"}` : pct >= 95 ? "Excelente" : pct >= 80 ? "Bom" : "Atenção";
+    const porConta = new Map();
+    for (const e of m.itens) porConta.set(e.conta, (porConta.get(e.conta) || 0) + 1);
+    const contas = [...porConta.entries()].sort((a, b) => b[1] - a[1]);
+    const maxConta = Math.max(1, ...contas.map((c) => c[1]));
+    return `
+      <button type="button" class="pz-card nivel-${nivel}${m.id === calModSel ? " sel" : ""}" data-cal-mod="${m.id}">
+        <div class="pz-card-topo">
+          <span class="pz-card-nome">${m.nome}</span>
+          <span class="pz-status nivel-${nivel}">${rotulo}</span>
+        </div>
+        <div class="pz-card-meio">
+          <div class="pz-anel" style="--p:${pct}" role="img" aria-label="${pct}% impressos no limite">
+            <div><b>${pct}%</b><span>no limite</span></div>
+          </div>
+          <div class="pz-relogio"><b>${ok}/${total}</b><span>impressos no limite${tarde ? `<br>${tarde} após o limite` : ""}</span></div>
+        </div>
+        <div class="pz-contas">${contas
+          .map(
+            ([nome, q]) => `<div class="pz-conta"><span class="pz-conta-nome">${esc(nome)}</span>
+              <span class="pz-conta-barra"><i style="width:${(q / maxConta) * 100}%"></i></span><b>${q}</b></div>`
+          )
+          .join("")}</div>
+      </button>`;
+  }
+
+  // ---------- Horarios da semana (igual a tela "Coletas" do ML) ----------
+  const DIAS_PT = { monday: "Seg", tuesday: "Ter", wednesday: "Qua", thursday: "Qui", friday: "Sex", saturday: "Sáb", sunday: "Dom" };
+  const NOME_LT = { cross_docking: "Coleta", xd_drop_off: "Agência", drop_off: "Agência" };
+
+  function renderHorariosSemana() {
+    const hojeIdx = (new Date(`${diaSP(new Date())}T12:00:00Z`).getUTCDay() + 6) % 7; // 0 = segunda
+    const linhas = [];
+    for (const c of dados?.contas || []) {
+      if (contaSel.value && c.sellerId !== contaSel.value) continue;
+      for (const [lt, dias] of Object.entries(c.semana || {})) linhas.push({ conta: c.nickname, lt, dias });
+    }
+    if (!linhas.length) return "";
+    // Domingo so aparece se alguma conta trabalha nele.
+    const mostrarDom = linhas.some((l) => l.dias[6]?.trabalha);
+    const idxs = [0, 1, 2, 3, 4, 5, ...(mostrarDom ? [6] : [])];
+    const celula = (l, i) => {
+      const d = l.dias[i];
+      const cls = i === hojeIdx ? " hoje" : "";
+      // Dia que ja passou: "finalizada", como na tela do ML (a API devolve
+      // work=false para a segunda que passou).
+      if ((d?.passou || (i < hojeIdx && i < 5)) && i !== hojeIdx) return `<td class="pz-hs-passou${cls}">finalizada</td>`;
+      if (!d?.trabalha) return `<td class="pz-hs-nao${cls}">—</td>`;
+      const horario = d.ate ? `${d.de}–${d.ate}` : `até ${d.de}`;
+      return `<td class="${cls.trim()}"><b>${esc(horario)}</b>${d.corte ? `<small>vendas até ${esc(d.corte)}</small>` : ""}</td>`;
+    };
+    return `
+      <section class="pz-detalhe pz-horarios">
+        <div class="pz-detalhe-topo">
+          <div><span class="pz-titulo">Horários desta semana</span> <span class="pz-sub">lidos do Mercado Livre · "vendas até" = horário de corte do dia</span></div>
+        </div>
+        <div class="pz-hs-rolagem">
+          <table class="pz-hs">
+            <thead><tr><th>Conta</th>${idxs.map((i) => `<th class="${i === hojeIdx ? "hoje" : ""}">${DIAS_PT[linhas[0].dias[i].dia]}${i === hojeIdx ? " · hoje" : ""}</th>`).join("")}</tr></thead>
+            <tbody>${linhas
+              .map((l) => `<tr><th><span>${esc(l.conta)}</span><small>${NOME_LT[l.lt] || l.lt}</small></th>${idxs.map((i) => celula(l, i)).join("")}</tr>`)
+              .join("")}</tbody>
+          </table>
+        </div>
+      </section>`;
+  }
+
+  // ---------- Relatorio de atrasos do dia (imprimir/PDF e planilha) ----------
+  const DICA_SAIDA = {
+    coleta: "a coleta não retirou dentro da janela?",
+    agencia: "não foi levado à agência a tempo?",
+    flex: "não saiu na rota a tempo?",
+  };
+
+  function motivoAtraso(e) {
+    const est = e.impressoEstimado ? " (horário estimado)" : "";
+    if (!e.impressoEm) {
+      return e.nfPendente
+        ? "Não foi impresso — estava com NF pendente (o ML só libera a etiqueta depois da nota)"
+        : "Não foi impresso";
+    }
+    if (e.prazo && e.impressoEm > e.prazo) return `Impresso só às ${fmtHora(e.impressoEm)}${est}, depois do prazo de despacho`;
+    if (e.limiteImpressao && e.impressoEm > e.limiteImpressao) {
+      return `Impresso às ${fmtHora(e.impressoEm)}${est}, após o limite de ${fmtHora(e.limiteImpressao)} — sem tempo de separar`;
+    }
+    return `Impresso no prazo (${fmtHora(e.impressoEm)}${est}), mas não saiu a tempo — ${DICA_SAIDA[e.modalidade] || ""}`;
+  }
+
+  function minutosDeAtraso(e) {
+    if (!e.prazo) return null;
+    const fim = e.saiuEm ? Date.parse(e.saiuEm) : Date.now();
+    return Math.max(0, Math.round((fim - Date.parse(e.prazo)) / 60000));
+  }
+
+  function linhasRelatorio(dia) {
+    const c = cacheDia.get(dia);
+    if (!c?.dados) return null;
+    const conta = contaSel.value;
+    return c.dados.envios
+      .filter((e) => !conta || e.sellerId === conta)
+      .map((e) => {
+        const situacao = situacaoHistorica(e);
+        const qtd = e.itens.reduce((s, i) => s + (i.qtd || 0), 0);
+        return {
+          ...e,
+          situacao,
+          qtd,
+          produto: e.itens.map((i) => `${i.qtd}× ${i.titulo}`).join(" · "),
+          motivo: situacao === "atrasado" ? motivoAtraso(e) : "",
+          atrasoMin: situacao === "atrasado" ? minutosDeAtraso(e) : null,
+        };
+      });
+  }
+
+  const ROTULO_SIT_REL = {
+    impresso: "Impresso no limite",
+    tarde: "Impresso após o limite",
+    atrasado: "Atrasou",
+    estourou: "Não impresso",
+    no_prazo: "Pendente (no prazo)",
+    cancelado: "Cancelado",
+  };
+
+  async function carregarDia(dia) {
+    const c = cacheDia.get(dia);
+    if (c?.dados && Date.now() - c.em < CAL_TTL) return;
+    const res = await fetch(`/api/prazos/dia?data=${dia}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    cacheDia.set(dia, { em: Date.now(), dados: await res.json() });
+  }
+
+  async function abrirRelatorio(dia) {
+    try {
+      await carregarDia(dia);
+    } catch (err) {
+      alert(`Não foi possível carregar o dia: ${err.message}`);
+      return;
+    }
+    const linhas = linhasRelatorio(dia);
+    if (!linhas) return;
+    const dataLonga = new Date(`${dia}T12:00:00-03:00`).toLocaleDateString("pt-BR", {
+      weekday: "long", day: "2-digit", month: "long", year: "numeric", timeZone: TZ,
+    });
+    const contaNome = contaSel.value ? contaSel.options[contaSel.selectedIndex].text : "Todas as contas";
+    const ativos = linhas.filter((e) => e.situacao !== "cancelado");
+    const n = (s) => ativos.filter((e) => e.situacao === s).length;
+    const atrasados = ativos.filter((e) => e.situacao === "atrasado").sort((a, b) => (b.atrasoMin || 0) - (a.atrasoMin || 0));
+    const tarde = ativos.filter((e) => e.situacao === "tarde");
+    const pct = (x, t) => (t ? `${Math.round((x / t) * 100)}%` : "—");
+
+    // Agrupa os motivos pela primeira parte ("Nao foi impresso", "Impresso apos o limite"...).
+    const porMotivo = new Map();
+    for (const e of atrasados) {
+      const chave = !e.impressoEm
+        ? e.nfPendente ? "Não impresso — NF pendente" : "Não impresso"
+        : e.prazo && e.impressoEm > e.prazo ? "Impresso depois do prazo de despacho"
+        : e.limiteImpressao && e.impressoEm > e.limiteImpressao ? "Impresso após o limite de impressão"
+        : "Impresso no prazo, mas não saiu a tempo";
+      porMotivo.set(chave, (porMotivo.get(chave) || 0) + 1);
+    }
+    const porConta = new Map();
+    for (const e of ativos) {
+      const r = porConta.get(e.conta) || { total: 0, ok: 0, atr: 0 };
+      r.total++;
+      if (e.situacao === "impresso") r.ok++;
+      if (e.situacao === "atrasado") r.atr++;
+      porConta.set(e.conta, r);
+    }
+    const durTxt = (m) => (m == null ? "—" : m >= 1440 ? `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h` : m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}` : `${m} min`);
+    const tabelaEnvios = (lista, comMotivo) => `
+      <table>
+        <thead><tr><th>Venda</th><th>Conta</th><th>Modalidade</th><th>Produto</th><th>Comprador</th>
+          <th>Limite impr.</th><th>Impresso às</th><th>Prazo despacho</th><th>Saiu às</th>${comMotivo ? "<th>Atraso</th><th>Motivo provável</th>" : ""}</tr></thead>
+        <tbody>${lista
+          .map(
+            (e) => `<tr>
+              <td class="mono">#${esc(e.venda)}</td><td>${esc(e.conta)}</td><td>${NOME_MODALIDADE[e.modalidade] || ""}</td>
+              <td>${esc(e.produto)}</td><td>${esc(e.comprador || "")}</td>
+              <td class="mono">${fmtHora(e.limiteImpressao)}</td>
+              <td class="mono">${e.impressoEm ? fmtHora(e.impressoEm) + (e.impressoEstimado ? "*" : "") : "—"}</td>
+              <td class="mono">${fmtHora(e.prazo)}</td>
+              <td class="mono">${e.saiuEm ? fmtDiaHora(e.saiuEm) : "ainda no CD"}</td>
+              ${comMotivo ? `<td class="mono forte">${durTxt(e.atrasoMin)}</td><td>${esc(e.motivo)}</td>` : ""}
+            </tr>`
+          )
+          .join("")}</tbody>
+      </table>`;
+
+    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+      <title>Relatório de atrasos ${dia.split("-").reverse().join("/")}</title>
+      <style>
+        * { box-sizing: border-box; }
+        body { font: 12px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #111827; margin: 24px; background: #fff; }
+        h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+        h2 { font-size: 14px; margin: 26px 0 8px; padding-bottom: 4px; border-bottom: 2px solid #111827; }
+        .sub { color: #6b7280; margin: 2px 0 18px; }
+        .kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+        .kpi { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; border-left: 4px solid #d1d5db; }
+        .kpi b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+        .kpi span { color: #6b7280; font-size: 11px; }
+        .k-ok { border-left-color: #16a34a; } .k-tarde { border-left-color: #d97706; } .k-nao { border-left-color: #dc2626; } .k-atr { border-left-color: #7f1d1d; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        th { text-align: left; background: #f3f4f6; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: #4b5563; }
+        th, td { padding: 6px 7px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+        .mono { font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .forte { font-weight: 700; color: #b91c1c; }
+        .duas { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .nota { color: #6b7280; font-size: 10.5px; margin-top: 8px; }
+        .vazio { color: #16a34a; font-weight: 600; padding: 8px 0; }
+        @media print { body { margin: 0; } h2 { break-after: avoid; } tr { break-inside: avoid; } }
+        @page { size: A4 landscape; margin: 10mm; }
+      </style></head><body>
+      <h1>Relatório de atrasos — ${esc(dataLonga)}</h1>
+      ${linhas.length ? "" : '<p style="padding:10px 12px;background:#fef3c7;border-radius:8px">Nenhum pacote registrado neste dia. O histórico só existe a partir do dia em que o monitor de prazos foi publicado.</p>'}
+      <div class="sub">${esc(contaNome)} · gerado em ${new Date().toLocaleString("pt-BR", { timeZone: TZ })} · Painel de prazos (Mercado Livre)</div>
+
+      <div class="kpis">
+        <div class="kpi"><b>${ativos.length}</b><span>pacotes do dia</span></div>
+        <div class="kpi k-ok"><b>${n("impresso")}</b><span>impressos no limite (${pct(n("impresso"), ativos.length)})</span></div>
+        <div class="kpi k-tarde"><b>${n("tarde")}</b><span>impressos após o limite</span></div>
+        <div class="kpi k-nao"><b>${ativos.filter((e) => !e.impressoEm).length}</b><span>não impressos</span></div>
+        <div class="kpi k-atr"><b>${atrasados.length}</b><span>atrasaram (${pct(atrasados.length, ativos.length)})</span></div>
+        <div class="kpi"><b>${linhas.length - ativos.length}</b><span>cancelados</span></div>
+      </div>
+
+      <div class="duas">
+        <div>
+          <h2>Atrasos por motivo</h2>
+          ${porMotivo.size
+            ? `<table><tbody>${[...porMotivo.entries()].sort((a, b) => b[1] - a[1]).map(([m, q]) => `<tr><td>${esc(m)}</td><td class="mono forte">${q}</td></tr>`).join("")}</tbody></table>`
+            : '<div class="vazio">Nenhum atraso neste dia ✓</div>'}
+        </div>
+        <div>
+          <h2>Por conta</h2>
+          <table><thead><tr><th>Conta</th><th>Pacotes</th><th>No limite</th><th>Atrasaram</th></tr></thead><tbody>
+            ${[...porConta.entries()].map(([nome, r]) => `<tr><td>${esc(nome)}</td><td class="mono">${r.total}</td><td class="mono">${r.ok} (${pct(r.ok, r.total)})</td><td class="mono ${r.atr ? "forte" : ""}">${r.atr}</td></tr>`).join("")}
+          </tbody></table>
+        </div>
+      </div>
+
+      <h2>Por modalidade</h2>
+      <table><thead><tr><th>Modalidade</th><th>Pacotes</th><th>Impressos no limite</th><th>Após o limite</th><th>Não impressos</th><th>Atrasaram</th></tr></thead><tbody>
+        ${MODALIDADES.map((m) => {
+          const l = ativos.filter((e) => e.modalidade === m.id);
+          if (!l.length) return "";
+          const ok = l.filter((e) => e.situacao === "impresso").length;
+          return `<tr><td>${m.nome}</td><td class="mono">${l.length}</td><td class="mono">${ok} (${pct(ok, l.length)})</td>
+            <td class="mono">${l.filter((e) => e.situacao === "tarde").length}</td><td class="mono">${l.filter((e) => !e.impressoEm).length}</td>
+            <td class="mono ${l.some((e) => e.situacao === "atrasado") ? "forte" : ""}">${l.filter((e) => e.situacao === "atrasado").length}</td></tr>`;
+        }).join("")}
+      </tbody></table>
+
+      <h2>Pacotes que atrasaram (${atrasados.length})</h2>
+      ${atrasados.length ? tabelaEnvios(atrasados, true) : '<div class="vazio">Nenhum pacote atrasou neste dia ✓</div>'}
+
+      <h2>Impressos após o limite — não atrasaram, mas foram em cima da hora (${tarde.length})</h2>
+      ${tarde.length ? tabelaEnvios(tarde, false) : '<div class="vazio">Nenhum ✓</div>'}
+
+      <div class="nota">"Atraso" = tempo entre o prazo de despacho e a saída do pacote da lista "pronto para enviar" do Mercado Livre (ou até agora, se ainda está no CD).
+      * horário de impressão estimado (o pacote já estava impresso quando o monitor o viu pela primeira vez). Demais horários com precisão de ~3 min.
+      Coleta: prazo = fim da janela de coleta.</div>
+      </body></html>`;
+    mostrarRelatorio(html, `Relatório de atrasos — ${dia.split("-").reverse().join("/")}`, dia);
+  }
+
+  // Abre por cima do painel (iframe) em vez de window.open: pop-up costuma
+  // ser bloqueado pelo navegador.
+  function mostrarRelatorio(html, titulo, dia) {
+    document.getElementById("pz-rel-overlay")?.remove();
+    const ov = document.createElement("div");
+    ov.id = "pz-rel-overlay";
+    ov.className = "pz-rel-overlay";
+    ov.innerHTML = `
+      <div class="pz-rel-caixa" role="dialog" aria-modal="true" aria-label="${esc(titulo)}">
+        <div class="pz-rel-barra">
+          <span class="pz-titulo">${esc(titulo)}</span>
+          <span class="pz-rel-botoes">
+            <label class="pz-rel-data">Dia <input type="date" value="${dia}" max="${diaSP(new Date())}" data-rel="data" /></label>
+            <button type="button" class="btn btn-primary btn-sm" data-rel="imprimir">Imprimir / salvar PDF</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-rel="csv">⬇ Planilha</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-rel="fechar">Fechar</button>
+          </span>
+        </div>
+        <iframe class="pz-rel-frame" title="${esc(titulo)}"></iframe>
+      </div>`;
+    document.body.appendChild(ov);
+    const frame = ov.querySelector("iframe");
+    frame.srcdoc = html;
+    const fechar = () => {
+      ov.remove();
+      document.removeEventListener("keydown", esc_);
+    };
+    const esc_ = (ev) => ev.key === "Escape" && fechar();
+    document.addEventListener("keydown", esc_);
+    ov.addEventListener("click", (ev) => {
+      if (ev.target === ov || ev.target.closest('[data-rel="fechar"]')) fechar();
+      if (ev.target.closest('[data-rel="imprimir"]')) frame.contentWindow?.print();
+      if (ev.target.closest('[data-rel="csv"]')) baixarCsv(dia);
+    });
+    ov.querySelector('[data-rel="data"]').addEventListener("change", (ev) => {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(ev.target.value)) {
+        document.removeEventListener("keydown", esc_);
+        abrirRelatorio(ev.target.value);
+      }
+    });
+  }
+
+  function baixarCsv(dia) {
+    const linhas = linhasRelatorio(dia);
+    if (!linhas) return;
+    const cab = ["Data", "Venda", "Conta", "Modalidade", "Produto", "Qtd", "Comprador", "Situação", "Limite impressão",
+      "Impresso às", "Horário estimado", "NF pendente", "Prazo despacho", "Saiu às", "Status final", "Atraso (min)", "Motivo provável"];
+    const cel = (v) => {
+      const t = v == null ? "" : String(v);
+      return /[;"\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+    };
+    const corpo = linhas.map((e) =>
+      [
+        dia.split("-").reverse().join("/"), e.venda, e.conta, NOME_MODALIDADE[e.modalidade] || "", e.produto, e.qtd, e.comprador,
+        ROTULO_SIT_REL[e.situacao] || e.situacao, fmtHora(e.limiteImpressao), e.impressoEm ? fmtHora(e.impressoEm) : "",
+        e.impressoEstimado ? "sim" : "", e.nfPendente ? "sim" : "", fmtHora(e.prazo), e.saiuEm ? fmtDiaHora(e.saiuEm) : "",
+        e.statusFinal || (e.aindaNaLista ? "no CD" : ""), e.atrasoMin ?? "", e.motivo,
+      ].map(cel).join(";")
+    );
+    // BOM + ";" = abre certo no Excel em portugues.
+    const blob = new Blob(["﻿" + [cab.join(";"), ...corpo].join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `prazos-${dia}${contaSel.value ? "-" + contaSel.value : ""}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 1000);
+  }
+
+  function atualizarBadge() {
+    const n = (dados?.envios || []).filter(acionavel).length;
+    if (badge) {
+      badge.textContent = n;
+      badge.classList.toggle("hidden", !n);
+    }
+    document.title = n ? `(⚠ ${n}) ${tituloOriginal}` : tituloOriginal;
+  }
+
+  // ---------- Alertas (som + notificacao do navegador) ----------
+  let audioCtx = null;
+
+  function bipes(qtd, freq) {
+    if (!audioCtx) return;
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    for (let i = 0; i < qtd; i++) {
+      const t = audioCtx.currentTime + i * 0.35;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.25, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + 0.26);
+    }
+  }
+
+  // Navegadores so liberam audio depois de um clique na pagina.
+  function prepararAudio() {
+    if (audioCtx || !alertasAtivos) return;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx) audioCtx = new Ctx();
+  }
+  document.addEventListener("click", prepararAudio, { capture: true });
+
+  function atualizarBotaoSom() {
+    somBtn.textContent = alertasAtivos ? "🔔 Alertas ligados" : "🔕 Ativar alertas";
+    somBtn.classList.toggle("ativo", alertasAtivos);
+  }
+
+  somBtn.addEventListener("click", async () => {
+    alertasAtivos = !alertasAtivos;
+    lsSet("prazos.alertas", alertasAtivos ? "1" : "0");
+    atualizarBotaoSom();
+    if (!alertasAtivos) return;
+    prepararAudio();
+    bipes(1, 880);
+    if ("Notification" in window && Notification.permission === "default") {
+      try { await Notification.requestPermission(); } catch { /* ignora */ }
+    }
+    avisados.clear();
+    verificarAlertas();
+  });
+
+  function verificarAlertas() {
+    const novos = (dados?.envios || []).filter(
+      (e) => acionavel(e) && !avisados.has(`${e.shippingId}:${e.situacao}`)
+    );
+    novos.forEach((e) => avisados.add(`${e.shippingId}:${e.situacao}`));
+    if (!novos.length || !alertasAtivos) return;
+
+    const grave = novos.some((e) => e.situacao !== "risco");
+    bipes(grave ? 4 : 2, grave ? 1040 : 760);
+
+    if ("Notification" in window && Notification.permission === "granted") {
+      const porSit = {};
+      novos.forEach((e) => (porSit[e.situacao] = (porSit[e.situacao] || 0) + 1));
+      const titulo = Object.entries(porSit)
+        .map(([s, n]) => `${n} ${SITUACAO[s].rotulo.toLowerCase()}`)
+        .join(" · ");
+      const corpo = novos
+        .slice(0, 5)
+        .map((e) => `#${e.venda} ${e.conta} (${NOME_MODALIDADE[e.modalidade]}) até ${fmtHora(e.limiteImpressao || e.prazo)}`)
+        .join("\n");
+      try {
+        const n = new Notification(`Prazos: ${titulo}`, { body: corpo, tag: "prazos-ml" });
+        n.onclick = () => {
+          window.focus();
+          document.querySelector('.module-nav-item[data-module="prazos"]')?.click();
+        };
+      } catch { /* alguns navegadores moveis exigem service worker */ }
+    }
+  }
+
+  // ---------- Ajustes ----------
+  $("prazos-config-btn").addEventListener("click", () => {
+    const c = dados?.config;
+    if (c) {
+      configForm.elements["coleta.margemMin"].value = c.coleta.margemMin;
+      configForm.elements["agencia.margemMin"].value = c.agencia.margemMin;
+      configForm.elements["flex.limite"].value = c.flex.limite;
+      configForm.elements["avisoMin"].value = c.avisoMin;
+    }
+    configForm.classList.toggle("hidden");
+  });
+  $("prazos-config-cancelar").addEventListener("click", () => configForm.classList.add("hidden"));
+
+  configForm.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = configForm.elements;
+    const body = {
+      coleta: { margemMin: f["coleta.margemMin"].value },
+      agencia: { margemMin: f["agencia.margemMin"].value },
+      flex: { limite: f["flex.limite"].value },
+      avisoMin: f["avisoMin"].value,
+    };
+    const btn = configForm.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/prazos/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      dados = await res.json();
+      configForm.classList.add("hidden");
+      render();
+      atualizarBadge();
+    } catch (err) {
+      alert(`Não foi possível salvar: ${err.message}`);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // ---------- Inicio ----------
+  $("prazos-atualizar").addEventListener("click", async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    btn.textContent = "Buscando...";
+    await carregar({ forcar: true });
+    btn.disabled = false;
+    btn.textContent = "⟳ Atualizar";
+  });
+  contaSel.addEventListener("change", render);
+
+  atualizarBotaoSom();
+  carregar();
+  // Continua consultando mesmo com outra tela aberta: o alerta e o selo no
+  // menu precisam funcionar enquanto o operador responde mensagens.
+  setInterval(carregar, POLL_MS);
+})();
