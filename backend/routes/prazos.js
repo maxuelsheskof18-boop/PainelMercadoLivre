@@ -429,26 +429,56 @@ function resumoJanelas(janelas, semana) {
   return out;
 }
 
+// Grade da semana (igual a tela "Coletas" do ML): por modalidade, cada dia
+// com janela, horario de corte e se ja passou.
+const DIAS_SEMANA = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+function semanaJanelas(janelas) {
+  const out = {};
+  for (const [lt, sched] of Object.entries(janelas)) {
+    out[lt] = DIAS_SEMANA.map((dia) => {
+      const d = sched?.[dia];
+      const det = d?.detail?.[0];
+      return {
+        dia,
+        trabalha: !!(d?.work && det),
+        passou: !!d?.is_past,
+        de: det?.from || null,
+        ate: det?.to || null,
+        corte: det?.cutoff || null,
+      };
+    });
+  }
+  return out;
+}
+
 async function coletarConta(acc, config, agora, hojeSP) {
   const sellerId = String(acc.id);
   const token = await getValidAccessToken(sellerId);
   const janelas = await janelasDaConta(sellerId, token, hojeSP);
 
-  const [aImprimir, impressos] = await Promise.all([
+  // Substatus que ainda estao no CD (confirmado com /debug/probe-prazos-conta
+  // em 06/10): invoice_pending = falta a nota fiscal, o ML nem libera a
+  // etiqueta (contas com NF obrigatoria); ready_for_pickup = impresso e
+  // esperando o motorista da coleta. picked_up/dropped_off/in_hub ja sairam.
+  const [aImprimir, nfPendente, impressos, prontosColeta] = await Promise.all([
     buscarPedidos(sellerId, token, "ready_to_print"),
+    buscarPedidos(sellerId, token, "invoice_pending"),
     buscarPedidos(sellerId, token, "printed"),
+    buscarPedidos(sellerId, token, "ready_for_pickup"),
   ]);
 
   // Pedidos de um mesmo carrinho (pack) dividem o mesmo envio.
   const porEnvio = new Map();
-  for (const [lista, impresso] of [
-    [aImprimir, false],
-    [impressos, true],
+  for (const [lista, impresso, nf] of [
+    [aImprimir, false, false],
+    [nfPendente, false, true],
+    [impressos, true, false],
+    [prontosColeta, true, false],
   ]) {
     for (const o of lista) {
       const shipId = o?.shipping?.id;
       if (!shipId) continue;
-      if (!porEnvio.has(shipId)) porEnvio.set(shipId, { shipId, impresso, pedidos: [] });
+      if (!porEnvio.has(shipId)) porEnvio.set(shipId, { shipId, impresso, nfPendente: nf, pedidos: [] });
       porEnvio.get(shipId).pedidos.push(o);
     }
   }
@@ -481,6 +511,7 @@ async function coletarConta(acc, config, agora, hojeSP) {
       modalidade,
       logisticType: logistic_type,
       impresso: e.impresso,
+      nfPendente: e.nfPendente,
       slaStatus: sla.status,
       prazo: prazo ? prazo.toISOString() : null,
       prazoSla: prazoSla ? prazoSla.toISOString() : null,
@@ -503,6 +534,7 @@ async function coletarConta(acc, config, agora, hojeSP) {
       sellerId,
       nickname: acc.nickname,
       janelasHoje: resumoJanelas(janelas, partesSP(agora).semana),
+      semana: semanaJanelas(janelas),
     },
     envios: envios.filter(Boolean),
   };
@@ -547,6 +579,8 @@ function garantirTabelaHistorico() {
           status_final TEXT
         )`);
       await db.query("CREATE INDEX IF NOT EXISTS prazos_envios_dia_idx ON prazos_envios (dia_prazo)");
+      // Teve NF pendente em algum momento (motivo de atraso no relatorio).
+      await db.query("ALTER TABLE prazos_envios ADD COLUMN IF NOT EXISTS nf_pendente BOOLEAN NOT NULL DEFAULT false");
       // Correcao unica: ate 06/10/2026 a coleta usava o INICIO da janela como
       // prazo e marcava "atrasou" quem saiu dentro da janela. Todas as janelas
       // observadas tem 2h; o que saiu ate 2h depois desse prazo nao atrasou.
@@ -566,7 +600,7 @@ function garantirTabelaHistorico() {
 const COLUNAS_HIST = [
   "shipping_id", "seller_id", "conta", "venda", "comprador", "itens", "modalidade", "prazo",
   "limite_impressao", "dia_prazo", "sla_status", "impresso", "impresso_em", "impresso_estimado",
-  "atrasou", "visto_em", "ultimo_visto",
+  "atrasou", "visto_em", "ultimo_visto", "nf_pendente",
 ];
 
 async function gravarHistorico(envios, contasOk, agora) {
@@ -580,7 +614,7 @@ async function gravarHistorico(envios, contasOk, agora) {
         String(e.shippingId), e.sellerId, e.conta, e.venda, e.comprador, JSON.stringify(e.itens),
         e.modalidade, e.prazo, e.limiteImpressao, e.prazo ? partesSP(new Date(e.prazo)).dia : null,
         e.slaStatus, e.impresso, e.impresso ? agora : null, e.impresso,
-        e.situacao === "atrasado", agora, agora,
+        e.situacao === "atrasado", agora, agora, !!e.nfPendente,
       ];
       const ph = valores.map((v) => {
         params.push(v);
@@ -608,6 +642,7 @@ async function gravarHistorico(envios, contasOk, agora) {
          -- "atrasou" calculado com o prazo antigo nao vale mais.
          atrasou = EXCLUDED.atrasou OR (prazos_envios.atrasou AND prazos_envios.prazo IS NOT DISTINCT FROM EXCLUDED.prazo),
          ultimo_visto = EXCLUDED.ultimo_visto,
+         nf_pendente = prazos_envios.nf_pendente OR EXCLUDED.nf_pendente,
          saiu_em = NULL,
          status_final = NULL`,
       params
@@ -702,6 +737,7 @@ router.get("/prazos/dia", async (req, res) => {
         saiuEm: iso(r.saiu_em),
         statusFinal: r.status_final,
         aindaNaLista: !r.saiu_em,
+        nfPendente: !!r.nf_pendente,
       })),
     });
   } catch (err) {
