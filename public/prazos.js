@@ -252,6 +252,12 @@
 
   // Cliques no corpo: escolher modalidade, trocar modo do detalhe.
   corpoEl.addEventListener("click", (ev) => {
+    const rel = ev.target.closest("[data-relatorio]");
+    if (rel) {
+      if (rel.dataset.relatorio === "pdf") abrirRelatorio(calDia);
+      else baixarCsv(calDia);
+      return;
+    }
     const alvo = ev.target.closest("[data-faixa],[data-cal-dia],[data-cal-mes],[data-cal-mod],[data-imp-mod]");
     if (alvo) {
       const d = alvo.dataset;
@@ -974,7 +980,7 @@
         <button type="button" class="btn btn-ghost btn-sm pz-cal-hoje" data-cal-dia="${hoje}">Ir para hoje</button>
       </section>`;
 
-    return `<div class="pz-cal-layout">${calendario}<div class="pz-cal-relatorio">${relatorioDoDia(calDia)}</div></div>`;
+    return `<div class="pz-cal-layout">${calendario}<div class="pz-cal-relatorio">${relatorioDoDia(calDia)}</div></div>${renderHorariosSemana()}`;
   }
 
   // Situacao final de um envio do historico (cores iguais as da tela ao vivo).
@@ -993,8 +999,17 @@
     const titulo = new Date(`${dia}T12:00:00-03:00`).toLocaleDateString("pt-BR", {
       weekday: "long", day: "2-digit", month: "long", timeZone: TZ,
     });
+    const temDados = !!c?.dados?.envios?.length;
     const cabecalho = `<div class="pz-dia-topo"><span class="pz-titulo">${esc(titulo.charAt(0).toUpperCase() + titulo.slice(1))}</span>
-      ${dia === diaSP(new Date()) ? '<span class="pz-status nivel-no_prazo">hoje · ao vivo</span>' : ""}</div>`;
+      ${dia === diaSP(new Date()) ? '<span class="pz-status nivel-no_prazo">hoje · ao vivo</span>' : ""}
+      ${
+        temDados
+          ? `<span class="pz-dia-acoes">
+              <button type="button" class="btn btn-primary btn-sm" data-relatorio="pdf" title="Abre o relatório detalhado do dia para imprimir ou salvar em PDF">📄 Relatório de atrasos</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-relatorio="csv" title="Baixa todos os pacotes do dia em planilha (abre no Excel)">⬇ Planilha</button>
+            </span>`
+          : ""
+      }</div>`;
     if (!c?.dados) {
       return cabecalho + `<div class="pz-vazio-bonito"><b>${c?.erro ? "Falha ao carregar" : "Carregando…"}</b>${c?.erro ? `<span>${esc(c.erro)}</span>` : ""}</div>`;
     }
@@ -1159,6 +1174,293 @@
           )
           .join("")}</div>
       </button>`;
+  }
+
+  // ---------- Horarios da semana (igual a tela "Coletas" do ML) ----------
+  const DIAS_PT = { monday: "Seg", tuesday: "Ter", wednesday: "Qua", thursday: "Qui", friday: "Sex", saturday: "Sáb", sunday: "Dom" };
+  const NOME_LT = { cross_docking: "Coleta", xd_drop_off: "Agência", drop_off: "Agência" };
+
+  function renderHorariosSemana() {
+    const hojeIdx = (new Date(`${diaSP(new Date())}T12:00:00Z`).getUTCDay() + 6) % 7; // 0 = segunda
+    const linhas = [];
+    for (const c of dados?.contas || []) {
+      if (contaSel.value && c.sellerId !== contaSel.value) continue;
+      for (const [lt, dias] of Object.entries(c.semana || {})) linhas.push({ conta: c.nickname, lt, dias });
+    }
+    if (!linhas.length) return "";
+    // Domingo so aparece se alguma conta trabalha nele.
+    const mostrarDom = linhas.some((l) => l.dias[6]?.trabalha);
+    const idxs = [0, 1, 2, 3, 4, 5, ...(mostrarDom ? [6] : [])];
+    const celula = (l, i) => {
+      const d = l.dias[i];
+      const cls = i === hojeIdx ? " hoje" : "";
+      // Dia que ja passou: "finalizada", como na tela do ML (a API devolve
+      // work=false para a segunda que passou).
+      if ((d?.passou || (i < hojeIdx && i < 5)) && i !== hojeIdx) return `<td class="pz-hs-passou${cls}">finalizada</td>`;
+      if (!d?.trabalha) return `<td class="pz-hs-nao${cls}">—</td>`;
+      const horario = d.ate ? `${d.de}–${d.ate}` : `até ${d.de}`;
+      return `<td class="${cls.trim()}"><b>${esc(horario)}</b>${d.corte ? `<small>vendas até ${esc(d.corte)}</small>` : ""}</td>`;
+    };
+    return `
+      <section class="pz-detalhe pz-horarios">
+        <div class="pz-detalhe-topo">
+          <div><span class="pz-titulo">Horários desta semana</span> <span class="pz-sub">lidos do Mercado Livre · "vendas até" = horário de corte do dia</span></div>
+        </div>
+        <div class="pz-hs-rolagem">
+          <table class="pz-hs">
+            <thead><tr><th>Conta</th>${idxs.map((i) => `<th class="${i === hojeIdx ? "hoje" : ""}">${DIAS_PT[linhas[0].dias[i].dia]}${i === hojeIdx ? " · hoje" : ""}</th>`).join("")}</tr></thead>
+            <tbody>${linhas
+              .map((l) => `<tr><th><span>${esc(l.conta)}</span><small>${NOME_LT[l.lt] || l.lt}</small></th>${idxs.map((i) => celula(l, i)).join("")}</tr>`)
+              .join("")}</tbody>
+          </table>
+        </div>
+      </section>`;
+  }
+
+  // ---------- Relatorio de atrasos do dia (imprimir/PDF e planilha) ----------
+  const DICA_SAIDA = {
+    coleta: "a coleta não retirou dentro da janela?",
+    agencia: "não foi levado à agência a tempo?",
+    flex: "não saiu na rota a tempo?",
+  };
+
+  function motivoAtraso(e) {
+    const est = e.impressoEstimado ? " (horário estimado)" : "";
+    if (!e.impressoEm) {
+      return e.nfPendente
+        ? "Não foi impresso — estava com NF pendente (o ML só libera a etiqueta depois da nota)"
+        : "Não foi impresso";
+    }
+    if (e.prazo && e.impressoEm > e.prazo) return `Impresso só às ${fmtHora(e.impressoEm)}${est}, depois do prazo de despacho`;
+    if (e.limiteImpressao && e.impressoEm > e.limiteImpressao) {
+      return `Impresso às ${fmtHora(e.impressoEm)}${est}, após o limite de ${fmtHora(e.limiteImpressao)} — sem tempo de separar`;
+    }
+    return `Impresso no prazo (${fmtHora(e.impressoEm)}${est}), mas não saiu a tempo — ${DICA_SAIDA[e.modalidade] || ""}`;
+  }
+
+  function minutosDeAtraso(e) {
+    if (!e.prazo) return null;
+    const fim = e.saiuEm ? Date.parse(e.saiuEm) : Date.now();
+    return Math.max(0, Math.round((fim - Date.parse(e.prazo)) / 60000));
+  }
+
+  function linhasRelatorio(dia) {
+    const c = cacheDia.get(dia);
+    if (!c?.dados) return null;
+    const conta = contaSel.value;
+    return c.dados.envios
+      .filter((e) => !conta || e.sellerId === conta)
+      .map((e) => {
+        const situacao = situacaoHistorica(e);
+        const qtd = e.itens.reduce((s, i) => s + (i.qtd || 0), 0);
+        return {
+          ...e,
+          situacao,
+          qtd,
+          produto: e.itens.map((i) => `${i.qtd}× ${i.titulo}`).join(" · "),
+          motivo: situacao === "atrasado" ? motivoAtraso(e) : "",
+          atrasoMin: situacao === "atrasado" ? minutosDeAtraso(e) : null,
+        };
+      });
+  }
+
+  const ROTULO_SIT_REL = {
+    impresso: "Impresso no limite",
+    tarde: "Impresso após o limite",
+    atrasado: "Atrasou",
+    estourou: "Não impresso",
+    no_prazo: "Pendente (no prazo)",
+    cancelado: "Cancelado",
+  };
+
+  function abrirRelatorio(dia) {
+    const linhas = linhasRelatorio(dia);
+    if (!linhas) return;
+    const dataLonga = new Date(`${dia}T12:00:00-03:00`).toLocaleDateString("pt-BR", {
+      weekday: "long", day: "2-digit", month: "long", year: "numeric", timeZone: TZ,
+    });
+    const contaNome = contaSel.value ? contaSel.options[contaSel.selectedIndex].text : "Todas as contas";
+    const ativos = linhas.filter((e) => e.situacao !== "cancelado");
+    const n = (s) => ativos.filter((e) => e.situacao === s).length;
+    const atrasados = ativos.filter((e) => e.situacao === "atrasado").sort((a, b) => (b.atrasoMin || 0) - (a.atrasoMin || 0));
+    const tarde = ativos.filter((e) => e.situacao === "tarde");
+    const pct = (x, t) => (t ? `${Math.round((x / t) * 100)}%` : "—");
+
+    // Agrupa os motivos pela primeira parte ("Nao foi impresso", "Impresso apos o limite"...).
+    const porMotivo = new Map();
+    for (const e of atrasados) {
+      const chave = !e.impressoEm
+        ? e.nfPendente ? "Não impresso — NF pendente" : "Não impresso"
+        : e.prazo && e.impressoEm > e.prazo ? "Impresso depois do prazo de despacho"
+        : e.limiteImpressao && e.impressoEm > e.limiteImpressao ? "Impresso após o limite de impressão"
+        : "Impresso no prazo, mas não saiu a tempo";
+      porMotivo.set(chave, (porMotivo.get(chave) || 0) + 1);
+    }
+    const porConta = new Map();
+    for (const e of ativos) {
+      const r = porConta.get(e.conta) || { total: 0, ok: 0, atr: 0 };
+      r.total++;
+      if (e.situacao === "impresso") r.ok++;
+      if (e.situacao === "atrasado") r.atr++;
+      porConta.set(e.conta, r);
+    }
+    const durTxt = (m) => (m == null ? "—" : m >= 1440 ? `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h` : m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}` : `${m} min`);
+    const tabelaEnvios = (lista, comMotivo) => `
+      <table>
+        <thead><tr><th>Venda</th><th>Conta</th><th>Modalidade</th><th>Produto</th><th>Comprador</th>
+          <th>Limite impr.</th><th>Impresso às</th><th>Prazo despacho</th><th>Saiu às</th>${comMotivo ? "<th>Atraso</th><th>Motivo provável</th>" : ""}</tr></thead>
+        <tbody>${lista
+          .map(
+            (e) => `<tr>
+              <td class="mono">#${esc(e.venda)}</td><td>${esc(e.conta)}</td><td>${NOME_MODALIDADE[e.modalidade] || ""}</td>
+              <td>${esc(e.produto)}</td><td>${esc(e.comprador || "")}</td>
+              <td class="mono">${fmtHora(e.limiteImpressao)}</td>
+              <td class="mono">${e.impressoEm ? fmtHora(e.impressoEm) + (e.impressoEstimado ? "*" : "") : "—"}</td>
+              <td class="mono">${fmtHora(e.prazo)}</td>
+              <td class="mono">${e.saiuEm ? fmtDiaHora(e.saiuEm) : "ainda no CD"}</td>
+              ${comMotivo ? `<td class="mono forte">${durTxt(e.atrasoMin)}</td><td>${esc(e.motivo)}</td>` : ""}
+            </tr>`
+          )
+          .join("")}</tbody>
+      </table>`;
+
+    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+      <title>Relatório de atrasos ${dia.split("-").reverse().join("/")}</title>
+      <style>
+        * { box-sizing: border-box; }
+        body { font: 12px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #111827; margin: 24px; background: #fff; }
+        h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+        h2 { font-size: 14px; margin: 26px 0 8px; padding-bottom: 4px; border-bottom: 2px solid #111827; }
+        .sub { color: #6b7280; margin: 2px 0 18px; }
+        .kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+        .kpi { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; border-left: 4px solid #d1d5db; }
+        .kpi b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+        .kpi span { color: #6b7280; font-size: 11px; }
+        .k-ok { border-left-color: #16a34a; } .k-tarde { border-left-color: #d97706; } .k-nao { border-left-color: #dc2626; } .k-atr { border-left-color: #7f1d1d; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        th { text-align: left; background: #f3f4f6; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: #4b5563; }
+        th, td { padding: 6px 7px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+        .mono { font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .forte { font-weight: 700; color: #b91c1c; }
+        .duas { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .nota { color: #6b7280; font-size: 10.5px; margin-top: 8px; }
+        .vazio { color: #16a34a; font-weight: 600; padding: 8px 0; }
+        @media print { body { margin: 0; } h2 { break-after: avoid; } tr { break-inside: avoid; } }
+        @page { size: A4 landscape; margin: 10mm; }
+      </style></head><body>
+      <h1>Relatório de atrasos — ${esc(dataLonga)}</h1>
+      <div class="sub">${esc(contaNome)} · gerado em ${new Date().toLocaleString("pt-BR", { timeZone: TZ })} · Painel de prazos (Mercado Livre)</div>
+
+      <div class="kpis">
+        <div class="kpi"><b>${ativos.length}</b><span>pacotes do dia</span></div>
+        <div class="kpi k-ok"><b>${n("impresso")}</b><span>impressos no limite (${pct(n("impresso"), ativos.length)})</span></div>
+        <div class="kpi k-tarde"><b>${n("tarde")}</b><span>impressos após o limite</span></div>
+        <div class="kpi k-nao"><b>${ativos.filter((e) => !e.impressoEm).length}</b><span>não impressos</span></div>
+        <div class="kpi k-atr"><b>${atrasados.length}</b><span>atrasaram (${pct(atrasados.length, ativos.length)})</span></div>
+        <div class="kpi"><b>${linhas.length - ativos.length}</b><span>cancelados</span></div>
+      </div>
+
+      <div class="duas">
+        <div>
+          <h2>Atrasos por motivo</h2>
+          ${porMotivo.size
+            ? `<table><tbody>${[...porMotivo.entries()].sort((a, b) => b[1] - a[1]).map(([m, q]) => `<tr><td>${esc(m)}</td><td class="mono forte">${q}</td></tr>`).join("")}</tbody></table>`
+            : '<div class="vazio">Nenhum atraso neste dia ✓</div>'}
+        </div>
+        <div>
+          <h2>Por conta</h2>
+          <table><thead><tr><th>Conta</th><th>Pacotes</th><th>No limite</th><th>Atrasaram</th></tr></thead><tbody>
+            ${[...porConta.entries()].map(([nome, r]) => `<tr><td>${esc(nome)}</td><td class="mono">${r.total}</td><td class="mono">${r.ok} (${pct(r.ok, r.total)})</td><td class="mono ${r.atr ? "forte" : ""}">${r.atr}</td></tr>`).join("")}
+          </tbody></table>
+        </div>
+      </div>
+
+      <h2>Por modalidade</h2>
+      <table><thead><tr><th>Modalidade</th><th>Pacotes</th><th>Impressos no limite</th><th>Após o limite</th><th>Não impressos</th><th>Atrasaram</th></tr></thead><tbody>
+        ${MODALIDADES.map((m) => {
+          const l = ativos.filter((e) => e.modalidade === m.id);
+          if (!l.length) return "";
+          const ok = l.filter((e) => e.situacao === "impresso").length;
+          return `<tr><td>${m.nome}</td><td class="mono">${l.length}</td><td class="mono">${ok} (${pct(ok, l.length)})</td>
+            <td class="mono">${l.filter((e) => e.situacao === "tarde").length}</td><td class="mono">${l.filter((e) => !e.impressoEm).length}</td>
+            <td class="mono ${l.some((e) => e.situacao === "atrasado") ? "forte" : ""}">${l.filter((e) => e.situacao === "atrasado").length}</td></tr>`;
+        }).join("")}
+      </tbody></table>
+
+      <h2>Pacotes que atrasaram (${atrasados.length})</h2>
+      ${atrasados.length ? tabelaEnvios(atrasados, true) : '<div class="vazio">Nenhum pacote atrasou neste dia ✓</div>'}
+
+      <h2>Impressos após o limite — não atrasaram, mas foram em cima da hora (${tarde.length})</h2>
+      ${tarde.length ? tabelaEnvios(tarde, false) : '<div class="vazio">Nenhum ✓</div>'}
+
+      <div class="nota">"Atraso" = tempo entre o prazo de despacho e a saída do pacote da lista "pronto para enviar" do Mercado Livre (ou até agora, se ainda está no CD).
+      * horário de impressão estimado (o pacote já estava impresso quando o monitor o viu pela primeira vez). Demais horários com precisão de ~3 min.
+      Coleta: prazo = fim da janela de coleta.</div>
+      </body></html>`;
+    mostrarRelatorio(html, `Relatório de atrasos — ${dia.split("-").reverse().join("/")}`);
+  }
+
+  // Abre por cima do painel (iframe) em vez de window.open: pop-up costuma
+  // ser bloqueado pelo navegador.
+  function mostrarRelatorio(html, titulo) {
+    document.getElementById("pz-rel-overlay")?.remove();
+    const ov = document.createElement("div");
+    ov.id = "pz-rel-overlay";
+    ov.className = "pz-rel-overlay";
+    ov.innerHTML = `
+      <div class="pz-rel-caixa" role="dialog" aria-modal="true" aria-label="${esc(titulo)}">
+        <div class="pz-rel-barra">
+          <span class="pz-titulo">${esc(titulo)}</span>
+          <span class="pz-rel-botoes">
+            <button type="button" class="btn btn-primary btn-sm" data-rel="imprimir">Imprimir / salvar PDF</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-rel="fechar">Fechar</button>
+          </span>
+        </div>
+        <iframe class="pz-rel-frame" title="${esc(titulo)}"></iframe>
+      </div>`;
+    document.body.appendChild(ov);
+    const frame = ov.querySelector("iframe");
+    frame.srcdoc = html;
+    const fechar = () => {
+      ov.remove();
+      document.removeEventListener("keydown", esc_);
+    };
+    const esc_ = (ev) => ev.key === "Escape" && fechar();
+    document.addEventListener("keydown", esc_);
+    ov.addEventListener("click", (ev) => {
+      if (ev.target === ov || ev.target.closest('[data-rel="fechar"]')) fechar();
+      if (ev.target.closest('[data-rel="imprimir"]')) frame.contentWindow?.print();
+    });
+  }
+
+  function baixarCsv(dia) {
+    const linhas = linhasRelatorio(dia);
+    if (!linhas) return;
+    const cab = ["Data", "Venda", "Conta", "Modalidade", "Produto", "Qtd", "Comprador", "Situação", "Limite impressão",
+      "Impresso às", "Horário estimado", "NF pendente", "Prazo despacho", "Saiu às", "Status final", "Atraso (min)", "Motivo provável"];
+    const cel = (v) => {
+      const t = v == null ? "" : String(v);
+      return /[;"\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+    };
+    const corpo = linhas.map((e) =>
+      [
+        dia.split("-").reverse().join("/"), e.venda, e.conta, NOME_MODALIDADE[e.modalidade] || "", e.produto, e.qtd, e.comprador,
+        ROTULO_SIT_REL[e.situacao] || e.situacao, fmtHora(e.limiteImpressao), e.impressoEm ? fmtHora(e.impressoEm) : "",
+        e.impressoEstimado ? "sim" : "", e.nfPendente ? "sim" : "", fmtHora(e.prazo), e.saiuEm ? fmtDiaHora(e.saiuEm) : "",
+        e.statusFinal || (e.aindaNaLista ? "no CD" : ""), e.atrasoMin ?? "", e.motivo,
+      ].map(cel).join(";")
+    );
+    // BOM + ";" = abre certo no Excel em portugues.
+    const blob = new Blob(["﻿" + [cab.join(";"), ...corpo].join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `prazos-${dia}${contaSel.value ? "-" + contaSel.value : ""}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 1000);
   }
 
   function atualizarBadge() {

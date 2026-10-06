@@ -1853,3 +1853,51 @@ body {
   vertical-align: 1px;
 }
 .pz-nf-txt { color: #6d28d9; font-weight: 600; }
+
+/* Relatorio do dia + horarios da semana */
+.pz-dia-acoes { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+.pz-dia-topo { flex-wrap: wrap; }
+.pz-horarios { margin-top: 16px; }
+.pz-hs-rolagem { overflow-x: auto; }
+.pz-hs { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 620px; }
+.pz-hs th,
+.pz-hs td { padding: 9px 10px; border-bottom: 1px solid var(--border); text-align: center; vertical-align: middle; }
+.pz-hs thead th { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); background: var(--bg); font-weight: 600; }
+.pz-hs thead th.hoje { color: var(--accent); }
+.pz-hs tbody th { text-align: left; font-weight: 600; color: var(--text); white-space: nowrap; }
+.pz-hs tbody th small,
+.pz-hs td small { display: block; font-size: 10.5px; font-weight: 400; color: var(--muted); }
+.pz-hs td b { display: block; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); white-space: nowrap; }
+.pz-hs td.hoje { background: var(--accent-soft); }
+.pz-hs td.pz-hs-nao { color: var(--border-strong); }
+.pz-hs td.pz-hs-passou { color: var(--muted); font-size: 11px; font-style: italic; }
+.pz-hs tbody tr:last-child th,
+.pz-hs tbody tr:last-child td { border-bottom: none; }
+
+/* Relatorio aberto por cima do painel */
+.pz-rel-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(17, 24, 39, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.pz-rel-caixa {
+  width: min(1200px, 100%);
+  height: min(92vh, 100%);
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.pz-rel-barra { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.pz-rel-botoes { display: flex; gap: 8px; }
+.pz-rel-frame { flex: 1; width: 100%; border: none; background: #fff; }
+@media (max-width: 900px) {
+  .pz-rel-overlay { padding: 0; }
+  .pz-rel-caixa { height: 100%; border-radius: 0; }
+}
