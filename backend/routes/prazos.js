@@ -725,6 +725,22 @@ async function rodarCiclo() {
     // Historico (calendario): falha no banco nao pode derrubar a tela ao vivo.
     try {
       await gravarHistorico(envios, contasOk, agora);
+      // A tela de impressos mostra a que horas cada pacote foi impresso.
+      const impressos = envios.filter((e) => e.impresso);
+      if (impressos.length) {
+        const { rows } = await db.query(
+          "SELECT shipping_id, impresso_em, impresso_estimado FROM prazos_envios WHERE shipping_id = ANY($1)",
+          [impressos.map((e) => String(e.shippingId))]
+        );
+        const porId = new Map(rows.map((r) => [r.shipping_id, r]));
+        for (const e of impressos) {
+          const r = porId.get(String(e.shippingId));
+          if (r?.impresso_em) {
+            e.impressoEm = new Date(r.impresso_em).toISOString();
+            e.impressoEstimado = r.impresso_estimado;
+          }
+        }
+      }
     } catch (err) {
       console.error("[prazos] falha ao gravar historico:", err.message);
     }
