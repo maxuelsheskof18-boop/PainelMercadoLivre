@@ -148,6 +148,26 @@
   }
 
   // ---------- Render ----------
+  // Visao "A imprimir" (pedido do usuario 06/10: "mais sofisticado", sem a
+  // parede de linhas repetidas): linha do tempo do dia + um cartao por
+  // modalidade (anel de progresso, contagem regressiva, barras por conta) +
+  // detalhe da modalidade escolhida, agrupado por produto ou por pacote.
+  let modSel = null; // modalidade aberta no detalhe (null = a mais urgente)
+  let modoDetalhe = lsGet("prazos.modo") === "pacotes" ? "pacotes" : "produtos";
+  // Produtos expandidos: a tela se redesenha a cada 30s e nao pode fechar
+  // o que o operador abriu.
+  const produtosAbertos = new Set();
+  corpoEl.addEventListener(
+    "toggle",
+    (ev) => {
+      const d = ev.target;
+      if (!d.matches?.(".pz-produto")) return;
+      if (d.open) produtosAbertos.add(d.dataset.chave);
+      else produtosAbertos.delete(d.dataset.chave);
+    },
+    true
+  );
+
   function render() {
     if (!dados || !visivel) return;
     const envios = enviosFiltrados();
@@ -169,9 +189,9 @@
     topoEl.innerHTML = renderResumo(grupos) + renderAbas(grupos);
 
     const corpo = {
-      imprimir: () => renderImprimir(grupos.imprimir),
+      imprimir: () => renderImprimir(grupos),
       atrasados: () => renderAtrasados(grupos.atrasados),
-      impressos: () => renderPorModalidade(grupos.impressos, "Nenhum pacote impresso aguardando despacho."),
+      impressos: () => renderPorModalidade(grupos.impressos),
       proximos: () => renderProximos(grupos.proximos),
     }[visao];
     corpoEl.innerHTML = corpo();
@@ -225,103 +245,355 @@
     render();
   });
 
-  function janelasTexto(m) {
-    if (m.id === "flex") return `<span>Limite configurado: ${esc(dados.config?.flex?.limite || "—")}</span>`;
-    const linhas = [];
+  // Cliques no corpo: escolher modalidade, trocar modo do detalhe.
+  corpoEl.addEventListener("click", (ev) => {
+    const mod = ev.target.closest("[data-mod]");
+    if (mod) {
+      modSel = mod.dataset.mod;
+      render();
+      return;
+    }
+    const modo = ev.target.closest("[data-modo]");
+    if (modo) {
+      modoDetalhe = modo.dataset.modo;
+      lsSet("prazos.modo", modoDetalhe);
+      render();
+    }
+  });
+
+  // ---------- Helpers de hora (minutos do dia em Sao Paulo) ----------
+  function minutosSP(iso) {
+    const p = Object.fromEntries(
+      new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+        .formatToParts(new Date(iso))
+        .map((x) => [x.type, x.value])
+    );
+    return +p.hour * 60 + +p.minute;
+  }
+  const hhmmParaMin = (s) => (/^\d{2}:\d{2}$/.test(s || "") ? +s.slice(0, 2) * 60 + +s.slice(3) : null);
+  const minParaHhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
+  function nivelDe(itens, impressos) {
+    if (itens.some((e) => e.situacao === "estourou")) return "estourou";
+    if (itens.some((e) => e.situacao === "risco")) return "risco";
+    if (itens.length) return "no_prazo";
+    return impressos ? "concluido" : "vazio";
+  }
+  const ROTULO_NIVEL = {
+    estourou: "Passou do limite",
+    risco: "Em risco",
+    no_prazo: "No prazo",
+    concluido: "Tudo impresso",
+    vazio: "Sem pedidos",
+  };
+
+  // Janelas de hoje por modalidade, de todas as contas visiveis.
+  function janelasHoje(m) {
+    const out = [];
     for (const c of dados.contas || []) {
       if (contaSel.value && c.sellerId !== contaSel.value) continue;
       for (const lt of m.lts) {
         if (!(lt in (c.janelasHoje || {}))) continue;
-        const j = c.janelasHoje[lt];
-        const txt = !j
-          ? "não trabalha hoje"
-          : m.id === "coleta"
-          ? `coleta ${j.de || "?"}–${j.ate || "?"}`
-          : `entregar até ${j.de || "?"}`;
-        linhas.push(`<span><b>${esc(c.nickname)}</b>: ${esc(txt)}</span>`);
+        out.push({ conta: c.nickname, j: c.janelasHoje[lt] });
       }
     }
-    return linhas.join("");
+    return out;
   }
 
+  // ---------- Visao "A imprimir" ----------
+  function renderImprimir(g) {
+    const mods = MODALIDADES.map((m) => {
+      const itens = g.imprimir.filter((e) => e.modalidade === m.id).sort(ordemUrgencia);
+      const impressos = g.impressos.filter((e) => e.modalidade === m.id);
+      return { ...m, itens, impressos, janelas: janelasHoje(m), nivel: nivelDe(itens, impressos.length) };
+    }).filter((m) => m.itens.length || m.impressos.length || m.janelas.length);
+
+    if (!mods.length) return '<p class="prazos-vazio grande">Nenhum pedido para imprimir hoje. ✓</p>';
+
+    // Sem escolha do usuario (ou escolha sumiu): abre a mais urgente.
+    const peso = { estourou: 0, risco: 1, no_prazo: 2, concluido: 3, vazio: 4 };
+    if (!mods.some((m) => m.id === modSel)) {
+      modSel = [...mods].sort(
+        (a, b) =>
+          peso[a.nivel] - peso[b.nivel] ||
+          Date.parse(a.itens[0]?.limiteImpressao || "9999") - Date.parse(b.itens[0]?.limiteImpressao || "9999")
+      )[0].id;
+    }
+    const sel = mods.find((m) => m.id === modSel);
+
+    return `
+      ${renderLinhaDoTempo(mods)}
+      <div class="pz-cards">${mods.map(cardModalidade).join("")}</div>
+      ${renderDetalhe(sel)}`;
+  }
+
+  // Linha do tempo do dia: uma faixa por modalidade, janela de coleta
+  // sombreada, entrega na agencia como bandeira, limites de impressao como
+  // bolhas com a quantidade e um marcador de "agora".
+  function renderLinhaDoTempo(mods) {
+    const agora = minutosSP(new Date().toISOString());
+    const marcos = [];
+    const faixas = mods.map((m) => {
+      const bolhas = new Map();
+      for (const e of m.itens) {
+        if (!e.limiteImpressao) continue;
+        const min = minutosSP(e.limiteImpressao);
+        const b = bolhas.get(min) || { min, n: 0, itens: [] };
+        b.n++;
+        b.itens.push(e);
+        bolhas.set(min, b);
+        marcos.push(min);
+      }
+      const janelas = [];
+      const bandeiras = new Map();
+      for (const { conta, j } of m.janelas) {
+        if (!j) continue;
+        const de = hhmmParaMin(j.de);
+        const ate = hhmmParaMin(j.ate);
+        if (m.id === "coleta" && de != null && ate != null) {
+          janelas.push({ de, ate, conta });
+          marcos.push(de, ate);
+        } else if (de != null) {
+          const lista = bandeiras.get(de) || [];
+          lista.push(conta);
+          bandeiras.set(de, lista);
+          marcos.push(de);
+        }
+      }
+      return { m, bolhas: [...bolhas.values()], janelas, bandeiras: [...bandeiras.entries()] };
+    });
+
+    const ini = Math.max(0, Math.floor(Math.min(8 * 60, agora - 60, ...marcos.map((x) => x - 30)) / 60) * 60);
+    const fim = Math.min(24 * 60, Math.ceil(Math.max(18 * 60, agora + 60, ...marcos.map((x) => x + 30)) / 60) * 60);
+    const frac = (min) => ((Math.min(Math.max(min, ini), fim) - ini) / (fim - ini)).toFixed(4);
+    const pos = (min) => `${(frac(min) * 100).toFixed(2)}%`;
+
+    const horas = [];
+    for (let h = ini; h <= fim; h += 60) horas.push(h);
+
+    const linhas = faixas
+      .map(({ m, bolhas, janelas, bandeiras }) => {
+        const nivelBolha = (b) =>
+          b.itens.some((e) => e.situacao === "estourou") ? "estourou" : b.itens.some((e) => e.situacao === "risco") ? "risco" : "no_prazo";
+        return `
+        <div class="pz-tl-faixa${m.id === modSel ? " sel" : ""}" data-mod="${m.id}">
+          <div class="pz-tl-nome">${m.nome}</div>
+          <div class="pz-tl-trilho">
+            ${janelas
+              .map(
+                (j) => `<div class="pz-tl-janela" style="left:${pos(j.de)};width:calc(${pos(j.ate)} - ${pos(j.de)})"
+                  title="${esc(j.conta)}: coleta ${minParaHhmm(j.de)}–${minParaHhmm(j.ate)}"><span>coleta ${minParaHhmm(j.de)}–${minParaHhmm(j.ate)}</span></div>`
+              )
+              .join("")}
+            ${bandeiras
+              .map(
+                ([min, contas]) => `<div class="pz-tl-bandeira" style="left:${pos(min)}" title="Entregar na agência até ${minParaHhmm(min)}: ${esc(contas.join(", "))}">
+                  <span>entrega ${minParaHhmm(min)}</span></div>`
+              )
+              .join("")}
+            ${bolhas
+              .map(
+                (b) => `<div class="pz-tl-bolha nivel-${nivelBolha(b)}" style="left:${pos(b.min)}"
+                  title="${b.n} ${b.n === 1 ? "pacote" : "pacotes"} para imprimir até ${minParaHhmm(b.min)}">
+                  <b>${b.n}</b><span>${minParaHhmm(b.min)}</span></div>`
+              )
+              .join("")}
+            ${!bolhas.length ? `<div class="pz-tl-ok">${m.impressos.length ? "tudo impresso ✓" : "sem pedidos hoje"}</div>` : ""}
+          </div>
+        </div>`;
+      })
+      .join("");
+
+    return `
+      <section class="pz-tl" aria-label="Linha do tempo de hoje">
+        <div class="pz-tl-cabecalho">
+          <span class="pz-titulo">Hoje</span>
+          <span class="pz-legenda"><i class="lg-janela"></i>janela de coleta <i class="lg-bandeira"></i>entrega na agência <i class="lg-bolha"></i>limite de impressão</span>
+        </div>
+        <div class="pz-tl-corpo">
+          <div class="pz-tl-grade">
+            <div class="pz-tl-nome"></div>
+            <div class="pz-tl-trilho pz-tl-horas">
+              ${horas.map((h) => `<span style="left:${pos(h)}">${String(h / 60).padStart(2, "0")}h</span>`).join("")}
+            </div>
+          </div>
+          ${linhas}
+          <div class="pz-tl-passado" style="--x:${frac(agora)}"></div>
+          <div class="pz-tl-agora" style="--x:${frac(agora)}"><span>agora ${minParaHhmm(agora)}</span></div>
+        </div>
+      </section>`;
+  }
+
+  function cardModalidade(m) {
+    const total = m.itens.length + m.impressos.length;
+    const pct = total ? Math.round((m.impressos.length / total) * 100) : 0;
+    const prox = m.itens.map((e) => e.limiteImpressao).filter(Boolean).sort()[0];
+    const min = prox ? Math.round((Date.parse(prox) - Date.now()) / 60000) : null;
+
+    const porConta = new Map();
+    for (const e of m.itens) porConta.set(e.conta, (porConta.get(e.conta) || 0) + 1);
+    const contas = [...porConta.entries()].sort((a, b) => b[1] - a[1]);
+    const maxConta = Math.max(1, ...contas.map((c) => c[1]));
+
+    let relogio;
+    if (min == null) relogio = `<div class="pz-relogio"><b>${m.itens.length ? "—" : "✓"}</b><span>${m.itens.length ? "sem prazo informado" : "nada pendente"}</span></div>`;
+    else if (min < 0) relogio = `<div class="pz-relogio passou"><b>+${dur(-min)}</b><span>passou do limite das ${fmtHora(prox)}</span></div>`;
+    else relogio = `<div class="pz-relogio"><b>${dur(min)}</b><span>para imprimir até ${fmtHora(prox)}</span></div>`;
+
+    return `
+      <button type="button" class="pz-card nivel-${m.nivel}${m.id === modSel ? " sel" : ""}" data-mod="${m.id}" aria-pressed="${m.id === modSel}">
+        <div class="pz-card-topo">
+          <span class="pz-card-nome">${m.nome}</span>
+          <span class="pz-status nivel-${m.nivel}">${ROTULO_NIVEL[m.nivel]}</span>
+        </div>
+        <div class="pz-card-meio">
+          <div class="pz-anel" style="--p:${pct}" role="img" aria-label="${pct}% impresso">
+            <div><b>${m.itens.length}</b><span>a imprimir</span></div>
+          </div>
+          ${relogio}
+        </div>
+        <div class="pz-progresso-txt">${m.impressos.length} de ${total} impressos hoje · ${pct}%</div>
+        <div class="pz-contas">${
+          contas.length
+            ? contas
+                .map(
+                  ([nome, n]) => `<div class="pz-conta"><span class="pz-conta-nome">${esc(nome)}</span>
+                    <span class="pz-conta-barra"><i style="width:${(n / maxConta) * 100}%"></i></span><b>${n}</b></div>`
+                )
+                .join("")
+            : '<div class="pz-conta-vazio">Nenhuma conta com pendência</div>'
+        }</div>
+      </button>`;
+  }
+
+  // Detalhe: por produto (agrupa pacotes iguais) ou por pacote (tabela).
+  function renderDetalhe(m) {
+    const modos = `<div class="pz-seg" role="group" aria-label="Agrupar">
+      <button type="button" data-modo="produtos" class="${modoDetalhe === "produtos" ? "on" : ""}">Por produto</button>
+      <button type="button" data-modo="pacotes" class="${modoDetalhe === "pacotes" ? "on" : ""}">Por pacote</button>
+    </div>`;
+    const corpo = !m.itens.length
+      ? '<p class="prazos-vazio grande">Nada a imprimir nesta modalidade. ✓</p>'
+      : modoDetalhe === "produtos"
+      ? tabelaProdutos(m.itens)
+      : tabelaPacotes(m.itens);
+    return `
+      <section class="pz-detalhe">
+        <div class="pz-detalhe-topo">
+          <div><span class="pz-titulo">${m.nome}</span> <span class="pz-sub">${m.itens.length} ${m.itens.length === 1 ? "pacote" : "pacotes"} a imprimir</span></div>
+          ${modos}
+        </div>
+        ${corpo}
+      </section>`;
+  }
+
+  function tabelaProdutos(itens) {
+    const grupos = new Map();
+    for (const e of itens) {
+      for (const it of e.itens) {
+        const chave = it.titulo || "(sem título)";
+        const gr = grupos.get(chave) || { titulo: chave, un: 0, envios: new Map(), contas: new Set(), limite: null, pior: 9 };
+        gr.un += it.qtd || 0;
+        gr.envios.set(e.shippingId, e);
+        gr.contas.add(e.conta);
+        if (e.limiteImpressao && (!gr.limite || e.limiteImpressao < gr.limite)) gr.limite = e.limiteImpressao;
+        gr.pior = Math.min(gr.pior, SITUACAO[e.situacao].ordem);
+        grupos.set(chave, gr);
+      }
+    }
+    const lista = [...grupos.values()].sort((a, b) => a.pior - b.pior || b.envios.size - a.envios.size);
+    const situacaoPorOrdem = Object.fromEntries(Object.entries(SITUACAO).map(([k, v]) => [v.ordem, k]));
+    return `<div class="pz-produtos">${lista
+      .map((gr) => {
+        const sit = situacaoPorOrdem[gr.pior];
+        const vendas = [...gr.envios.values()];
+        return `<details class="pz-produto sit-${sit}" data-chave="${esc(gr.titulo)}"${produtosAbertos.has(gr.titulo) ? " open" : ""}>
+          <summary>
+            <span class="pz-produto-qtd"><b>${gr.envios.size}</b><small>${gr.envios.size === 1 ? "pacote" : "pacotes"}</small></span>
+            <span class="pz-produto-nome">${esc(gr.titulo)}<small>${esc([...gr.contas].join(" · "))}</small></span>
+            <span class="pz-produto-un"><b>${gr.un}</b><small>unid.</small></span>
+            <span class="pz-produto-limite"><b>${gr.limite ? fmtHora(gr.limite) : "—"}</b><small>${gr.limite ? fmtFalta(gr.limite) : ""}</small></span>
+          </summary>
+          ${tabelaPacotes(vendas, { compacta: true })}
+        </details>`;
+      })
+      .join("")}</div>`;
+  }
+
+  // Tabela de pacotes. colunas extras por visao (modalidade, prazo vencido...).
+  function tabelaPacotes(lista, { compacta = false, modalidade = false, colPrazo } = {}) {
+    const prazoCol = colPrazo || {
+      titulo: "Imprimir até",
+      valor: (e) =>
+        e.limiteImpressao ? `<b>${fmtHora(e.limiteImpressao)}</b><small>${fmtFalta(e.limiteImpressao)}</small>` : "<b>—</b>",
+    };
+    return `<table class="pz-tabela${compacta ? " compacta" : ""}">
+      <thead><tr>
+        <th>Venda</th><th>Conta</th>${modalidade ? "<th>Modalidade</th>" : ""}<th>Produto</th><th class="num">Qtd</th><th>Comprador</th><th class="dir">${prazoCol.titulo}</th>
+      </tr></thead>
+      <tbody>${lista
+        .map((e) => {
+          const qtd = e.itens.reduce((s, i) => s + (i.qtd || 0), 0);
+          const produto = e.itens.map((i) => i.titulo).join(" · ");
+          return `<tr class="sit-${e.situacao}">
+            <td data-label="Venda"><a href="https://www.mercadolivre.com.br/vendas/${encodeURIComponent(e.venda)}/detalhe" target="_blank" rel="noopener" title="Abrir no Mercado Livre">#${esc(e.venda)}</a></td>
+            <td data-label="Conta">${esc(e.conta)}</td>
+            ${modalidade ? `<td data-label="Modalidade">${NOME_MODALIDADE[e.modalidade] || ""}</td>` : ""}
+            <td data-label="Produto" class="pz-td-produto" title="${esc(produto)}">${esc(produto)}</td>
+            <td data-label="Qtd" class="num">${qtd}</td>
+            <td data-label="Comprador" class="pz-td-comprador">${esc(e.comprador || "")}</td>
+            <td data-label="${prazoCol.titulo}" class="dir pz-td-prazo">${prazoCol.valor(e)}</td>
+          </tr>`;
+        })
+        .join("")}</tbody>
+    </table>`;
+  }
+
+  // ---------- Outras visoes ----------
   const ordemUrgencia = (a, b) =>
     SITUACAO[a.situacao].ordem - SITUACAO[b.situacao].ordem ||
     Date.parse(a.limiteImpressao || 0) - Date.parse(b.limiteImpressao || 0);
 
-  function renderImprimir(lista) {
-    const colunas = MODALIDADES.map((m) => {
-      const itens = lista.filter((e) => e.modalidade === m.id).sort(ordemUrgencia);
-      const janelas = janelasTexto(m);
-      // Modalidade que nenhuma conta usa e sem pedidos: nao ocupa espaco.
-      if (!itens.length && !janelas) return "";
-      const n = (s) => itens.filter((e) => e.situacao === s).length;
-      const proxLimite = itens.map((e) => e.limiteImpressao).filter(Boolean).sort()[0];
-      const nivel = n("estourou") ? "estourou" : n("risco") ? "risco" : itens.length ? "no_prazo" : "ok";
-      return `
-        <section class="prazos-coluna">
-          <header class="prazos-coluna-topo nivel-${nivel}">
-            <div class="prazos-coluna-linha">
-              <span class="prazos-coluna-nome">${m.nome}</span>
-              <span class="prazos-coluna-qtd">${itens.length} ${itens.length === 1 ? "pacote" : "pacotes"}</span>
-            </div>
-            <div class="prazos-coluna-limite">${
-              proxLimite
-                ? `Imprimir até <b>${fmtHora(proxLimite)}</b> <span>${fmtFalta(proxLimite)}</span>`
-                : itens.length
-                ? "Sem prazo informado"
-                : "Tudo impresso ✓"
-            }</div>
-            <div class="prazos-janelas">${janelas}</div>
-          </header>
-          <div class="prazos-linhas">${itens.map((e) => linha(e)).join("") || '<p class="prazos-vazio">Nada a imprimir.</p>'}</div>
-        </section>`;
-    }).join("");
-    return `<div class="prazos-colunas">${colunas}</div>`;
+  function faixa(titulo, n, nota, conteudo) {
+    return `<section class="pz-detalhe">
+      <div class="pz-detalhe-topo">
+        <div><span class="pz-titulo">${titulo}</span> <span class="pz-sub">${n} ${n === 1 ? "pacote" : "pacotes"}</span>${nota ? `<div class="pz-nota">${esc(nota)}</div>` : ""}</div>
+      </div>
+      ${conteudo}
+    </section>`;
   }
 
   function renderAtrasados(lista) {
     if (!lista.length) return '<p class="prazos-vazio grande">Nenhum envio atrasado. ✓</p>';
     const faixas = [
-      { titulo: "Venceu hoje", nota: "despachar o quanto antes", filtro: (d) => d === 0 },
+      { titulo: "Venceu hoje", nota: "Despachar o quanto antes.", filtro: (d) => d === 0 },
       { titulo: "Venceu ontem", nota: "", filtro: (d) => d === 1 },
       {
         titulo: "Há 2 dias ou mais",
-        nota: "provavelmente travados — conferir no Mercado Livre (cancelamento, mediação ou pacote que saiu sem ser lido)",
+        nota: "Provavelmente travados: conferir no Mercado Livre (cancelamento, mediação ou pacote que saiu sem ser lido).",
         filtro: (d) => d >= 2,
       },
     ];
+    const colPrazo = {
+      titulo: "Venceu",
+      valor: (e) => `<b>${fmtDiaHora(e.prazo)}</b><small>${e.impresso ? "etiqueta impressa" : "não impresso"}</small>`,
+    };
     return faixas
       .map((f) => {
         const itens = lista
           .filter((e) => f.filtro(diasDeAtraso(e)))
           .sort((a, b) => Date.parse(b.prazo || 0) - Date.parse(a.prazo || 0));
-        if (!itens.length) return "";
-        return `<section class="prazos-faixa">
-          <h3>${f.titulo} <span class="prazos-faixa-n">${itens.length}</span>${f.nota ? ` <small>${esc(f.nota)}</small>` : ""}</h3>
-          <div class="prazos-linhas">${itens
-            .map((e) =>
-              linha(e, {
-                modalidade: true,
-                direita: `<b>venceu ${fmtDiaHora(e.prazo)}</b><span>${e.impresso ? "etiqueta impressa" : "não impresso"}</span>`,
-              })
-            )
-            .join("")}</div>
-        </section>`;
+        return itens.length ? faixa(f.titulo, itens.length, f.nota, tabelaPacotes(itens, { modalidade: true, colPrazo })) : "";
       })
       .join("");
   }
 
-  function renderPorModalidade(lista, vazio) {
-    if (!lista.length) return `<p class="prazos-vazio grande">${vazio}</p>`;
+  function renderPorModalidade(lista) {
+    if (!lista.length) return '<p class="prazos-vazio grande">Nenhum pacote impresso aguardando despacho.</p>';
+    const colPrazo = { titulo: "Despachar até", valor: (e) => `<b>${fmtHora(e.prazo)}</b><small>${fmtFalta(e.prazo)}</small>` };
     return MODALIDADES.map((m) => {
       const itens = lista.filter((e) => e.modalidade === m.id);
-      if (!itens.length) return "";
-      return `<section class="prazos-faixa">
-        <h3>${m.nome} <span class="prazos-faixa-n">${itens.length}</span></h3>
-        <div class="prazos-linhas">${itens
-          .map((e) => linha(e, { direita: `<b>despachar até ${fmtHora(e.prazo)}</b>` }))
-          .join("")}</div>
-      </section>`;
+      return itens.length ? faixa(m.nome, itens.length, "", tabelaPacotes(itens, { colPrazo })) : "";
     }).join("");
   }
 
@@ -333,44 +605,19 @@
       if (!porDia.has(dia)) porDia.set(dia, []);
       porDia.get(dia).push(e);
     }
+    const colPrazo = {
+      titulo: "Imprimir até",
+      valor: (e) => `<b>${fmtHora(e.limiteImpressao)}</b><small>${e.impresso ? "já impresso" : "não impresso"}</small>`,
+    };
     return [...porDia.entries()]
       .map(([dia, itens]) => {
         const titulo =
           dia === "—"
             ? "Sem data"
             : new Date(`${dia}T12:00:00-03:00`).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "2-digit", timeZone: TZ });
-        return `<section class="prazos-faixa">
-          <h3>${esc(titulo)} <span class="prazos-faixa-n">${itens.length}</span></h3>
-          <div class="prazos-linhas">${itens
-            .map((e) =>
-              linha(e, {
-                modalidade: true,
-                direita: `<b>imprimir até ${fmtHora(e.limiteImpressao)}</b><span>${e.impresso ? "já impresso" : "não impresso"}</span>`,
-              })
-            )
-            .join("")}</div>
-        </section>`;
+        return faixa(titulo.charAt(0).toUpperCase() + titulo.slice(1), itens.length, "", tabelaPacotes(itens, { modalidade: true, colPrazo }));
       })
       .join("");
-  }
-
-  // Uma linha por pacote: venda + conta | produto | prazo + situacao.
-  function linha(e, { modalidade = false, direita } = {}) {
-    const produto = e.itens.map((i) => `${i.qtd}× ${i.titulo}`).join(" · ");
-    const dir =
-      direita ||
-      (e.limiteImpressao
-        ? `<b>até ${fmtHora(e.limiteImpressao)}</b><span>${fmtFalta(e.limiteImpressao)}</span>`
-        : `<b>sem prazo</b>`);
-    return `
-      <article class="prazos-linha sit-${e.situacao}">
-        <div class="pl-id">
-          <a href="https://www.mercadolivre.com.br/vendas/${encodeURIComponent(e.venda)}/detalhe" target="_blank" rel="noopener" title="Abrir a venda no Mercado Livre">#${esc(e.venda)}</a>
-          <span>${esc(e.conta)}${modalidade ? ` · ${NOME_MODALIDADE[e.modalidade] || ""}` : ""}</span>
-        </div>
-        <div class="pl-produto" title="${esc(produto)}">${esc(produto)}<span>${esc(e.comprador || "")}</span></div>
-        <div class="pl-prazo">${dir}</div>
-      </article>`;
   }
 
   function atualizarBadge() {
