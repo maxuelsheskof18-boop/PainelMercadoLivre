@@ -260,6 +260,11 @@
 
   // Cliques no corpo: escolher modalidade, trocar modo do detalhe.
   corpoEl.addEventListener("click", (ev) => {
+    const copiar = ev.target.closest("[data-copiar]");
+    if (copiar) {
+      copiarTexto(copiar.dataset.copiar, copiar);
+      return;
+    }
     const rel = ev.target.closest("[data-relatorio]");
     if (rel) {
       if (rel.dataset.relatorio === "pdf") abrirRelatorio(calDia);
@@ -301,6 +306,31 @@
       render();
     }
   });
+
+  // Copia o numero da venda (so os digitos, sem o "#"). navigator.clipboard
+  // exige HTTPS — o Render tem; o fallback cobre navegador antigo.
+  async function copiarTexto(texto, botao) {
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(texto);
+      ok = true;
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = texto;
+      ta.setAttribute("readonly", "");
+      ta.style.cssText = "position:fixed;opacity:0;left:-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      try { ok = document.execCommand("copy"); } catch { ok = false; }
+      ta.remove();
+    }
+    botao.classList.add(ok ? "copiado" : "erro");
+    botao.title = ok ? "Copiado!" : "Não foi possível copiar";
+    setTimeout(() => {
+      botao.classList.remove("copiado", "erro");
+      botao.title = "Copiar número da venda";
+    }, 1500);
+  }
 
   // ---------- Helpers de hora (minutos do dia em Sao Paulo) ----------
   function minutosSP(iso) {
@@ -614,7 +644,7 @@
           const qtd = e.itens.reduce((s, i) => s + (i.qtd || 0), 0);
           const produto = e.itens.map((i) => i.titulo).join(" · ");
           return `<tr class="sit-${e.situacao}">
-            <td data-label="Venda"><a href="https://www.mercadolivre.com.br/vendas/${encodeURIComponent(e.venda)}/detalhe" target="_blank" rel="noopener" title="Abrir no Mercado Livre">#${esc(e.venda)}</a></td>
+            <td data-label="Venda"><span class="pz-venda"><a href="https://www.mercadolivre.com.br/vendas/${encodeURIComponent(e.venda)}/detalhe" target="_blank" rel="noopener" title="Abrir no Mercado Livre">#${esc(e.venda)}</a><button type="button" class="pz-copiar" data-copiar="${esc(e.venda)}" title="Copiar número da venda" aria-label="Copiar número da venda ${esc(e.venda)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></span></td>
             <td data-label="Conta">${esc(e.conta)}</td>
             ${modalidade ? `<td data-label="Modalidade">${NOME_MODALIDADE[e.modalidade] || ""}</td>` : ""}
             <td data-label="Produto" class="pz-td-produto" title="${esc(produto)}">${e.nfPendente ? '<span class="pz-tag-nf" title="Falta emitir a nota fiscal: o Mercado Livre só libera a etiqueta depois dela">NF pendente</span>' : ""}${esc(produto)}</td>

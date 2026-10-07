@@ -1554,7 +1554,7 @@ body {
 .pz-tabela td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pz-tabela tbody tr:last-child td { border-bottom: none; }
 .pz-tabela tbody tr:hover td { background: var(--bg); }
-.pz-tabela th:nth-child(1) { width: 150px; }
+.pz-tabela th:nth-child(1) { width: 185px; }
 .pz-tabela th:nth-child(2) { width: 150px; }
 .pz-tabela th.num { width: 50px; }
 .pz-tabela th.dir { width: 130px; }
@@ -1913,3 +1913,44 @@ body {
 .pz-rel-periodo { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-right: 6px; }
 .pz-rel-atalhos button { padding: 4px 10px; font-size: 12px; }
 .pz-rel-botoes { flex-wrap: wrap; align-items: center; }
+
+/* Botao copiar numero da venda */
+.pz-venda { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; }
+.pz-copiar {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-grid;
+  place-items: center;
+  width: 24px; height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.pz-copiar svg { width: 14px; height: 14px; }
+.pz-copiar:hover { color: var(--accent); background: var(--accent-soft); border-color: #bfd3fe; }
+.pz-copiar.copiado { color: var(--sit-ok); background: var(--sit-ok-soft); border-color: transparent; }
+.pz-copiar.erro { color: var(--sit-estourou); }
+.pz-copiar.copiado::after,
+.pz-copiar.erro::after {
+  content: "Copiado!";
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--text);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.pz-copiar.erro::after { content: "Não copiou"; }
+.pz-tabela td[data-label="Venda"] { overflow: visible; }
+@media (max-width: 900px) {
+  .pz-copiar { width: 32px; height: 32px; }
+}
