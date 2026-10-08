@@ -510,6 +510,8 @@ router.post("/conversations/:packId/reply", express.json(), (req, res) => {
         attachmentIds,
       });
 
+      require("../webhookLog").recordSend({ ok: true, packId: conv.pack_id, textLength: text.length, text, temAnexo: !!req.file });
+
       const nowIso = new Date().toISOString();
 
       await db.query(
@@ -541,6 +543,22 @@ router.post("/conversations/:packId/reply", express.json(), (req, res) => {
       // vir com outro status, entao agora checamos sempre; a funcao so
       // retorna algo quando reconhece um dos padroes conhecidos, entao nao
       // tem risco de marcar bloqueio por engano num erro qualquer.
+      require("../webhookLog").recordSend({
+        ok: false,
+        packId: conv.pack_id,
+        sellerId: conv.seller_id,
+        status: err.status || null,
+        mlBody: err.body || err.message,
+        textLength: text.length,
+        text,
+        // codigos dos caracteres fora do ASCII basico — pra achar o que o
+        // Mercado Livre considera "formato nao permitido" (acento, simbolo, etc.)
+        charsEspeciais: [...new Set([...text].filter((c) => c.charCodeAt(0) > 126 || (c.charCodeAt(0) < 32 && c !== "\n")))].map(
+          (c) => `U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")} ${JSON.stringify(c)}`
+        ),
+        temAnexo: !!req.file,
+      });
+
       const blockReason = extractBlockReason(err.body);
       if (blockReason) {
         // Bloqueio permanente: essa conversa nunca mais vai aceitar uma
@@ -1539,6 +1557,12 @@ router.get("/debug/probe-pack-full", async (req, res) => {
 // Ultimas notificacoes de mensagem processadas pelo webhook desde que o
 // servico subiu (memoria — zera ao reiniciar) e o resultado de cada uma:
 // se achou o pack, por qual caminho, ou o erro. Uso: /api/debug/webhook-message-log
+// Ultimos envios de resposta pelo painel (ok e falhas, com o erro cru do
+// Mercado Livre e os caracteres especiais do texto). Uso: /api/debug/send-log
+router.get("/debug/send-log", (req, res) => {
+  res.json(require("../webhookLog").getSends());
+});
+
 router.get("/debug/webhook-message-log", (req, res) => {
   res.json(require("../webhookLog").getAll());
 });
