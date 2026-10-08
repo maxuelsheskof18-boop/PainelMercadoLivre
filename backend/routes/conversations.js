@@ -454,7 +454,13 @@ router.post("/conversations/:packId/reply", express.json(), (req, res) => {
       return res.status(400).json({ error: uploadErr.message || "Falha ao processar o anexo." });
     }
 
-    const text = (req.body?.text || "").trim();
+    // Normaliza as quebras de linha pra "\n": o navegador manda o texto de um
+    // <textarea> com "\r\n" quando vai num formulario (multipart), e o Mercado
+    // Livre recusa isso com 403 "html_content_forbidden" ("format is not
+    // allowed") — confirmado com /api/debug/send-log em 2026-10-08 (o texto
+    // chegava com \r\n). Tambem faz o texto gravado bater com o que o ML
+    // devolve depois (usado pra completar a mensagem otimista sem duplicar).
+    const text = (req.body?.text || "").replace(/\r\n?/g, "\n").trim();
     if (!text) {
       return res.status(400).json({ error: "Mensagem vazia" });
     }
