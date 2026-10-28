@@ -263,3 +263,50 @@ a.botao-link.secundario { background: #fff; color: var(--texto); border: 1px sol
 }
 .conta-item .contagem { margin-left: auto; color: var(--suave); }
 .vazio { font-size: 12px; color: var(--suave); }
+
+/* ---- rota manual ---- */
+.pin.escolhido {
+  box-shadow: 0 0 0 3px #111827, 0 1px 6px rgba(0,0,0,.5);
+  z-index: 5;
+}
+#mapa.escolhendo { cursor: crosshair; }
+
+.manual {
+  border: 2px solid #111827;
+  border-radius: 6px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+.manual > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #111827;
+  color: #fff;
+  font-weight: 600;
+  font-size: 12px;
+}
+.manual > header .contagem { margin-left: auto; font-weight: 400; opacity: .85; }
+.manual ol { margin: 0; padding: 8px 10px 10px 26px; font-size: 12px; }
+.manual li { margin-bottom: 6px; }
+.manual li span { display: block; color: var(--suave); font-size: 11px; }
+.manual .acoes { padding: 0 10px 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+.mini-btn {
+  border: 1px solid var(--borda);
+  background: #fff;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.dica {
+  font-size: 12px;
+  background: #eef2ff;
+  border-left: 3px solid var(--azul);
+  padding: 7px 9px;
+  border-radius: 3px;
+  margin-bottom: 8px;
+}
+a.waze { background: #33ccff; color: #073b4c; border-color: #33ccff; }

@@ -64,6 +64,7 @@ const estado = {
   zonasOcultas: new Set(),
   contasOcultas: new Set(),
   rotas: [],
+  manual: { ativo: false, chaves: [] },
   partida: null,
   centro: { lat: -23.5505, lng: -46.6333 },
   zoom: 11,
@@ -94,7 +95,10 @@ const y2lat = (y, z) => {
 function corDaZona(zona) {
   if (CORES_FIXAS[zona]) return CORES_FIXAS[zona];
   const zonas = [...new Set(estado.paradas.map(p => p.zona))].filter(z => !CORES_FIXAS[z]).sort();
-  return PALETA[zonas.indexOf(zona) % PALETA.length];
+  const i = zonas.indexOf(zona);
+  // Nome que nao vem das paradas (a rota "Zonas ligadas", por exemplo) daria
+  // indice -1 e cor "undefined" — a linha some do mapa sem erro nenhum.
+  return i < 0 ? "#111827" : PALETA[i % PALETA.length];
 }
 
 // agrupa pedidos do mesmo endereço numa única parada
@@ -219,7 +223,20 @@ function render() {
   svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
   svg.setAttribute("width", w);
   svg.setAttribute("height", h);
-  svg.innerHTML = estado.rotas.map(rota => {
+  const linhaManual = (() => {
+    const pts = [];
+    if (estado.partida) pts.push(px(estado.partida));
+    for (const c of estado.manual.chaves) {
+      const p = estado.paradas.find(x => x.chave === c);
+      if (p && p.lat) pts.push(px(p));
+    }
+    if (pts.length < 2) return "";
+    const d = pts.map((q, i) => `${i ? "L" : "M"}${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(" ");
+    return `<path d="${d}" fill="none" stroke="#111827" stroke-width="3"
+             stroke-dasharray="7 5" stroke-linejoin="round"/>`;
+  })();
+
+  svg.innerHTML = linhaManual + estado.rotas.map(rota => {
     const pts = [];
     if (estado.partida) pts.push(px(estado.partida));
     rota.paradas.forEach(p => pts.push(px(p)));
@@ -232,11 +249,14 @@ function render() {
   // --- pinos ---
   const ordem = new Map();
   estado.rotas.forEach(rota => rota.paradas.forEach((p, i) => ordem.set(p.chave, i + 1)));
+  const manual = new Map();
+  estado.manual.chaves.forEach((c, i) => manual.set(c, i + 1));
 
   const pins = paradasVisiveis().map(p => {
     const q = px(p);
-    const num = ordem.get(p.chave) || p.pedidos.length;
-    return `<div class="pin${p.aprox ? " aprox" : ""}" data-chave="${p.chave}"
+    const num = manual.get(p.chave) || ordem.get(p.chave) || p.pedidos.length;
+    const escolhido = manual.has(p.chave) ? " escolhido" : "";
+    return `<div class="pin${p.aprox ? " aprox" : ""}${escolhido}" data-chave="${p.chave}"
             title="${p.aprox ? "Localização aproximada" : ""}"
             style="left:${q.x}px;top:${q.y}px;background:${corDaZona(p.zona)}"><b>${num}</b></div>`;
   });
@@ -324,6 +344,18 @@ $("mapa").addEventListener("wheel", e => {
 $("pins").addEventListener("click", e => {
   const pin = e.target.closest(".pin");
   if (!pin || !pin.dataset.chave) return;
+
+  // No modo manual o clique entra/sai da rota em vez de abrir a ficha —
+  // a ordem dos cliques e a ordem de visita.
+  if (estado.manual.ativo) {
+    const chave = pin.dataset.chave;
+    const i = estado.manual.chaves.indexOf(chave);
+    if (i >= 0) estado.manual.chaves.splice(i, 1);
+    else estado.manual.chaves.push(chave);
+    desenharManual();
+    render();
+    return;
+  }
   abrirPopup(estado.paradas.find(p => p.chave === pin.dataset.chave));
 });
 
@@ -421,10 +453,18 @@ function ordenar(paradas, origem) {
 }
 
 function gerarRotas() {
+  const visiveis = paradasVisiveis();
   const porZona = new Map();
-  for (const p of paradasVisiveis()) {
-    if (!porZona.has(p.zona)) porZona.set(p.zona, []);
-    porZona.get(p.zona).push(p);
+
+  if ($("juntar-zonas").checked) {
+    // Zona vizinha no mesmo sentido vira a mesma rota: ordena tudo junto e
+    // deixa a proximidade decidir os trechos, em vez da divisao por zona.
+    porZona.set("Zonas ligadas", visiveis);
+  } else {
+    for (const p of visiveis) {
+      if (!porZona.has(p.zona)) porZona.set(p.zona, []);
+      porZona.get(p.zona).push(p);
+    }
   }
 
   const maxParadas = Math.max(2, Math.min(23, Number($("max-paradas").value) || 9));
@@ -455,9 +495,11 @@ function kmTotal(paradas, origem) {
   return t;
 }
 
-function linkGoogle(rota) {
-  const pontos = rota.paradas.map(p => p.enderecoTexto);
-  const origem = rota.origem ? rota.origem.enderecoTexto || `${rota.origem.lat},${rota.origem.lng}` : pontos.shift();
+function linkGoogleDe(paradas, origemPonto) {
+  const pontos = paradas.map(p => p.enderecoTexto);
+  const origem = origemPonto
+    ? origemPonto.enderecoTexto || `${origemPonto.lat},${origemPonto.lng}`
+    : pontos.shift();
   const destino = pontos.pop();
   const u = new URL("https://www.google.com/maps/dir/");
   u.searchParams.set("api", "1");
@@ -466,6 +508,94 @@ function linkGoogle(rota) {
   u.searchParams.set("destination", destino || origem);
   if (pontos.length) u.searchParams.set("waypoints", pontos.join("|"));
   return u.toString();
+}
+
+function linkGoogle(rota) {
+  return linkGoogleDe(rota.paradas, rota.origem);
+}
+
+/*  O Waze nao aceita varias paradas num link — so destino unico. Entao o
+    botao da rota abre a PRIMEIRA parada, e cada parada da lista tem o seu
+    proprio link para o motorista ir tocando conforme entrega. */
+function linkWaze(parada) {
+  return parada && parada.lat
+    ? `https://waze.com/ul?ll=${parada.lat},${parada.lng}&navigate=yes`
+    : "#";
+}
+
+/* ---------- rota manual: o proprio usuario clica a ordem ---------- */
+function paradasManuais() {
+  return estado.manual.chaves
+    .map(c => estado.paradas.find(p => p.chave === c))
+    .filter(Boolean);
+}
+
+function moverManual(i, passo) {
+  const j = i + passo;
+  if (j < 0 || j >= estado.manual.chaves.length) return;
+  const c = estado.manual.chaves;
+  [c[i], c[j]] = [c[j], c[i]];
+  desenharManual();
+  render();
+}
+
+function desenharManual() {
+  const alvo = $("rota-manual");
+  if (!estado.manual.ativo) {
+    alvo.innerHTML = "";
+    return;
+  }
+
+  const paradas = paradasManuais();
+  if (!paradas.length) {
+    alvo.innerHTML = `<p class="dica">Clique nos pinos do mapa na ordem em que vai entregar.
+      Pode misturar zonas a vontade. Clicar de novo tira a parada da rota.</p>`;
+    return;
+  }
+
+  const km = kmTotal(paradas, estado.partida);
+  alvo.innerHTML = `
+    <div class="manual">
+      <header>Rota manual <span class="contagem">${paradas.length} paradas · ${km.toFixed(1)} km</span></header>
+      <ol>
+        ${paradas.map((p, i) => `
+          <li>${escapar(p.rua)}
+            <span>${escapar(p.bairro || "")} · ${escapar(p.zona)}
+              ${p.pedidos[0].telefone ? " · " + formatarTel(p.pedidos[0].telefone) : ""}
+              <button class="mini-btn" data-sobe="${i}" title="Subir">↑</button>
+              <button class="mini-btn" data-desce="${i}" title="Descer">↓</button>
+              <button class="mini-btn" data-tira="${i}" title="Tirar da rota">×</button>
+              <a class="mini-btn" target="_blank" rel="noreferrer" href="${linkWaze(p)}">Waze</a>
+            </span>
+          </li>`).join("")}
+      </ol>
+      <div class="acoes">
+        <a class="botao-link" target="_blank" rel="noreferrer"
+           href="${escapar(linkGoogleDe(paradas, estado.partida))}">Abrir no Google Maps</a>
+        <a class="botao-link waze" target="_blank" rel="noreferrer"
+           href="${linkWaze(paradas[0])}">Waze (1ª parada)</a>
+        <button id="btn-otimizar">Otimizar ordem</button>
+        <button id="btn-limpar-manual">Limpar</button>
+      </div>
+    </div>`;
+
+  alvo.querySelectorAll("[data-sobe]").forEach(b => (b.onclick = () => moverManual(+b.dataset.sobe, -1)));
+  alvo.querySelectorAll("[data-desce]").forEach(b => (b.onclick = () => moverManual(+b.dataset.desce, 1)));
+  alvo.querySelectorAll("[data-tira]").forEach(b => (b.onclick = () => {
+    estado.manual.chaves.splice(+b.dataset.tira, 1);
+    desenharManual();
+    render();
+  }));
+  $("btn-otimizar").onclick = () => {
+    estado.manual.chaves = ordenar(paradasManuais(), estado.partida).map(p => p.chave);
+    desenharManual();
+    render();
+  };
+  $("btn-limpar-manual").onclick = () => {
+    estado.manual.chaves = [];
+    desenharManual();
+    render();
+  };
 }
 
 function desenharRotas() {
@@ -484,12 +614,14 @@ function desenharRotas() {
       <ol>
         ${rota.paradas.map(p => `
           <li>${escapar(p.rua)}
-            <span>${escapar(p.bairro || p.region || "")} · ${p.pedidos.map(r => "#" + r.pedido).join(" ")}
-            ${p.pedidos[0].telefone ? " · " + formatarTel(p.pedidos[0].telefone) : ""}</span>
+            <span>${escapar(p.bairro || p.region || "")} · ${escapar(p.zona)}
+            ${p.pedidos[0].telefone ? " · " + formatarTel(p.pedidos[0].telefone) : ""}
+            <a class="mini-btn" target="_blank" rel="noreferrer" href="${linkWaze(p)}">Waze</a></span>
           </li>`).join("")}
       </ol>
       <div class="acoes">
-        <a class="botao-link" target="_blank" rel="noreferrer" href="${escapar(linkGoogle(rota))}">Abrir rota no Google Maps</a>
+        <a class="botao-link" target="_blank" rel="noreferrer" href="${escapar(linkGoogle(rota))}">Abrir no Google Maps</a>
+        <a class="botao-link waze" target="_blank" rel="noreferrer" href="${linkWaze(rota.paradas[0])}">Waze (1ª parada)</a>
         <button class="btn-centrar" data-rota="${idx}">Ver no mapa</button>
       </div>
     </div>`).join("");
@@ -738,6 +870,15 @@ $("btn-rodar").onclick = async () => {
   setTimeout(() => atualizar(false), 600);
 };
 $("btn-rotas").onclick = gerarRotas;
+$("juntar-zonas").onchange = () => { if (estado.rotas.length) gerarRotas(); };
+$("btn-manual").onclick = () => {
+  estado.manual.ativo = !estado.manual.ativo;
+  $("btn-manual").textContent = estado.manual.ativo ? "Sair do modo manual" : "Montar rota manual";
+  $("btn-manual").classList.toggle("primario", estado.manual.ativo);
+  $("mapa").classList.toggle("escolhendo", estado.manual.ativo);
+  desenharManual();
+  render();
+};
 $("btn-csv").onclick = baixarCSV;
 $("btn-json").onclick = async () => {
   await navigator.clipboard.writeText(JSON.stringify(estado.run?.registros || [], null, 2));
