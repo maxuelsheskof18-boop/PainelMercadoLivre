@@ -343,51 +343,99 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3 } = {}) {
    DIAGNOSTICO — roda primeiro, com poucos pedidos, e responde:
    a API devolve telefone? devolve coordenada? qual logistic_type e o Flex?
    --------------------------------------------------------------- */
-async function diagnosticar(conta, quantos = 10, dias = 7) {
+async function diagnosticar(conta, quantos = 30, dias = 7) {
   const token = await getValidAccessToken(conta.id);
   const desde = new Date(Date.now() - dias * 86400000).toISOString();
-  const r = await fetchRecentOrders(token, conta.id, { limit: quantos, dateCreatedFrom: desde });
 
-  const linhas = [];
-  const tipos = {};
+  const pedidos = [];
+  let offset = 0;
+  while (pedidos.length < quantos) {
+    const r = await fetchRecentOrders(token, conta.id, {
+      limit: Math.min(50, quantos - pedidos.length),
+      offset,
+      dateCreatedFrom: desde,
+    });
+    const lote = r.results || [];
+    pedidos.push(...lote);
+    offset += lote.length;
+    if (lote.length < 50 || offset >= (r.paging?.total || 0)) break;
+  }
 
-  for (const pedido of r.results || []) {
+  // O que interessa e por TIPO DE ENVIO: o Flex (quem entrega e o vendedor)
+  // pode receber telefone enquanto os envios que o proprio ML entrega nao.
+  // Misturar os dois numa media so esconde a resposta.
+  const porTipo = {};
+  const amostra = [];
+
+  for (const pedido of pedidos) {
     const shipId = pedido.shipping?.id;
     if (!shipId) continue;
     try {
       const envio = await buscarEnvio(token, shipId);
-      const { end, formato, receiverPhone } = enderecoDoEnvio(envio);
-      const logistic = String(envio.logistic_type || "").toLowerCase();
-      tipos[logistic || "(vazio)"] = (tipos[logistic || "(vazio)"] || 0) + 1;
+      const { end, formato, receiverName, receiverPhone } = enderecoDoEnvio(envio);
+      const tipo =
+        String(envio.logistic_type || envio.logistic?.type || "").toLowerCase() || "(vazio)";
+
+      const t = (porTipo[tipo] = porTipo[tipo] || {
+        pedidos: 0,
+        com_telefone: 0,
+        com_coordenada: 0,
+        com_rua_e_numero: 0,
+        com_nome_de_quem_recebe: 0,
+      });
 
       const tel = so(receiverPhone);
-      linhas.push({
-        pedido: String(pedido.id),
-        logistic_type: logistic,
-        formato_do_endereco: formato,
-        chaves_do_envio: Object.keys(envio).join(", "),
-        chaves_do_endereco: Object.keys(end).join(", "),
-        status: [envio.status, envio.substatus].filter(Boolean).join(" / "),
-        tem_telefone: !!tel,
-        telefone_mascarado: tel ? tel.slice(0, 2) + "*****" + tel.slice(-2) : "",
-        tem_coordenada: end.latitude != null && end.longitude != null,
-        tem_rua_e_numero: !!(end.street_name && end.street_number),
-        bairro: end.neighborhood?.name || "",
-        cidade: end.city?.name || "",
-      });
+      t.pedidos++;
+      if (tel) t.com_telefone++;
+      if (end.latitude != null && end.longitude != null) t.com_coordenada++;
+      if (end.street_name && end.street_number) t.com_rua_e_numero++;
+      if (receiverName) t.com_nome_de_quem_recebe++;
+
+      // guarda ate 3 exemplos de cada tipo, com as chaves cruas para a
+      // hipotese seguinte nao precisar de chute
+      if (amostra.filter((a) => a.logistic_type === tipo).length < 3) {
+        amostra.push({
+          pedido: String(pedido.id),
+          logistic_type: tipo,
+          logistic_cru: envio.logistic || null,
+          formato_do_endereco: formato,
+          chaves_do_destination: Object.keys(envio.destination || {}).join(", "),
+          chaves_do_endereco: Object.keys(end).join(", "),
+          status: [envio.status, envio.substatus].filter(Boolean).join(" / "),
+          tem_telefone: !!tel,
+          telefone_mascarado: tel ? tel.slice(0, 2) + "*****" + tel.slice(-2) : "",
+          quem_recebe: receiverName ? receiverName.slice(0, 3) + "..." : "",
+          tem_coordenada: end.latitude != null && end.longitude != null,
+          cidade: end.city?.name || "",
+        });
+      }
     } catch (e) {
-      linhas.push({ pedido: String(pedido.id), erro: String(e?.message || e) });
+      amostra.push({ pedido: String(pedido.id), erro: String(e?.message || e) });
     }
   }
 
+  const flex = tiposFlex();
+  const resumoFlex = Object.entries(porTipo)
+    .filter(([tipo]) => flex.includes(tipo))
+    .reduce(
+      (acc, [, v]) => ({
+        pedidos: acc.pedidos + v.pedidos,
+        com_telefone: acc.com_telefone + v.com_telefone,
+        com_coordenada: acc.com_coordenada + v.com_coordenada,
+      }),
+      { pedidos: 0, com_telefone: 0, com_coordenada: 0 }
+    );
+
   return {
     conta: conta.nickname,
-    pedidos_analisados: linhas.length,
-    logistic_types_encontrados: tipos,
-    flex_configurado_como: tiposFlex(),
-    com_telefone: linhas.filter((l) => l.tem_telefone).length,
-    com_coordenada: linhas.filter((l) => l.tem_coordenada).length,
-    detalhe: linhas,
+    pedidos_analisados: pedidos.length,
+    flex_configurado_como: flex,
+    resposta_do_flex: resumoFlex.pedidos
+      ? `Dos ${resumoFlex.pedidos} pedidos Flex da amostra: ${resumoFlex.com_telefone} com telefone, ` +
+        `${resumoFlex.com_coordenada} com coordenada.`
+      : "Nenhum pedido Flex nesta amostra — aumente ?n= ou ?dias= para alcancar algum.",
+    por_logistic_type: porTipo,
+    amostra,
   };
 }
 
