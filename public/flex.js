@@ -565,7 +565,8 @@ function desenharManual() {
       <ol>
         ${paradas.map((p, i) => `
           <li>${escapar(p.rua)}
-            <span>${escapar(p.bairro || "")} · ${escapar(p.zona)}
+            <span>${p.pedidos.map(r => "#" + escapar(r.pedido)).join(" ")}
+              · ${escapar(p.bairro || "")} · ${escapar(p.zona)}
               ${p.pedidos[0].telefone ? " · " + formatarTel(p.pedidos[0].telefone) : ""}
               <button class="mini-btn" data-sobe="${i}" title="Subir">↑</button>
               <button class="mini-btn" data-desce="${i}" title="Descer">↓</button>
@@ -575,6 +576,7 @@ function desenharManual() {
           </li>`).join("")}
       </ol>
       <div class="acoes">
+        <button id="btn-gerar-manual" class="primario">Gerar esta rota</button>
         <a class="botao-link" target="_blank" rel="noreferrer"
            href="${escapar(linkGoogleDe(paradas, estado.partida))}">Abrir no Google Maps</a>
         <a class="botao-link waze" target="_blank" rel="noreferrer"
@@ -591,6 +593,27 @@ function desenharManual() {
     desenharManual();
     render();
   }));
+  /*  Gerar: a selecao vira uma rota igual as automaticas — entra na lista
+      com km e botao de remover, aparece no CSV nas colunas rota e
+      ordem_na_rota, e libera a selecao para voce montar a proxima. */
+  $("btn-gerar-manual").onclick = () => {
+    const escolhidas = paradasManuais();
+    if (!escolhidas.length) return;
+    const n = estado.rotas.filter(r => r.manual).length + 1;
+    estado.rotas.push({
+      zona: "Rota manual",
+      nome: "Rota manual " + n,
+      paradas: escolhidas,
+      origem: estado.partida,
+      km: kmTotal(escolhidas, estado.partida),
+      manual: true,
+    });
+    estado.manual.chaves = [];
+    desenharManual();
+    desenharRotas();
+    render();
+  };
+
   $("btn-otimizar").onclick = () => {
     estado.manual.chaves = ordenar(paradasManuais(), estado.partida).map(p => p.chave);
     desenharManual();
@@ -623,7 +646,8 @@ function desenharRotas() {
       <ol>
         ${rota.paradas.map(p => `
           <li>${escapar(p.rua)}
-            <span>${escapar(p.bairro || p.region || "")} · ${escapar(p.zona)}
+            <span>${p.pedidos.map(r => "#" + escapar(r.pedido)).join(" ")}
+            · ${escapar(p.bairro || p.region || "")} · ${escapar(p.zona)}
             ${p.pedidos[0].telefone ? " · " + formatarTel(p.pedidos[0].telefone) : ""}
             <a class="mini-btn" target="_blank" rel="noreferrer" href="${linkWaze(p)}">Waze</a></span>
           </li>`).join("")}
