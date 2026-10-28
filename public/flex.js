@@ -66,6 +66,7 @@ const estado = {
   rotas: [],
   manual: { ativo: false, chaves: [] },
   achada: null,
+  motorista: null,
   partida: null,
   centro: { lat: -23.5505, lng: -46.6333 },
   zoom: 11,
@@ -523,9 +524,137 @@ function linkGoogle(rota) {
     botao da rota abre a PRIMEIRA parada, e cada parada da lista tem o seu
     proprio link para o motorista ir tocando conforme entrega. */
 function linkWaze(parada) {
-  return parada && parada.lat
-    ? `https://waze.com/ul?ll=${parada.lat},${parada.lng}&navigate=yes`
-    : "#";
+  if (!parada) return "#";
+  // No Waze, "ll" navega direto para a coordenada e "q" faz busca por
+  // texto. Mandar os dois juntos faz ele BUSCAR perto do ponto em vez de
+  // navegar — por isso aqui e um ou outro. navigate=yes so tem efeito no
+  // app do celular; no site ele apenas marca o ponto no mapa.
+  if (parada.lat && !parada.aprox) {
+    return `https://waze.com/ul?ll=${parada.lat},${parada.lng}&navigate=yes&zoom=17`;
+  }
+  const texto = parada.enderecoTexto || "";
+  return texto ? `https://waze.com/ul?q=${encodeURIComponent(texto)}&navigate=yes` : "#";
+}
+
+/* =====================================================================
+   MODO MOTORISTA
+   O Waze nao aceita rota com varias paradas por link — nenhum app
+   consegue mandar isso para ele. O que funciona na pratica e navegar
+   uma parada por vez: aqui o motorista ve a parada atual em tela cheia,
+   toca em Navegar, entrega, marca Entregue e vai para a proxima.
+   O progresso fica no proprio celular (localStorage), entao fechar a
+   aba ou perder sinal nao apaga o que ja foi entregue.
+   ===================================================================== */
+function chaveProgresso(rota) {
+  return "flex_motorista:" + rota.nome;
+}
+
+function lerProgresso(rota) {
+  try {
+    return Number(localStorage.getItem(chaveProgresso(rota))) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function gravarProgresso(rota, i) {
+  try {
+    localStorage.setItem(chaveProgresso(rota), String(i));
+  } catch {
+    /* navegador sem storage: segue sem lembrar */
+  }
+}
+
+function abrirMotorista(rota) {
+  estado.motorista = { rota, i: Math.min(lerProgresso(rota), rota.paradas.length) };
+  desenharMotorista();
+}
+
+function desenharMotorista() {
+  const alvo = $("motorista");
+  const m = estado.motorista;
+  if (!m) {
+    alvo.hidden = true;
+    alvo.innerHTML = "";
+    return;
+  }
+
+  const { rota, i } = m;
+  const total = rota.paradas.length;
+  const cabecalho = `
+    <header>
+      <b>${escapar(rota.nome)}</b>
+      <span class="contagem">${Math.min(i + 1, total)} de ${total}</span>
+      <button id="mot-fechar" title="Sair">&times;</button>
+    </header>`;
+
+  if (i >= total) {
+    alvo.innerHTML = cabecalho + `
+      <div class="mot-corpo">
+        <div class="mot-fim">
+          <b>Rota concluida</b>
+          <p class="mini">${total} paradas entregues.</p>
+          <button class="mot-botao" id="mot-recomecar">Recomecar esta rota</button>
+        </div>
+      </div>`;
+    alvo.hidden = false;
+    $("mot-fechar").onclick = fecharMotorista;
+    $("mot-recomecar").onclick = () => {
+      gravarProgresso(rota, 0);
+      estado.motorista.i = 0;
+      desenharMotorista();
+    };
+    return;
+  }
+
+  const p = rota.paradas[i];
+  const pedido = p.pedidos[0];
+  const tel = pedido.telefone;
+
+  alvo.innerHTML = cabecalho + `
+    <div class="mot-corpo">
+      <p class="mot-rua">${escapar(p.rua)}</p>
+      <p class="mot-sub">${escapar(p.bairro || "")}${p.cidade ? " · " + escapar(p.cidade) : ""} · ${escapar(p.cep)}</p>
+      <dl class="mot-dados">
+        ${p.comp ? `<dt>Compl.</dt><dd>${escapar(p.comp)}</dd>` : ""}
+        <dt>Quem recebe</dt><dd>${escapar(p.pedidos.map(r => r.quem || r.nome).join(" / "))}</dd>
+        <dt>Pedido</dt><dd>${p.pedidos.map(r => "#" + escapar(r.pedido)).join("<br>")}</dd>
+        <dt>Itens</dt><dd>${escapar(p.pedidos.flatMap(r => r.itens.map(it => it.qtd + "x " + it.titulo)).join(" | "))}</dd>
+        ${tel ? `<dt>Telefone</dt><dd>${formatarTel(tel)}</dd>` : ""}
+      </dl>
+      <div class="mot-acoes">
+        <a class="mot-botao waze" href="${linkWaze(p)}" target="_blank" rel="noreferrer">Navegar no Waze</a>
+        <a class="mot-botao" href="https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(p.enderecoTexto)}&travelmode=driving"
+           target="_blank" rel="noreferrer">Navegar no Google Maps</a>
+        ${tel ? `<a class="mot-botao zap" href="https://wa.me/${pedido.whatsapp}" target="_blank" rel="noreferrer">Avisar no WhatsApp</a>` : ""}
+        <button class="mot-botao ok" id="mot-entregue">Entregue — proxima parada</button>
+        <button class="mot-botao" id="mot-pular">Pular esta parada</button>
+      </div>
+      <div class="mot-prox">
+        Proximas paradas
+        <ol>
+          ${rota.paradas.map((q, k) => `<li class="${k < i ? "feita" : ""}">${escapar(q.rua)} — ${escapar(q.bairro || "")}</li>`).join("")}
+        </ol>
+      </div>
+    </div>`;
+  alvo.hidden = false;
+
+  $("mot-fechar").onclick = fecharMotorista;
+  $("mot-entregue").onclick = () => avancarMotorista(1);
+  $("mot-pular").onclick = () => avancarMotorista(1);
+}
+
+function avancarMotorista(passo) {
+  const m = estado.motorista;
+  if (!m) return;
+  m.i = Math.max(0, m.i + passo);
+  gravarProgresso(m.rota, m.i);
+  desenharMotorista();
+}
+
+function fecharMotorista() {
+  estado.motorista = null;
+  desenharMotorista();
 }
 
 /* ---------- rota manual: o proprio usuario clica a ordem ---------- */
@@ -655,6 +784,7 @@ function desenharRotas() {
       <div class="acoes">
         <a class="botao-link" target="_blank" rel="noreferrer" href="${escapar(linkGoogle(rota))}">Abrir no Google Maps</a>
         <a class="botao-link waze" target="_blank" rel="noreferrer" href="${linkWaze(rota.paradas[0])}">Waze (1ª parada)</a>
+        <button class="btn-motorista" data-rota="${idx}">Modo motorista</button>
         <button class="btn-centrar" data-rota="${idx}">Ver no mapa</button>
       </div>
     </div>`).join("");
@@ -667,6 +797,10 @@ function desenharRotas() {
       desenharRotas();
       render();
     };
+  });
+
+  $("rotas").querySelectorAll(".btn-motorista").forEach(b => {
+    b.onclick = () => abrirMotorista(estado.rotas[Number(b.dataset.rota)]);
   });
 
   $("rotas").querySelectorAll(".btn-centrar").forEach(b => {

@@ -337,3 +337,67 @@ a.waze { background: #33ccff; color: #073b4c; border-color: #33ccff; }
 }
 
 .rota > header .mini-btn { color: var(--texto); }
+
+/* ---- modo motorista: tela cheia, pensada para o celular ---- */
+#motorista {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--painel);
+  display: flex;
+  flex-direction: column;
+  font-size: 15px;
+}
+#motorista header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: #111827;
+  color: #fff;
+}
+#motorista header b { font-size: 15px; }
+#motorista header .contagem { margin-left: auto; opacity: .85; font-size: 13px; }
+#motorista header button {
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 22px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+}
+.mot-corpo { flex: 1; overflow-y: auto; padding: 16px; }
+.mot-rua { font-size: 21px; font-weight: 700; line-height: 1.25; margin: 0 0 4px; }
+.mot-sub { color: var(--suave); margin: 0 0 14px; }
+.mot-dados { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin-bottom: 16px; }
+.mot-dados dt { color: var(--suave); }
+.mot-dados dd { margin: 0; }
+.mot-acoes { display: flex; flex-direction: column; gap: 10px; }
+.mot-botao {
+  display: block;
+  text-align: center;
+  padding: 15px;
+  border-radius: 9px;
+  font-size: 17px;
+  font-weight: 600;
+  text-decoration: none;
+  border: 1px solid var(--borda);
+  background: #fff;
+  color: var(--texto);
+  cursor: pointer;
+}
+.mot-botao.waze { background: #33ccff; border-color: #33ccff; color: #062c3a; }
+.mot-botao.ok { background: #16a34a; border-color: #16a34a; color: #fff; }
+.mot-botao.zap { background: #25d366; border-color: #25d366; color: #05331a; }
+.mot-prox {
+  margin-top: 22px;
+  border-top: 1px solid var(--borda);
+  padding-top: 12px;
+  font-size: 13px;
+}
+.mot-prox ol { margin: 8px 0 0; padding-left: 20px; color: var(--suave); }
+.mot-prox li { margin-bottom: 5px; }
+.mot-prox li.feita { text-decoration: line-through; opacity: .55; }
+.mot-fim { text-align: center; padding: 40px 10px; }
+.mot-fim b { display: block; font-size: 19px; margin-bottom: 10px; }
