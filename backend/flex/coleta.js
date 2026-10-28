@@ -24,7 +24,22 @@ function tiposFlex() {
     .filter(Boolean);
 }
 
-async function buscarEnvio(accessToken, shipmentId) {
+/*  Com nova tentativa: o ML devolve 429 quando a conta ja esta sendo muito
+    consultada (as mensagens, reclamacoes e prazos do painel batem na mesma
+    cota). Sem isso, um ciclo automatico com dezenas de envios derrubaria
+    varios pedidos de uma vez — mesmo cuidado que routes/prazos.js tomou. */
+async function buscarEnvio(accessToken, shipmentId, tentativa = 0) {
+  try {
+    return await buscarEnvioUmaVez(accessToken, shipmentId);
+  } catch (e) {
+    const transitorio = e.status === 429 || (e.status >= 500 && e.status < 600);
+    if (!transitorio || tentativa >= 2) throw e;
+    await new Promise((r) => setTimeout(r, 1500 * (tentativa + 1)));
+    return buscarEnvio(accessToken, shipmentId, tentativa + 1);
+  }
+}
+
+async function buscarEnvioUmaVez(accessToken, shipmentId) {
   const res = await fetch(`${API_BASE}/shipments/${shipmentId}`, {
     signal: AbortSignal.timeout(20_000),
     headers: {
@@ -152,6 +167,10 @@ async function montarRegistro(conta, pedido, envio, flexTypes) {
   return {
     pedido: String(pedido.id),
     pack: pedido.pack_id ? String(pedido.pack_id) : "",
+    // datas do pedido: a coleta incremental usa criado_em para saber o que
+    // ja saiu da janela de dias e pode ser descartado
+    criado_em: pedido.date_created || "",
+    atualizado_em: pedido.date_last_updated || "",
     envio_id: String(envio.id || ""),
     conta: conta.nickname,
     conta_id: String(conta.id),
@@ -193,23 +212,49 @@ async function montarRegistro(conta, pedido, envio, flexTypes) {
 /* ---------------- pipeline ---------------- */
 let rodando = false;
 
-async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3 } = {}) {
+async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental = false } = {}) {
   if (rodando) return await lerEstado();
   rodando = true;
 
   const flexTypes = tiposFlex();
-  const registros = [];
   const falhas = [];
-  const resumoContas = [];
+  const lidosPorConta = [];
 
+  /*  Coleta incremental: reaproveita o que ja esta guardado e pede ao
+      Mercado Livre so os pedidos ALTERADOS desde a rodada anterior.
+      Sem isso, cada ciclo automatico refaria uma chamada de envio por
+      pedido (foram ~850 na primeira coleta real) e bateria no limite de
+      requisicoes — o painel ja levou 429 nos prazos por bem menos.
+      A coleta cheia continua existindo: e a do botao e a do primeiro
+      ciclo apos o servico subir.  */
+  const anterior = await lerEstado();
+  const porPedido = new Map();
+  const limiteJanela = Date.now() - dias * 86400000;
+  let desdeAlteracao = null;
+
+  if (
+    incremental &&
+    anterior?.gerado_em &&
+    Array.isArray(anterior.registros) &&
+    anterior.registros.length
+  ) {
+    for (const r of anterior.registros) {
+      const criado = Date.parse(r.criado_em || "");
+      if (!criado || criado >= limiteJanela) porPedido.set(r.pedido, r);
+    }
+    // 5 minutos de margem: pedido alterado durante a rodada anterior nao escapa
+    desdeAlteracao = new Date(Date.parse(anterior.gerado_em) - 5 * 60000).toISOString();
+  }
+
+  const registros = () => [...porPedido.values()];
   const progresso = (mensagem, estado = "coletando") =>
     salvarEstado({
       estado,
       mensagem,
-      registros,
+      registros: registros(),
       falhas,
-      contas: resumoContas,
-      gerado_em: new Date().toISOString(),
+      contas: lidosPorConta,
+      gerado_em: anterior?.gerado_em || new Date().toISOString(),
     });
 
   try {
@@ -223,23 +268,21 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3 } = {}) {
       return await lerEstado();
     }
 
-    const desde = new Date(Date.now() - dias * 86400000).toISOString();
-
     for (const conta of contas) {
       await progresso(`Lendo pedidos de ${conta.nickname}...`);
       try {
         const token = await getValidAccessToken(conta.id);
         const limite = Number(process.env.FLEX_MAX_PEDIDOS) || 400;
+        const janela = desdeAlteracao
+          ? { dateLastUpdatedFrom: desdeAlteracao }
+          : { dateCreatedFrom: new Date(limiteJanela).toISOString() };
+
         const pedidos = [];
         let offset = 0;
         let total = 0;
 
         while (offset < limite) {
-          const r = await fetchRecentOrders(token, conta.id, {
-            limit: 50,
-            offset,
-            dateCreatedFrom: desde,
-          });
+          const r = await fetchRecentOrders(token, conta.id, { limit: 50, offset, ...janela });
           const lote = r.results || [];
           total = r.paging?.total || 0;
           pedidos.push(...lote);
@@ -248,7 +291,7 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3 } = {}) {
         }
 
         const envios = new Map(); // pedidos do mesmo pacote dividem o envio
-        let doFlex = 0;
+        let novos = 0;
 
         for (let i = 0; i < pedidos.length; i++) {
           const pedido = pedidos[i];
@@ -261,8 +304,8 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3 } = {}) {
           try {
             if (!envios.has(shipId)) envios.set(shipId, await buscarEnvio(token, shipId));
             const reg = await montarRegistro(conta, pedido, envios.get(shipId), flexTypes);
-            registros.push(reg);
-            if (reg.flex) doFlex++;
+            porPedido.set(reg.pedido, reg);
+            novos++;
           } catch (e) {
             falhas.push({
               conta: conta.nickname,
@@ -272,34 +315,32 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3 } = {}) {
           }
         }
 
-        resumoContas.push({
+        lidosPorConta.push({
           nickname: conta.nickname,
-          pedidos: pedidos.length,
-          flex: doFlex,
+          lidos: novos,
           // Conta movimentada tem mais pedidos na janela do que o limite:
           // pegamos os mais recentes (a busca vem ordenada por data desc).
-          truncado: total > pedidos.length ? total : 0,
+          truncado: !desdeAlteracao && total > pedidos.length ? total : 0,
         });
       } catch (e) {
-        resumoContas.push({ nickname: conta.nickname, erro: String(e?.message || e) });
+        lidosPorConta.push({ nickname: conta.nickname, erro: String(e?.message || e) });
       }
     }
 
-    /* Coordenada: so para os Flex, que sao os que vao para o mapa. O
-       servico gratuito aceita 1 consulta por segundo — geocodificar os 800+
-       pedidos de todos os tipos levaria mais de dez minutos a toa. */
-    const paraLocalizar = registros.filter((r) => r.flex);
-    await progresso(`Localizando ${paraLocalizar.length} enderecos Flex...`, "geocodificando");
-
-    for (let i = 0; i < paraLocalizar.length; i++) {
-      const reg = paraLocalizar[i];
-      if (i % 5 === 0) {
-        await progresso(
-          `Localizando endereco ${i + 1} de ${paraLocalizar.length}...`,
-          "geocodificando"
-        );
-      }
-      if (!reg.lat) {
+    /* Coordenada: so para os Flex que ainda nao tem, porque e a etapa cara
+       (o servico gratuito aceita 1 consulta por segundo). Num ciclo
+       incremental isso costuma ser zero ou um punhado. */
+    const paraLocalizar = registros().filter((r) => r.flex && !r.lat);
+    if (paraLocalizar.length) {
+      await progresso(`Localizando ${paraLocalizar.length} enderecos Flex...`, "geocodificando");
+      for (let i = 0; i < paraLocalizar.length; i++) {
+        const reg = paraLocalizar[i];
+        if (i % 5 === 0) {
+          await progresso(
+            `Localizando endereco ${i + 1} de ${paraLocalizar.length}...`,
+            "geocodificando"
+          );
+        }
         try {
           const p = await geocodificar(reg);
           if (p) Object.assign(reg, p);
@@ -308,27 +349,46 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3 } = {}) {
         }
       }
     }
-    for (const reg of registros) {
+
+    const finais = registros();
+    for (const reg of finais) {
       if (!reg.flex && !reg.geoFonte) reg.geoFonte = "nao-flex";
       reg.zona = classificarZona(reg);
     }
 
-    const semGeo = paraLocalizar.filter((r) => !r.lat).length;
-    const totalFlex = paraLocalizar.length;
+    /*  O resumo por conta sai do conjunto final, nao so do que foi lido
+        agora — senao a tela mostraria "0 pedidos" depois de um ciclo
+        incremental em que nada mudou. "novos" e o que entrou nesta rodada. */
+    const contasResumo = contas.map((c) => {
+      const meus = finais.filter((r) => r.conta === c.nickname);
+      const lido = lidosPorConta.find((x) => x.nickname === c.nickname) || {};
+      return {
+        nickname: c.nickname,
+        pedidos: meus.length,
+        flex: meus.filter((r) => r.flex).length,
+        novos: lido.lidos || 0,
+        truncado: lido.truncado || 0,
+        erro: lido.erro,
+      };
+    });
+
+    const doFlex = finais.filter((r) => r.flex);
+    const semGeo = doFlex.filter((r) => !r.lat).length;
     await salvarEstado({
       estado: "pronto",
-      registros,
+      registros: finais,
       falhas,
-      contas: resumoContas,
+      contas: contasResumo,
       gerado_em: new Date().toISOString(),
+      modo: desdeAlteracao ? "incremental" : "completa",
       mensagem:
-        `${registros.length} pedidos (${totalFlex} Flex) de ${resumoContas.length} conta(s) | ` +
-        `${totalFlex - semGeo} Flex no mapa | ${semGeo} sem localizacao | ${falhas.length} falhas`,
+        `${finais.length} pedidos (${doFlex.length} Flex) de ${contasResumo.length} conta(s) | ` +
+        `${doFlex.length - semGeo} Flex no mapa | ${semGeo} sem localizacao | ${falhas.length} falhas`,
     });
   } catch (e) {
     await salvarEstado({
       estado: "erro",
-      registros,
+      registros: registros(),
       falhas,
       mensagem: String(e?.message || e),
     });
@@ -485,6 +545,64 @@ function telefoneNoTexto(txt) {
   return m ? m[1] + m[2] + m[3] : "";
 }
 
+// A etiqueta vem como binario (PDF) ou texto (ZPL). Ler com res.text()
+// estraga o binario, por isso aqui e arrayBuffer.
+async function baixarEtiqueta(envioId, token, tipo) {
+  try {
+    const res = await fetch(
+      `${API_BASE}/shipment_labels?shipment_ids=${envioId}&response_type=${tipo}`,
+      {
+        signal: AbortSignal.timeout(25_000),
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        },
+      }
+    );
+    return {
+      status: res.status,
+      contentType: res.headers.get("content-type"),
+      buf: Buffer.from(await res.arrayBuffer()),
+    };
+  } catch (e) {
+    return { status: 0, erro: String(e?.message || e) };
+  }
+}
+
+// Texto legivel de uma etiqueta: ZPL ja e texto; PDF guarda o conteudo em
+// streams comprimidos (FlateDecode), que precisam ser inflados antes.
+function textoDaEtiqueta(buf) {
+  const inicio = buf.subarray(0, 4).toString("latin1");
+
+  if (inicio.startsWith("^XA") || inicio.startsWith("CT~")) {
+    return { formato: "ZPL (texto)", texto: buf.toString("latin1") };
+  }
+  if (inicio === "%PDF") {
+    const zlib = require("node:zlib");
+    const cru = buf.toString("latin1");
+    let saida = "";
+    const re = /stream\r?\n([\s\S]*?)endstream/g;
+    let m;
+    while ((m = re.exec(cru))) {
+      const bloco = Buffer.from(m[1], "latin1");
+      for (const inflar of [zlib.inflateSync, zlib.inflateRawSync]) {
+        try {
+          saida += inflar(bloco).toString("latin1");
+          break;
+        } catch {
+          /* stream em outro filtro: ignora */
+        }
+      }
+    }
+    return { formato: "PDF (streams descomprimidos)", texto: saida || cru };
+  }
+  if (inicio.startsWith("PK")) {
+    return { formato: "ZIP (nao aberto)", texto: "" };
+  }
+  return { formato: "desconhecido: " + JSON.stringify(inicio), texto: buf.toString("latin1") };
+}
+
 async function sondarTelefone(conta, { pedidoId, dias = 7 } = {}) {
   const token = await getValidAccessToken(conta.id);
   const flex = tiposFlex();
@@ -542,20 +660,27 @@ async function sondarTelefone(conta, { pedidoId, dias = 7 } = {}) {
     telefone: mascarar(telefoneDe(comprador.phone) || telefoneDe(comprador.alternative_phone)),
   });
 
-  // fonte 4: a etiqueta de envio (o vendedor imprime ela com o telefone)
-  const etiqueta = await chamarCru(
-    `/shipment_labels?shipment_ids=${envioId}&response_type=zpl2`,
-    token,
-    { Accept: "text/plain" }
-  );
-  const telEtiqueta = telefoneNoTexto(etiqueta.texto);
-  tentativas.push({
-    fonte: "shipment_labels (ZPL da etiqueta)",
-    status: etiqueta.status,
-    tamanho_resposta: etiqueta.texto ? etiqueta.texto.length : 0,
-    achou: !!telEtiqueta,
-    telefone: mascarar(telEtiqueta),
-  });
+  // fonte 4: a etiqueta de envio, nos dois formatos.
+  // A primeira sonda leu a resposta como texto e nao achou nada — mas uma
+  // etiqueta em PDF e binario comprimido, entao procurar texto nela nao
+  // prova coisa alguma. Aqui ela vem como binario, e o conteudo e
+  // descomprimido antes da busca.
+  for (const tipo of ["zpl2", "pdf"]) {
+    const et = await baixarEtiqueta(envioId, token, tipo);
+    const conteudo = et.buf ? textoDaEtiqueta(et.buf) : { formato: "sem resposta", texto: "" };
+    const tel = telefoneNoTexto(conteudo.texto);
+    tentativas.push({
+      fonte: `shipment_labels response_type=${tipo}`,
+      status: et.status,
+      content_type: et.contentType || "",
+      tamanho_bytes: et.buf ? et.buf.length : 0,
+      formato_detectado: conteudo.formato,
+      texto_extraido_chars: conteudo.texto.length,
+      achou: !!tel,
+      telefone: mascarar(tel),
+    });
+    if (tel) break;
+  }
 
   const venceu = tentativas.find((t) => t.achou);
   return {
