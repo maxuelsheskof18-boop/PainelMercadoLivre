@@ -132,6 +132,27 @@ function enderecoDoEnvio(envio) {
   };
 }
 
+/*  Prazo de entrega: o proprio /shipments ja traz lead_time, entao nao
+    precisamos da chamada extra em /shipments/{id}/sla que o modulo de
+    prazos usa — numa coleta de centenas de pedidos isso dobraria o custo.
+    Os nomes de campo variam conforme o tipo de envio, por isso tentamos em
+    ordem e guardamos DE QUAL campo veio (prazo_fonte), para conferir com
+    dado real em vez de confiar na documentacao.  */
+function prazoDoEnvio(envio) {
+  const lt = envio.lead_time || {};
+  const candidatos = [
+    ["estimated_delivery_limit", lt.estimated_delivery_limit?.date],
+    ["estimated_delivery_time", lt.estimated_delivery_time?.date],
+    ["estimated_delivery_final", lt.estimated_delivery_final?.date],
+    ["estimated_handling_limit", lt.estimated_handling_limit?.date],
+    ["shipping_option.estimated_delivery_time", envio.shipping_option?.estimated_delivery_time?.date],
+  ];
+  for (const [fonte, data] of candidatos) {
+    if (data && !Number.isNaN(Date.parse(data))) return { data, fonte };
+  }
+  return { data: "", fonte: "" };
+}
+
 /* ---------------- montagem de um pedido ---------------- */
 async function montarRegistro(conta, pedido, envio, flexTypes) {
   const { end, receiverName, receiverPhone } = enderecoDoEnvio(envio);
@@ -157,6 +178,7 @@ async function montarRegistro(conta, pedido, envio, flexTypes) {
 
   const lat = end.latitude != null ? Number(end.latitude) : null;
   const lng = end.longitude != null ? Number(end.longitude) : null;
+  const prazo = prazoDoEnvio(envio);
 
   let info = {};
   if (!bairro || !cidade) info = await consultarCep(so(cep));
@@ -171,6 +193,8 @@ async function montarRegistro(conta, pedido, envio, flexTypes) {
     // ja saiu da janela de dias e pode ser descartado
     criado_em: pedido.date_created || "",
     atualizado_em: pedido.date_last_updated || "",
+    prazo_entrega: prazo.data,
+    prazo_fonte: prazo.fonte,
     envio_id: String(envio.id || ""),
     conta: conta.nickname,
     conta_id: String(conta.id),
@@ -466,6 +490,9 @@ async function diagnosticar(conta, quantos = 30, dias = 7) {
           telefone_mascarado: tel ? tel.slice(0, 2) + "*****" + tel.slice(-2) : "",
           quem_recebe: receiverName ? receiverName.slice(0, 3) + "..." : "",
           tem_coordenada: end.latitude != null && end.longitude != null,
+          prazo_entrega: prazoDoEnvio(envio).data || "(sem prazo)",
+          prazo_fonte: prazoDoEnvio(envio).fonte || "(nenhum campo serviu)",
+          chaves_do_lead_time: Object.keys(envio.lead_time || {}).join(", "),
           cidade: end.city?.name || "",
         });
       }
