@@ -67,6 +67,7 @@ const estado = {
   manual: { ativo: false, chaves: [] },
   achada: null,
   motorista: null,
+  semSessao: false,
   partida: null,
   centro: { lat: -23.5505, lng: -46.6333 },
   zoom: 11,
@@ -818,6 +819,47 @@ function desenharRotas() {
 }
 
 /* =====================================================================
+   CHAMADAS AO SERVIDOR
+   Centralizadas para que sessao expirada, servidor reiniciando ou
+   resposta que nao e JSON virem um aviso na tela — antes disso a pagina
+   simplesmente parava, sem explicar nada a quem estava olhando.
+   ===================================================================== */
+async function pegarJson(url, opcoes) {
+  if (estado.semSessao) return null;
+  let res;
+  try {
+    res = await fetch(url, opcoes);
+  } catch (e) {
+    avisarFalha("Sem conexao com o servidor. Verifique a internet e recarregue.");
+    return null;
+  }
+
+  if (res.status === 401 || res.redirected) {
+    avisarFalha('Sessao expirada. <a href="/login.html">Entrar de novo</a>.');
+    return null;
+  }
+  const tipo = res.headers.get("content-type") || "";
+  if (!tipo.includes("json")) {
+    avisarFalha(`O servidor respondeu em formato inesperado (HTTP ${res.status}). ` +
+      `<a href="/login.html">Entrar de novo</a> ou recarregar a pagina.`);
+    return null;
+  }
+  try {
+    return await res.json();
+  } catch (e) {
+    avisarFalha("Resposta do servidor veio incompleta. Tente recarregar.");
+    return null;
+  }
+}
+
+function avisarFalha(html) {
+  estado.semSessao = true; // para o polling: nao adianta insistir
+  const el = $("status");
+  el.className = "status erro";
+  el.innerHTML = html;
+}
+
+/* =====================================================================
    BUSCA
    Varre TODOS os pedidos coletados, nao so os que passam nos filtros —
    senao a busca falha justamente quando o pedido sumiu da tela e voce
@@ -951,7 +993,8 @@ function desenharStatus() {
 
 /* lista das contas conectadas, com liga/desliga por conta */
 async function desenharContas() {
-  const contas = await (await fetch("/api/accounts")).json();
+  const contas = await pegarJson("/api/accounts");
+  if (!contas) return;
   if (!contas.length) {
     $("contas").innerHTML = `<p class="vazio">Nenhuma conta conectada ainda.</p>`;
     return;
@@ -1035,7 +1078,8 @@ async function definirPartida() {
   const texto = $("partida").value.trim();
   if (!texto) {
     estado.partida = null;
-    await fetch("/api/flex/config", { method: "PUT", headers: { "Content-Type": "application/json" },
+    await pegarJson("/api/flex/config", { method: "PUT",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ partida: null }) });
     $("partida-info").textContent = "Sem partida definida — a rota começa na parada mais próxima.";
     estado.rotas = [];
@@ -1045,14 +1089,15 @@ async function definirPartida() {
   }
 
   $("partida-info").textContent = "Localizando...";
-  const resp = await (await fetch("/api/flex/geocodificar?q=" + encodeURIComponent(texto))).json();
+  const resp = await pegarJson("/api/flex/geocodificar?q=" + encodeURIComponent(texto));
   if (!resp?.ok || !resp.ponto) {
     $("partida-info").textContent = "Não foi possível localizar esse endereço.";
     return;
   }
 
   estado.partida = { ...resp.ponto, enderecoTexto: texto, chave: "__partida__" };
-  await fetch("/api/flex/config", { method: "PUT", headers: { "Content-Type": "application/json" },
+  await pegarJson("/api/flex/config", { method: "PUT",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ partida: estado.partida }) });
   $("partida-info").textContent = `Partida: ${texto}`;
   estado.rotas = [];
@@ -1078,7 +1123,7 @@ function aplicarRun(run) {
 async function iniciar() {
   $("credito").textContent = PROVEDORES[provedorAtual].credito;
 
-  const cfg = await (await fetch("/api/flex/config")).json();
+  const cfg = (await pegarJson("/api/flex/config")) || {};
   if (cfg.partida) {
     estado.partida = cfg.partida;
     $("partida").value = cfg.partida.enderecoTexto || "";
@@ -1087,6 +1132,7 @@ async function iniciar() {
 
   await atualizar(true);
   setInterval(() => {
+    if (estado.semSessao) return;
     const rodando = estado.run?.estado === "coletando" || estado.run?.estado === "geocodificando";
     if (rodando) atualizar(false);
   }, 2000);
@@ -1096,7 +1142,8 @@ async function iniciar() {
     2 segundos; parada, não fica batendo à toa. */
 async function atualizar(primeira) {
   const antes = estado.paradas.filter(p => p.lat).length;
-  const run = await (await fetch("/api/flex/estado")).json();
+  const run = await pegarJson("/api/flex/estado");
+  if (!run) return;
   aplicarRun(run);
   await desenharContas();
   const agora = estado.paradas.filter(p => p.lat).length;
@@ -1106,7 +1153,12 @@ async function atualizar(primeira) {
 $("btn-rodar").onclick = async () => {
   estado.rotas = [];
   $("btn-rodar").disabled = true;
-  await fetch("/api/flex/coletar", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  const r = await pegarJson("/api/flex/coletar", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  if (!r) { $("btn-rodar").disabled = false; return; }
   setTimeout(() => atualizar(false), 600);
 };
 let tempoBusca = null;
