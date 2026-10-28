@@ -11,7 +11,14 @@
 const express = require("express");
 const { requireLogin } = require("../authMiddleware");
 const { listAccounts } = require("../ml/tokens");
-const { coletar, diagnosticar, lerEstado, lerConfig, salvarConfig } = require("../flex/coleta");
+const {
+  coletar,
+  diagnosticar,
+  sondarTelefone,
+  lerEstado,
+  lerConfig,
+  salvarConfig,
+} = require("../flex/coleta");
 const { buscar } = require("../flex/geo");
 
 const router = express.Router();
@@ -58,6 +65,31 @@ router.get("/flex/diagnostico", async (req, res) => {
     res.json(await diagnosticar(alvo, quantos, dias));
   } catch (err) {
     console.error("[flex/diagnostico]", err);
+    res.status(500).json({ erro: String(err?.message || err) });
+  }
+});
+
+// Sonda: tenta todas as fontes de telefone no mesmo pedido Flex.
+// Use ?conta=<nickname>&pedido=<id opcional>&dias=7
+router.get("/flex/sonda-telefone", async (req, res) => {
+  try {
+    const contas = await listAccounts();
+    if (!contas.length) return res.json({ erro: "Nenhuma conta conectada." });
+    const alvo = req.query.conta
+      ? contas.find(
+          (c) => String(c.id) === String(req.query.conta) || c.nickname === req.query.conta
+        )
+      : contas[0];
+    if (!alvo) return res.status(404).json({ erro: "Conta nao encontrada." });
+
+    res.json(
+      await sondarTelefone(alvo, {
+        pedidoId: req.query.pedido,
+        dias: Math.min(Number(req.query.dias) || 7, 30),
+      })
+    );
+  } catch (err) {
+    console.error("[flex/sonda-telefone]", err);
     res.status(500).json({ erro: String(err?.message || err) });
   }
 });
