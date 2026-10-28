@@ -69,6 +69,7 @@ const estado = {
   motorista: null,
   semSessao: false,
   ultimaLeitura: 0,
+  extras: [],
   partida: null,
   centro: { lat: -23.5505, lng: -46.6333 },
   zoom: 11,
@@ -168,7 +169,8 @@ function filtrarRegistros() {
 }
 
 function recalcular() {
-  estado.paradas = montarParadas(filtrarRegistros());
+  estado.paradas = [...montarParadas(filtrarRegistros()), ...paradasExtras()];
+  desenharExtras();
   estado.rotas = [];
   desenharResumoFiltro();
   desenharZonas();
@@ -191,6 +193,86 @@ function desenharResumoFiltro() {
       (cancelados ? ` · ${cancelados} cancelada(s)` : "") +
       (deHoje ? ` · ${deHoje} Flex para hoje` : "")
     : "";
+}
+
+/* =====================================================================
+   PARADAS EXTRAS
+   Endereco que nao veio do Mercado Livre: coleta, almoco, uma entrega
+   combinada por fora. Entra no mapa, nas rotas e na folha impressa como
+   qualquer outra parada. Fica guardado no servidor (config), entao
+   sobrevive a recarregar a pagina e aparece para quem mais abrir.
+   ===================================================================== */
+function paradasExtras() {
+  return (estado.extras || []).map(e => ({
+    chave: "extra:" + e.id,
+    extra: true,
+    rua: e.texto,
+    comp: "",
+    cep: "",
+    bairro: "",
+    cidade: "",
+    region: "",
+    zona: "Parada extra",
+    lat: e.lat,
+    lng: e.lng,
+    enderecoTexto: e.texto,
+    valorTotal: 0,
+    valorMax: 0,
+    pedidos: [{
+      pedido: "", valor: null, nome: e.texto, quem: "", user: "",
+      telefone: "", whatsapp: "", conta: "", itens: [],
+      tipoEnvio: "parada extra", prazo_entrega: "",
+    }],
+  }));
+}
+
+async function adicionarExtra() {
+  const texto = $("extra-texto").value.trim();
+  if (!texto) return;
+  $("extra-info").textContent = "Localizando...";
+
+  const resp = await pegarJson("/api/flex/geocodificar?q=" + encodeURIComponent(texto));
+  if (!resp?.ok || !resp.ponto) {
+    $("extra-info").textContent = "Nao encontrei esse endereco. Tente com numero e cidade.";
+    return;
+  }
+
+  estado.extras.push({ id: String(Date.now()), texto, lat: resp.ponto.lat, lng: resp.ponto.lng });
+  await salvarExtras();
+  $("extra-texto").value = "";
+  $("extra-info").textContent = "";
+  recalcular();
+}
+
+async function salvarExtras() {
+  await pegarJson("/api/flex/config", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paradas_extras: estado.extras }),
+  });
+}
+
+function desenharExtras() {
+  const alvo = $("extras");
+  if (!estado.extras.length) {
+    alvo.innerHTML = "";
+    return;
+  }
+  alvo.innerHTML = estado.extras.map(e => `
+    <div class="extra-item">
+      <span class="bolinha" style="background:#111827"></span>
+      ${escapar(e.texto)}
+      <button class="mini-btn tirar" data-extra="${e.id}" title="Tirar">&times;</button>
+    </div>`).join("");
+
+  alvo.querySelectorAll("[data-extra]").forEach(b => {
+    b.onclick = async () => {
+      estado.extras = estado.extras.filter(e => e.id !== b.dataset.extra);
+      estado.manual.chaves = estado.manual.chaves.filter(c => c !== "extra:" + b.dataset.extra);
+      await salvarExtras();
+      recalcular();
+    };
+  });
 }
 
 function paradasVisiveis() {
@@ -277,7 +359,8 @@ function render() {
     const num = manual.get(p.chave) || ordem.get(p.chave) || p.pedidos.length;
     const escolhido = manual.has(p.chave) ? " escolhido" : "";
     const achado = estado.achada === p.chave ? " achado" : "";
-    return `<div class="pin${p.aprox ? " aprox" : ""}${escolhido}${achado}" data-chave="${p.chave}"
+    const marcaExtra = p.extra ? " extra" : "";
+    return `<div class="pin${p.aprox ? " aprox" : ""}${escolhido}${achado}${marcaExtra}" data-chave="${p.chave}"
             title="${p.aprox ? "Localização aproximada" : ""}"
             style="left:${q.x}px;top:${q.y}px;background:${corDaZona(p.zona)}"><b>${num}</b></div>`;
   });
@@ -1074,7 +1157,10 @@ function desenharStatus() {
       : "";
   el.textContent = (run?.mensagem || "Clique em “Puxar pedidos das contas”.") + carimbo;
 
-  $("btn-rodar").disabled = run?.estado === "coletando" || run?.estado === "geocodificando";
+  const ocupado = run?.estado === "coletando" || run?.estado === "geocodificando";
+  $("btn-rodar").disabled = ocupado;
+  $("btn-atualizar").disabled = ocupado;
+  $("btn-atualizar").textContent = ocupado ? "Atualizando..." : "Atualizar";
 
   $("contas-resumo").innerHTML = (run?.contas || []).map(c =>
     `${escapar(c.nickname)} — ${c.erro ? "erro: " + escapar(c.erro)
@@ -1129,6 +1215,7 @@ function baixarCSV() {
   const visiveis = new Set(paradasVisiveis().map(p => p.chave));
 
   for (const p of estado.paradas) {
+    if (p.extra) continue; // parada extra nao e pedido: nao entra no CSV do Lalamove
     if (!visiveis.has(p.chave) && estado.rotas.length) continue;
     const pos = posicao.get(p.chave);
     for (const r of p.pedidos) {
@@ -1164,9 +1251,132 @@ function baixarCSV() {
     .join("\n");
 
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" }));
+  a.href = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" }));
   a.download = `${linhas.length}_FLEX_${new Date().toLocaleDateString("pt-BR").replace(/\//g, "-")}.csv`;
   a.click();
+}
+
+/* =====================================================================
+   CSV PARA O GOOGLE MY MAPS
+   O My Maps importa por colunas de latitude/longitude — e nos ja temos a
+   coordenada exata que o Mercado Livre devolveu, entao o pino cai no
+   lugar certo sem ele precisar adivinhar pelo endereco. Na importacao,
+   escolha "latitude" e "longitude" como posicao e "nome" como titulo.
+   ===================================================================== */
+function posicaoNasRotas() {
+  const pos = new Map();
+  estado.rotas.forEach(rota =>
+    rota.paradas.forEach((p, i) => pos.set(p.chave, { rota: rota.nome, ordem: i + 1 }))
+  );
+  return pos;
+}
+
+function baixarCSVMyMaps() {
+  const pos = posicaoNasRotas();
+  const paradas = paradasVisiveis().slice().sort((a, b) => {
+    const A = pos.get(a.chave), B = pos.get(b.chave);
+    if (A && B) return A.rota === B.rota ? A.ordem - B.ordem : A.rota.localeCompare(B.rota);
+    return A ? -1 : B ? 1 : 0;
+  });
+
+  const cabecalho = ["nome", "latitude", "longitude", "endereco", "descricao",
+    "rota", "ordem", "prazo", "conta", "telefone"];
+
+  const linhas = paradas.map(p => {
+    const d = pos.get(p.chave);
+    const prazo = prazoDaParada(p).texto;
+    const tel = p.pedidos.map(r => r.telefone).filter(Boolean)[0] || "";
+    const descricao = [
+      p.pedidos.map(r => (r.pedido ? "#" + r.pedido : "")).filter(Boolean).join(" "),
+      p.pedidos.map(r => r.quem || r.nome).filter(Boolean).join(" / "),
+      tel ? formatarTel(tel) : "sem telefone",
+      p.comp || "",
+      p.pedidos.flatMap(r => r.itens.map(i => i.qtd + "x " + i.titulo)).join(" | "),
+      prazo ? "Entregar: " + prazo : "",
+      contasDaParada(p).join(" / "),
+    ].filter(Boolean).join(" — ");
+
+    return [
+      (d ? d.ordem + " · " : "") + p.rua,
+      p.lat, p.lng,
+      p.enderecoTexto || p.rua,
+      descricao,
+      d?.rota || "",
+      d?.ordem || "",
+      prazo,
+      contasDaParada(p).join(" / "),
+      tel,
+    ];
+  });
+
+  const csv = [cabecalho, ...linhas]
+    .map(l => l.map(v => '"' + String(v ?? "").replace(/"/g, '""') + '"').join(","))
+    .join("\n");
+
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" }));
+  a.download = `mymaps_${linhas.length}_paradas_${new Date().toLocaleDateString("pt-BR").replace(/\//g, "-")}.csv`;
+  a.click();
+}
+
+/* =====================================================================
+   FOLHA DE ROTA (imprimir / salvar em PDF)
+   Sem biblioteca de PDF: o navegador ja sabe gerar um, e "Salvar como
+   PDF" na janela de impressao resolve — menos uma dependencia num
+   servico que nao pode quebrar.
+   ===================================================================== */
+function imprimirRotas() {
+  const rotas = estado.rotas.length
+    ? estado.rotas
+    : [{ nome: "Paradas no mapa", paradas: paradasVisiveis(), km: kmTotal(paradasVisiveis(), estado.partida) }];
+
+  if (!rotas[0].paradas.length) {
+    alert("Nao ha paradas para imprimir.");
+    return;
+  }
+
+  const quando = new Date().toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+
+  $("folha").innerHTML = rotas.map(rota => `
+    <div class="folha-rota">
+      <h2>${escapar(rota.nome)}</h2>
+      <p class="sub">${rota.paradas.length} paradas · ${rota.km.toFixed(1)} km
+        ${estado.partida ? "· saindo de " + escapar(estado.partida.enderecoTexto || "") : ""}
+        · gerado em ${escapar(quando)}</p>
+      <table class="folha-tabela">
+        <thead>
+          <tr>
+            <th class="ok">✓</th><th class="num">#</th><th>Endereco</th>
+            <th>Pedido / conta</th><th>Quem recebe</th><th>Entregar</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rota.paradas.map((p, i) => `
+            <tr>
+              <td class="ok"></td>
+              <td class="num">${i + 1}</td>
+              <td>
+                <b>${escapar(p.rua)}</b>${p.comp ? " — " + escapar(p.comp) : ""}<br>
+                ${escapar([p.bairro, p.cidade, p.cep].filter(Boolean).join(" · "))}
+                ${p.pedidos.some(r => r.itens.length)
+                  ? "<br>" + escapar(p.pedidos.flatMap(r => r.itens.map(it => it.qtd + "x " + it.titulo)).join(" | "))
+                  : ""}
+              </td>
+              <td>${p.pedidos.map(r => (r.pedido ? "#" + escapar(r.pedido) : "")).filter(Boolean).join("<br>")}
+                <br>${escapar(contasDaParada(p).join(" / "))}</td>
+              <td>${escapar(p.pedidos.map(r => r.quem || r.nome).filter(Boolean).join(" / "))}
+                ${p.pedidos[0].telefone ? "<br>" + formatarTel(p.pedidos[0].telefone) : ""}</td>
+              <td>${escapar(prazoDaParada(p).texto)}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>`).join("");
+
+  $("folha").hidden = false;
+  const esconder = () => { $("folha").hidden = true; };
+  window.addEventListener("afterprint", esconder, { once: true });
+  window.print();
+  setTimeout(esconder, 1500); // navegador que nao dispara afterprint
 }
 
 /* =====================================================================
@@ -1209,7 +1419,8 @@ async function definirPartida() {
 function aplicarRun(run) {
   estado.run = run;
   estado.registros = run?.registros || [];
-  estado.paradas = montarParadas(filtrarRegistros());
+  estado.paradas = [...montarParadas(filtrarRegistros()), ...paradasExtras()];
+  desenharExtras();
   desenharStatus();
   desenharResumoFiltro();
   desenharZonas();
@@ -1222,6 +1433,7 @@ async function iniciar() {
   $("credito").textContent = PROVEDORES[provedorAtual].credito;
 
   const cfg = (await pegarJson("/api/flex/config")) || {};
+  estado.extras = Array.isArray(cfg.paradas_extras) ? cfg.paradas_extras : [];
   if (cfg.partida) {
     estado.partida = cfg.partida;
     $("partida").value = cfg.partida.enderecoTexto || "";
@@ -1229,6 +1441,20 @@ async function iniciar() {
   }
 
   await atualizar(true);
+
+  /*  Abrir a tela ja vale como "atualizar": se o ultimo dado tem mais de
+      3 minutos e nao ha coleta em andamento, dispara a incremental (que e
+      barata) em vez de mostrar algo de meia hora atras esperando clique. */
+  const inicial = estado.run;
+  const jaOcupado =
+    inicial?.estado === "coletando" || inicial?.estado === "geocodificando";
+  const idadeInicial = inicial?.gerado_em
+    ? Date.now() - Date.parse(inicial.gerado_em)
+    : Infinity;
+  if (!estado.semSessao && !jaOcupado && idadeInicial > 3 * 60000) {
+    pedirColeta(true);
+  }
+
   /*  Enquanto a coleta roda, acompanha de perto; parada, confere uma vez
       por minuto — e assim a tela percebe a coleta que o servidor fez
       sozinho, sem ninguem clicar em nada. */
@@ -1261,16 +1487,26 @@ async function atualizar(primeira) {
   if ((primeira && agora) || (!antes && agora)) enquadrar();
 }
 
-$("btn-rodar").onclick = async () => {
-  estado.rotas = [];
+async function pedirColeta(incremental) {
+  $("btn-atualizar").disabled = true;
   $("btn-rodar").disabled = true;
   const r = await pegarJson("/api/flex/coletar", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: "{}",
+    body: JSON.stringify({ incremental }),
   });
-  if (!r) { $("btn-rodar").disabled = false; return; }
+  if (!r) {
+    $("btn-atualizar").disabled = false;
+    $("btn-rodar").disabled = false;
+    return;
+  }
   setTimeout(() => atualizar(false), 600);
+}
+
+$("btn-atualizar").onclick = () => pedirColeta(true);
+$("btn-rodar").onclick = () => {
+  estado.rotas = [];
+  pedirColeta(false);
 };
 let tempoBusca = null;
 $("busca").oninput = () => {
@@ -1303,12 +1539,16 @@ $("btn-manual").onclick = () => {
   render();
 };
 $("btn-csv").onclick = baixarCSV;
+$("btn-csv-mymaps").onclick = baixarCSVMyMaps;
+$("btn-imprimir").onclick = imprimirRotas;
 $("btn-json").onclick = async () => {
   await navigator.clipboard.writeText(JSON.stringify(estado.run?.registros || [], null, 2));
   $("btn-json").textContent = "Copiado!";
   setTimeout(() => ($("btn-json").textContent = "Copiar JSON"), 1500);
 };
 $("btn-partida").onclick = definirPartida;
+$("btn-extra").onclick = adicionarExtra;
+$("extra-texto").onkeydown = e => { if (e.key === "Enter") adicionarExtra(); };
 $("valor-min").onchange = recalcular;
 $("so-flex").onchange = recalcular;
 $("filtro-prazo").onchange = recalcular;

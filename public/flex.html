@@ -123,9 +123,13 @@
     </div>
     <div id="popup" hidden></div>
     <div id="motorista" hidden></div>
-    <div id="folha" hidden></div>
     <p id="credito">© OpenStreetMap contributors</p>
   </main>
+
+  <!-- Fora do <main> de proposito: a regra de impressao esconde
+       "body > *" menos esta folha; se ela ficasse dentro do main, o pai
+       sumiria junto e a impressao sairia em branco. -->
+  <div id="folha" hidden></div>
 
   <script src="flex.js"></script>
 </body>
