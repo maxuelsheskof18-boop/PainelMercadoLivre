@@ -409,3 +409,29 @@ a.waze { background: #33ccff; color: #073b4c; border-color: #33ccff; }
 .mot-prox li.feita { text-decoration: line-through; opacity: .55; }
 .mot-fim { text-align: center; padding: 40px 10px; }
 .mot-fim b { display: block; font-size: 19px; margin-bottom: 10px; }
+
+/* ---- etiquetas de conta e prazo ---- */
+.etiqueta {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  line-height: 17px;
+  font-weight: 600;
+  background: #eef2ff;
+  color: #3730a3;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.etiqueta.conta { background: #f1f5f9; color: #334155; font-weight: 500; }
+.etiqueta.hoje { background: #dcfce7; color: #14532d; }
+.etiqueta.amanha { background: #fef9c3; color: #713f12; }
+.etiqueta.atrasado { background: #fee2e2; color: #7f1d1d; }
+
+select {
+  font: inherit;
+  padding: 5px 6px;
+  border: 1px solid var(--borda);
+  border-radius: 5px;
+  background: #fff;
+}

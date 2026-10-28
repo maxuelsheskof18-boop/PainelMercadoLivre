@@ -150,12 +150,21 @@ function filtrarRegistros() {
   const min = Number($("valor-min").value) || 0;
   const soFlex = $("so-flex").checked;
   const semCancelados = $("sem-cancelados").checked;
-  return (estado.registros || []).filter(r =>
-    !estado.contasOcultas.has(r.conta) &&
-    (!soFlex || r.flex) &&
-    (!semCancelados || !r.cancelado) &&
-    (Number(r.valor) || 0) >= min
-  );
+  const quando = $("filtro-prazo").value;
+
+  return (estado.registros || []).filter(r => {
+    if (estado.contasOcultas.has(r.conta)) return false;
+    if (soFlex && !r.flex) return false;
+    if (semCancelados && r.cancelado) return false;
+    if ((Number(r.valor) || 0) < min) return false;
+    if (quando) {
+      const q = rotuloPrazo(r.prazo_entrega).quando;
+      // Pedido sem prazo informado nunca e escondido: sumir com ele em
+      // silencio seria pior do que mostrar fora do dia escolhido.
+      if (q && q !== quando) return false;
+    }
+    return true;
+  });
 }
 
 function recalcular() {
@@ -173,10 +182,14 @@ function desenharResumoFiltro() {
   const passam = filtrarRegistros().length;
   const naoFlex = (estado.registros || []).filter(r => !r.flex).length;
   const cancelados = (estado.registros || []).filter(r => r.cancelado).length;
+  const deHoje = (estado.registros || []).filter(
+    r => r.flex && ["hoje"].includes(rotuloPrazo(r.prazo_entrega).quando)
+  ).length;
   $("resumo-filtro").textContent = total
     ? `${passam} de ${total} pedidos no mapa` +
       (naoFlex ? ` · ${naoFlex} fora do Flex` : "") +
-      (cancelados ? ` · ${cancelados} cancelada(s)` : "")
+      (cancelados ? ` · ${cancelados} cancelada(s)` : "") +
+      (deHoje ? ` · ${deHoje} Flex para hoje` : "")
     : "";
 }
 
@@ -378,7 +391,10 @@ function abrirPopup(p) {
   if (!p) return;
   const pedidos = p.pedidos.map(r => `
     <div style="margin-top:6px;padding-top:6px;border-top:1px dashed #e5e7eb">
-      <b>#${r.pedido}</b> ${r.valor ? "— R$ " + r.valor.toFixed(2) : ""}<br>
+      <b>#${r.pedido}</b> ${r.valor ? "— R$ " + r.valor.toFixed(2) : ""}
+      ${r.conta ? `<span class="etiqueta conta">${escapar(r.conta)}</span>` : ""}
+      ${(() => { const q = rotuloPrazo(r.prazo_entrega);
+         return q.texto ? `<span class="etiqueta ${q.classe}">${q.texto}</span>` : ""; })()}<br>
       ${escapar(r.quem || r.nome)} ${r.telefone ? "· " + formatarTel(r.telefone) : "· sem telefone"}<br>
       <span style="color:#6b7280">${escapar(r.itens.map(i => i.qtd + "x " + i.titulo).join(" | "))}</span>
     </div>`).join("");
@@ -391,6 +407,8 @@ function abrirPopup(p) {
       <dt>Bairro</dt><dd>${escapar(p.bairro || "—")}</dd>
       <dt>Zona</dt><dd>${escapar(p.zona)}</dd>
       <dt>Envio</dt><dd>${escapar(p.pedidos[0].tipoEnvio || (p.pedidos[0].flex ? "Flex" : "—"))}</dd>
+      <dt>Entregar</dt><dd>${escapar(prazoDaParada(p).texto)}</dd>
+      <dt>Conta</dt><dd>${escapar(contasDaParada(p).join(" / "))}</dd>
       <dt>CEP</dt><dd>${escapar(p.cep)}</dd>
       ${p.comp ? `<dt>Compl.</dt><dd>${escapar(p.comp)}</dd>` : ""}
     </dl>
@@ -406,6 +424,57 @@ function abrirPopup(p) {
   $("popup").hidden = false;
   $("popup-fechar").onclick = () => { $("popup").hidden = true; };
 }
+
+/*  Prazo de entrega em palavras. O dia tem que ser calculado no fuso de
+    Sao Paulo, nao no do servidor nem no UTC: as 22h de SP ja e o dia
+    seguinte em UTC, e "amanha" apareceria como "hoje". */
+const diaSP = (quando) =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(quando ? new Date(quando) : new Date());
+
+function rotuloPrazo(iso) {
+  if (!iso || Number.isNaN(Date.parse(iso))) return { texto: "", classe: "", quando: "" };
+  const dia = diaSP(iso);
+  const hoje = diaSP();
+  const amanha = diaSP(Date.now() + 86400000);
+
+  const hora = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(iso));
+  const comHora = hora === "00:00" ? "" : " " + hora;
+
+  /*  Atrasado e pelo HORARIO, nao so pelo dia: um prazo que venceu as 13h
+      de hoje ainda cai na data de hoje, e chamar isso de "hoje" esconderia
+      justamente a entrega que estourou. Prazo so com data (00:00) e
+      diferente — esse so vence quando o dia acaba. */
+  const vencido = comHora ? Date.parse(iso) < Date.now() : dia < hoje;
+  if (vencido) return { texto: "atrasado" + comHora, classe: "atrasado", quando: "hoje" };
+  if (dia === hoje) return { texto: "hoje" + comHora, classe: "hoje", quando: "hoje" };
+  if (dia === amanha) return { texto: "amanha" + comHora, classe: "amanha", quando: "amanha" };
+  const curto = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+  }).format(new Date(iso));
+  return { texto: curto, classe: "", quando: "depois" };
+}
+
+// Uma parada pode juntar pedidos de contas e prazos diferentes: vale o
+// mais apertado, que e o que manda na rota.
+function prazoDaParada(p) {
+  const rotulos = p.pedidos.map(r => rotuloPrazo(r.prazo_entrega)).filter(r => r.texto);
+  if (!rotulos.length) return { texto: "sem prazo", classe: "", quando: "" };
+  const ordem = { atrasado: 0, hoje: 1, amanha: 2, "": 3 };
+  return rotulos.sort((a, b) => (ordem[a.classe] ?? 9) - (ordem[b.classe] ?? 9))[0];
+}
+
+const contasDaParada = p => [...new Set(p.pedidos.map(r => r.conta).filter(Boolean))];
 
 const escapar = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const formatarTel = t => t && t.length >= 10 ? `(${t.slice(0, 2)}) ${t.slice(2, -4)}-${t.slice(-4)}` : (t || "");
@@ -619,6 +688,8 @@ function desenharMotorista() {
       <p class="mot-sub">${escapar(p.bairro || "")}${p.cidade ? " · " + escapar(p.cidade) : ""} · ${escapar(p.cep)}</p>
       <dl class="mot-dados">
         ${p.comp ? `<dt>Compl.</dt><dd>${escapar(p.comp)}</dd>` : ""}
+        <dt>Entregar</dt><dd><b>${escapar(prazoDaParada(p).texto)}</b></dd>
+        <dt>Conta</dt><dd>${escapar(contasDaParada(p).join(" / "))}</dd>
         <dt>Quem recebe</dt><dd>${escapar(p.pedidos.map(r => r.quem || r.nome).join(" / "))}</dd>
         <dt>Pedido</dt><dd>${p.pedidos.map(r => "#" + escapar(r.pedido)).join("<br>")}</dd>
         <dt>Itens</dt><dd>${escapar(p.pedidos.flatMap(r => r.itens.map(it => it.qtd + "x " + it.titulo)).join(" | "))}</dd>
@@ -698,7 +769,9 @@ function desenharManual() {
           <li>${escapar(p.rua)}
             <span>${p.pedidos.map(r => "#" + escapar(r.pedido)).join(" ")}
               · ${escapar(p.bairro || "")} · ${escapar(p.zona)}
-              ${p.pedidos[0].telefone ? " · " + formatarTel(p.pedidos[0].telefone) : ""}
+              ${p.pedidos[0].telefone ? " · " + formatarTel(p.pedidos[0].telefone) : ""}<br>
+              <span class="etiqueta conta">${escapar(contasDaParada(p).join(" / "))}</span>
+              <span class="etiqueta ${prazoDaParada(p).classe}">${escapar(prazoDaParada(p).texto)}</span>
               <button class="mini-btn" data-sobe="${i}" title="Subir">↑</button>
               <button class="mini-btn" data-desce="${i}" title="Descer">↓</button>
               <button class="mini-btn" data-tira="${i}" title="Tirar da rota">×</button>
@@ -779,7 +852,9 @@ function desenharRotas() {
           <li>${escapar(p.rua)}
             <span>${p.pedidos.map(r => "#" + escapar(r.pedido)).join(" ")}
             · ${escapar(p.bairro || p.region || "")} · ${escapar(p.zona)}
-            ${p.pedidos[0].telefone ? " · " + formatarTel(p.pedidos[0].telefone) : ""}
+            ${p.pedidos[0].telefone ? " · " + formatarTel(p.pedidos[0].telefone) : ""}<br>
+            <span class="etiqueta conta">${escapar(contasDaParada(p).join(" / "))}</span>
+            <span class="etiqueta ${prazoDaParada(p).classe}">${escapar(prazoDaParada(p).texto)}</span>
             <a class="mini-btn" target="_blank" rel="noreferrer" href="${linkWaze(p)}">Waze</a></span>
           </li>`).join("")}
       </ol>
@@ -1041,7 +1116,8 @@ async function desenharContas() {
    ===================================================================== */
 const CABECALHO = ["endereco", "titulo", "nome_lalamove", "telefone", "complemento_lalamove",
   "complemento", "produto_completo", "ordem", "nome", "username", "pedido", "nome_loja",
-  "frete", "cep", "quem_recebe", "whatsapp", "zona", "rota", "ordem_na_rota"];
+  "frete", "cep", "quem_recebe", "whatsapp", "zona", "rota", "ordem_na_rota",
+  "conta", "prazo_entrega", "entregar_em"];
 
 function baixarCSV() {
   const posicao = new Map();
@@ -1074,7 +1150,10 @@ function baixarCSV() {
         r.whatsapp,
         p.zona,
         pos?.rota || "",
-        pos?.ordem || ""
+        pos?.ordem || "",
+        r.conta || "",
+        r.prazo_entrega || "",
+        rotuloPrazo(r.prazo_entrega).texto
       ]);
     }
   }
@@ -1231,6 +1310,7 @@ $("btn-json").onclick = async () => {
 $("btn-partida").onclick = definirPartida;
 $("valor-min").onchange = recalcular;
 $("so-flex").onchange = recalcular;
+$("filtro-prazo").onchange = recalcular;
 $("sem-cancelados").onchange = recalcular;
 window.addEventListener("resize", render);
 

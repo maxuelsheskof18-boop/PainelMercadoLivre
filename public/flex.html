@@ -53,6 +53,13 @@
       <label class="campo-label">Paradas por rota
         <input id="max-paradas" type="number" value="9" min="2" max="23">
       </label>
+      <label class="campo-label">Entrega
+        <select id="filtro-prazo">
+          <option value="">todas</option>
+          <option value="hoje">hoje e atrasadas</option>
+          <option value="amanha">amanha</option>
+        </select>
+      </label>
       <label class="campo-check"><input id="so-flex" type="checkbox" checked> Somente Flex</label>
       <label class="campo-check"><input id="sem-cancelados" type="checkbox" checked> Ignorar canceladas</label>
       <p id="resumo-filtro" class="mini"></p>
