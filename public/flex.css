@@ -310,3 +310,30 @@ a.botao-link.secundario { background: #fff; color: var(--texto); border: 1px sol
   margin-bottom: 8px;
 }
 a.waze { background: #33ccff; color: #073b4c; border-color: #33ccff; }
+
+/* ---- busca ---- */
+#busca-resultados { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.resultado {
+  text-align: left;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--borda);
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.resultado:hover { background: #f3f4f6; }
+.resultado b { display: block; }
+.resultado span { color: var(--suave); font-size: 11px; }
+.resultado.escondido { border-style: dashed; opacity: .75; }
+
+/* pino achado pela busca */
+.pin.achado {
+  box-shadow: 0 0 0 4px #facc15, 0 2px 8px rgba(0,0,0,.45);
+  z-index: 6;
+}
+
+.rota > header .mini-btn { color: var(--texto); }

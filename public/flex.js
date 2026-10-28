@@ -65,6 +65,7 @@ const estado = {
   contasOcultas: new Set(),
   rotas: [],
   manual: { ativo: false, chaves: [] },
+  achada: null,
   partida: null,
   centro: { lat: -23.5505, lng: -46.6333 },
   zoom: 11,
@@ -101,11 +102,14 @@ function corDaZona(zona) {
   return i < 0 ? "#111827" : PALETA[i % PALETA.length];
 }
 
+// Mesma regra usada pela busca para achar a parada de um pedido.
+const chaveDaParada = r => semAcento(r.rua) + "|" + String(r.cep || "").replace(/[^0-9]/g, "");
+
 // agrupa pedidos do mesmo endereço numa única parada
 function montarParadas(registros) {
   const mapa = new Map();
   for (const r of registros) {
-    const chave = semAcento(r.rua) + "|" + (r.cep || "").replace(/\D/g, "");
+    const chave = chaveDaParada(r);
     if (!mapa.has(chave)) {
       mapa.set(chave, {
         chave,
@@ -256,7 +260,8 @@ function render() {
     const q = px(p);
     const num = manual.get(p.chave) || ordem.get(p.chave) || p.pedidos.length;
     const escolhido = manual.has(p.chave) ? " escolhido" : "";
-    return `<div class="pin${p.aprox ? " aprox" : ""}${escolhido}" data-chave="${p.chave}"
+    const achado = estado.achada === p.chave ? " achado" : "";
+    return `<div class="pin${p.aprox ? " aprox" : ""}${escolhido}${achado}" data-chave="${p.chave}"
             title="${p.aprox ? "Localização aproximada" : ""}"
             style="left:${q.x}px;top:${q.y}px;background:${corDaZona(p.zona)}"><b>${num}</b></div>`;
   });
@@ -600,7 +605,10 @@ function desenharManual() {
 
 function desenharRotas() {
   if (!estado.rotas.length) {
-    $("rotas").innerHTML = `<p class="mini">Sem paradas localizadas para montar rota.</p>`;
+    const quantas = paradasVisiveis().length;
+    $("rotas").innerHTML = quantas
+      ? `<p class="mini">${quantas} paradas no mapa. Clique em “Gerar rotas”.</p>`
+      : `<p class="mini">Sem paradas localizadas para montar rota.</p>`;
     return;
   }
 
@@ -610,6 +618,7 @@ function desenharRotas() {
         <span class="bolinha" style="background:${corDaZona(rota.zona)}"></span>
         ${escapar(rota.nome)}
         <span class="contagem">${rota.paradas.length} paradas · ${rota.km.toFixed(1)} km</span>
+        <button class="mini-btn" data-remove="${idx}" title="Tirar esta rota do mapa">&times;</button>
       </header>
       <ol>
         ${rota.paradas.map(p => `
@@ -626,6 +635,16 @@ function desenharRotas() {
       </div>
     </div>`).join("");
 
+  // Tirar uma rota: some a linha do mapa e o card da lista; as paradas
+  // continuam no mapa (quem esconde parada e o filtro de zona/conta).
+  $("rotas").querySelectorAll("[data-remove]").forEach(b => {
+    b.onclick = () => {
+      estado.rotas.splice(Number(b.dataset.remove), 1);
+      desenharRotas();
+      render();
+    };
+  });
+
   $("rotas").querySelectorAll(".btn-centrar").forEach(b => {
     b.onclick = () => {
       const rota = estado.rotas[Number(b.dataset.rota)];
@@ -638,6 +657,69 @@ function desenharRotas() {
       render();
     };
   });
+}
+
+/* =====================================================================
+   BUSCA
+   Varre TODOS os pedidos coletados, nao so os que passam nos filtros —
+   senao a busca falha justamente quando o pedido sumiu da tela e voce
+   quer entender por que.
+   ===================================================================== */
+function buscar(termo) {
+  const alvo = $("busca-resultados");
+  const texto = semAcento(termo).trim();
+  if (texto.length < 2) {
+    alvo.innerHTML = "";
+    estado.achada = null;
+    render();
+    return;
+  }
+
+  const digitos = texto.replace(/[^0-9]/g, "");
+  const porDigitos = digitos.length >= 4;
+
+  const achados = (estado.registros || []).filter(r => {
+    if (porDigitos) {
+      const campos = [r.pedido, r.telefone, r.cep, r.envio_id].map(v => String(v || "").replace(/[^0-9]/g, ""));
+      if (campos.some(v => v && v.includes(digitos))) return true;
+    }
+    return [r.nome, r.quem, r.user, r.rua, r.bairro, r.cidade, r.conta]
+      .some(v => semAcento(v).includes(texto));
+  }).slice(0, 10);
+
+  if (!achados.length) {
+    alvo.innerHTML = `<p class="mini">Nada encontrado para “${escapar(termo)}”.</p>`;
+    return;
+  }
+
+  const visiveis = new Set(estado.paradas.map(p => p.chave));
+  alvo.innerHTML = achados.map(r => {
+    const chave = chaveDaParada(r);
+    const escondido = !visiveis.has(chave);
+    return `<button class="resultado${escondido ? " escondido" : ""}" data-chave="${chave}" data-pedido="${r.pedido}">
+      <b>#${escapar(r.pedido)} — ${escapar(r.quem || r.nome || "")}</b>
+      <span>${escapar(r.rua)} · ${escapar(r.bairro || r.cidade || "")} · ${escapar(r.conta)}
+      ${escondido ? "<br>⚠ fora dos filtros atuais (Flex, cancelada, zona ou conta desligada)" : ""}</span>
+    </button>`;
+  }).join("");
+
+  alvo.querySelectorAll(".resultado").forEach(b => {
+    b.onclick = () => irPara(b.dataset.chave);
+  });
+}
+
+function irPara(chave) {
+  const parada = estado.paradas.find(p => p.chave === chave);
+  if (!parada || !parada.lat) {
+    estado.achada = null;
+    render();
+    return;
+  }
+  estado.achada = chave;
+  estado.centro = { lat: parada.lat, lng: parada.lng };
+  estado.zoom = Math.max(estado.zoom, 15);
+  render();
+  abrirPopup(parada);
 }
 
 /* =====================================================================
@@ -868,6 +950,26 @@ $("btn-rodar").onclick = async () => {
   $("btn-rodar").disabled = true;
   await fetch("/api/flex/coletar", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   setTimeout(() => atualizar(false), 600);
+};
+let tempoBusca = null;
+$("busca").oninput = () => {
+  clearTimeout(tempoBusca);
+  tempoBusca = setTimeout(() => buscar($("busca").value), 180);
+};
+$("busca").onkeydown = e => {
+  if (e.key === "Enter") {
+    const primeiro = $("busca-resultados").querySelector(".resultado");
+    if (primeiro) primeiro.click();
+  }
+};
+$("btn-busca-limpar").onclick = () => {
+  $("busca").value = "";
+  buscar("");
+};
+$("btn-limpar-rotas").onclick = () => {
+  estado.rotas = [];
+  desenharRotas();
+  render();
 };
 $("btn-rotas").onclick = gerarRotas;
 $("juntar-zonas").onchange = () => { if (estado.rotas.length) gerarRotas(); };

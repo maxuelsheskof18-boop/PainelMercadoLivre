@@ -37,6 +37,15 @@
     </section>
 
     <section>
+      <h2>Buscar pedido</h2>
+      <div class="campo">
+        <input id="busca" type="text" placeholder="Pedido, cliente, rua, bairro ou telefone">
+        <button id="btn-busca-limpar" title="Limpar busca">&times;</button>
+      </div>
+      <div id="busca-resultados"></div>
+    </section>
+
+    <section>
       <h2>Filtros</h2>
       <label class="campo-label">Valor mínimo do pedido
         <input id="valor-min" type="number" value="0" min="0" step="10">
@@ -59,6 +68,7 @@
       <div class="linha-botoes">
         <button id="btn-rotas" class="primario">Gerar rotas</button>
         <button id="btn-manual">Montar rota manual</button>
+        <button id="btn-limpar-rotas">Limpar rotas</button>
       </div>
       <div id="rota-manual"></div>
       <div id="rotas"></div>
