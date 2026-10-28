@@ -435,3 +435,52 @@ select {
   border-radius: 5px;
   background: #fff;
 }
+
+/* ---- paradas extras ---- */
+.pin.extra {
+  border-radius: 4px;
+  transform: none;
+  background: #111827;
+}
+.pin.extra b { transform: none; }
+.extra-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px;
+  border-radius: 4px;
+  background: #f9fafb;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.extra-item .tirar { margin-left: auto; }
+
+/* ---- folha de rota (impressao / PDF) ---- */
+#folha { padding: 0; }
+.folha-rota { page-break-after: always; }
+.folha-rota:last-child { page-break-after: auto; }
+.folha-rota h2 { font-size: 15px; margin: 0 0 2px; }
+.folha-rota .sub { color: #555; font-size: 11px; margin: 0 0 10px; }
+.folha-tabela { width: 100%; border-collapse: collapse; font-size: 11px; }
+.folha-tabela th, .folha-tabela td {
+  border: 1px solid #999;
+  padding: 4px 6px;
+  text-align: left;
+  vertical-align: top;
+}
+.folha-tabela th { background: #eee; }
+.folha-tabela .ok { width: 22px; }
+.folha-tabela .num { width: 22px; text-align: center; font-weight: 700; }
+
+@media print {
+  /* a tela inteira sai de cena; so a folha e impressa */
+  body > *:not(#folha) { display: none !important; }
+  #folha {
+    display: block !important;
+    position: static;
+    padding: 0;
+    font-size: 11px;
+    color: #000;
+  }
+  @page { margin: 12mm; }
+}

@@ -13,7 +13,8 @@
       <p class="mini"><a href="/index.html">&larr; voltar ao painel</a></p>
       <p id="status" class="status">Carregando...</p>
       <div class="linha-botoes">
-        <button id="btn-rodar" class="primario">Puxar pedidos das contas</button>
+        <button id="btn-atualizar" class="primario" title="Busca so o que mudou desde a ultima vez (rapido)">Atualizar</button>
+        <button id="btn-rodar" title="Le tudo de novo, do zero (demora alguns minutos)">Recarregar tudo</button>
       </div>
       <p id="contas-resumo" class="mini"></p>
     </header>
@@ -82,9 +83,23 @@
     </section>
 
     <section>
+      <h2>Parada extra</h2>
+      <div class="campo">
+        <input id="extra-texto" type="text" placeholder="Endereco ou CEP (ex: almoco, coleta)">
+        <button id="btn-extra">Adicionar</button>
+      </div>
+      <p id="extra-info" class="mini"></p>
+      <div id="extras"></div>
+    </section>
+
+    <section>
       <h2>Exportar</h2>
       <div class="linha-botoes">
-        <button id="btn-csv">Baixar CSV</button>
+        <button id="btn-csv" title="Colunas de sempre, para o Lalamove">Baixar CSV</button>
+        <button id="btn-csv-mymaps" title="Colunas que o Google My Maps entende">CSV para My Maps</button>
+      </div>
+      <div class="linha-botoes" style="margin-top:6px">
+        <button id="btn-imprimir" title="Folha de rota para o motorista — salve como PDF">Imprimir / PDF</button>
         <button id="btn-json">Copiar JSON</button>
       </div>
     </section>
@@ -108,6 +123,7 @@
     </div>
     <div id="popup" hidden></div>
     <div id="motorista" hidden></div>
+    <div id="folha" hidden></div>
     <p id="credito">© OpenStreetMap contributors</p>
   </main>
 
