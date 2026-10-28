@@ -1078,8 +1078,9 @@ function desenharStatus() {
 
   $("contas-resumo").innerHTML = (run?.contas || []).map(c =>
     `${escapar(c.nickname)} — ${c.erro ? "erro: " + escapar(c.erro)
-      : `${c.pedidos} pedidos (${c.flex} Flex)` +
-        (c.novos ? ` · ${c.novos} nesta rodada` : "") +
+      : `${c.pedidos} a enviar (${c.flex} Flex)` +
+        (c.novos ? ` · ${c.novos} novo(s)` : "") +
+        (c.sairam ? ` · ${c.sairam} despachado(s)` : "") +
         (c.truncado ? ` <b>— só os ${c.pedidos} mais recentes de ${c.truncado}</b>` : "")}`
   ).join("<br>");
 }
