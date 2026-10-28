@@ -339,13 +339,21 @@ a.waze { background: #33ccff; color: #073b4c; border-color: #33ccff; }
 .rota > header .mini-btn { color: var(--texto); }
 
 /* ---- modo motorista: tela cheia, pensada para o celular ---- */
+/*  :not([hidden]) e obrigatorio aqui. O atributo hidden do HTML funciona
+    por uma regra do proprio navegador ([hidden] { display: none }), que
+    perde para qualquer seletor de ID — um "#motorista { display: flex }"
+    solto deixaria este painel de tela cheia visivel desde o carregamento,
+    cobrindo a pagina inteira de branco e sem gerar erro nenhum. */
+#motorista:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+}
+
 #motorista {
   position: fixed;
   inset: 0;
   z-index: 50;
   background: var(--painel);
-  display: flex;
-  flex-direction: column;
   font-size: 15px;
 }
 #motorista header {
