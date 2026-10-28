@@ -439,9 +439,141 @@ async function diagnosticar(conta, quantos = 30, dias = 7) {
   };
 }
 
+/* =====================================================================
+   SONDA DE TELEFONE
+   O /shipments novo traz a chave destination.receiver_phone, mas vazia.
+   Antes de dar a API como incapaz de entregar o telefone, vale bater nas
+   outras portas que o vendedor tem direito de abrir no proprio pedido.
+   A sonda tenta todas no MESMO pedido Flex e diz qual devolve digitos.
+   Valores sempre mascarados: isso sai numa tela, nao num log privado.
+   ===================================================================== */
+const mascarar = (t) => {
+  const d = so(t);
+  return d.length >= 6 ? d.slice(0, 2) + "*".repeat(d.length - 4) + d.slice(-2) : d ? "(curto)" : "";
+};
+
+async function chamarCru(caminho, token, cabecalhos = {}) {
+  try {
+    const res = await fetch(`${API_BASE}${caminho}`, {
+      signal: AbortSignal.timeout(20_000),
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept-Language": "pt-BR,pt;q=0.9",
+        ...cabecalhos,
+      },
+    });
+    const texto = await res.text();
+    let json = null;
+    try { json = JSON.parse(texto); } catch { /* pode ser ZPL/PDF */ }
+    return { status: res.status, json, texto };
+  } catch (e) {
+    return { status: 0, erro: String(e?.message || e) };
+  }
+}
+
+// procura telefone brasileiro em texto solto (etiqueta ZPL, por exemplo)
+function telefoneNoTexto(txt) {
+  if (!txt) return "";
+  // (?<!\d) e (?!\d) impedem que o numero do pedido (16 digitos seguidos)
+  // seja confundido com um telefone de 10/11 digitos no meio dele.
+  const m = String(txt).match(
+    /(?<!\d)(?:\+?55[\s.-]*)?\(?(\d{2})\)?[\s.-]?(9?\d{4})[\s.-]?(\d{4})(?!\d)/
+  );
+  return m ? m[1] + m[2] + m[3] : "";
+}
+
+async function sondarTelefone(conta, { pedidoId, dias = 7 } = {}) {
+  const token = await getValidAccessToken(conta.id);
+  const flex = tiposFlex();
+
+  // 1. acha um pedido Flex (o informado, ou o primeiro da janela)
+  let pedido = null;
+  let envio = null;
+
+  const desde = new Date(Date.now() - dias * 86400000).toISOString();
+  const r = await fetchRecentOrders(token, conta.id, { limit: 50, dateCreatedFrom: desde });
+  for (const p of r.results || []) {
+    if (pedidoId && String(p.id) !== String(pedidoId)) continue;
+    if (!p.shipping?.id) continue;
+    const e = await buscarEnvio(token, p.shipping.id);
+    const tipo = String(e.logistic_type || e.logistic?.type || "").toLowerCase();
+    if (pedidoId || flex.includes(tipo)) { pedido = p; envio = e; break; }
+  }
+  if (!pedido) {
+    return { conta: conta.nickname, erro: "Nenhum pedido Flex encontrado na janela. Use ?pedido=<id> ou aumente ?dias=." };
+  }
+
+  const envioId = pedido.shipping.id;
+  const tentativas = [];
+
+  // fonte 1: o que ja temos (formato novo)
+  const brutoNovo = envio.destination?.receiver_phone;
+  tentativas.push({
+    fonte: "shipments (x-format-new) -> destination.receiver_phone",
+    status: 200,
+    tipo_do_campo: brutoNovo === null ? "null" : Array.isArray(brutoNovo) ? "array" : typeof brutoNovo,
+    conteudo_cru: brutoNovo && typeof brutoNovo === "object" ? Object.keys(brutoNovo).join(", ") : String(brutoNovo ?? ""),
+    achou: !!so(telefoneDe(brutoNovo)),
+    telefone: mascarar(telefoneDe(brutoNovo)),
+  });
+
+  // fonte 2: o MESMO envio no formato antigo (sem x-format-new)
+  const legado = await chamarCru(`/shipments/${envioId}`, token);
+  const endLegado = legado.json?.receiver_address || {};
+  tentativas.push({
+    fonte: "shipments SEM x-format-new -> receiver_address.receiver_phone",
+    status: legado.status,
+    chaves: Object.keys(endLegado).join(", ") || "(sem receiver_address)",
+    achou: !!so(telefoneDe(endLegado.receiver_phone || endLegado.phone)),
+    telefone: mascarar(telefoneDe(endLegado.receiver_phone || endLegado.phone)),
+  });
+
+  // fonte 3: o pedido -> dados do comprador
+  const ordem = await chamarCru(`/orders/${pedido.id}`, token);
+  const comprador = ordem.json?.buyer || {};
+  tentativas.push({
+    fonte: "orders/{id} -> buyer.phone / buyer.alternative_phone",
+    status: ordem.status,
+    chaves: Object.keys(comprador).join(", "),
+    achou: !!(so(telefoneDe(comprador.phone)) || so(telefoneDe(comprador.alternative_phone))),
+    telefone: mascarar(telefoneDe(comprador.phone) || telefoneDe(comprador.alternative_phone)),
+  });
+
+  // fonte 4: a etiqueta de envio (o vendedor imprime ela com o telefone)
+  const etiqueta = await chamarCru(
+    `/shipment_labels?shipment_ids=${envioId}&response_type=zpl2`,
+    token,
+    { Accept: "text/plain" }
+  );
+  const telEtiqueta = telefoneNoTexto(etiqueta.texto);
+  tentativas.push({
+    fonte: "shipment_labels (ZPL da etiqueta)",
+    status: etiqueta.status,
+    tamanho_resposta: etiqueta.texto ? etiqueta.texto.length : 0,
+    achou: !!telEtiqueta,
+    telefone: mascarar(telEtiqueta),
+  });
+
+  const venceu = tentativas.find((t) => t.achou);
+  return {
+    conta: conta.nickname,
+    pedido: String(pedido.id),
+    envio: String(envioId),
+    logistic_type: String(envio.logistic_type || envio.logistic?.type || "").toLowerCase(),
+    veredito: venceu
+      ? `O telefone VEM pela API, em: ${venceu.fonte}`
+      : "Nenhuma das fontes devolveu telefone para este pedido Flex.",
+    tentativas,
+  };
+}
+
 module.exports = {
   coletar,
   diagnosticar,
+  sondarTelefone,
   lerEstado,
   lerConfig,
   salvarConfig,
