@@ -68,6 +68,7 @@ const estado = {
   achada: null,
   motorista: null,
   semSessao: false,
+  ultimaLeitura: 0,
   partida: null,
   centro: { lat: -23.5505, lng: -46.6333 },
   zoom: 11,
@@ -976,17 +977,34 @@ function desenharProblemas() {
   $("problemas").innerHTML = partes.join("") || `<p class="mini">Nada pendente.</p>`;
 }
 
+function idadeEmTexto(iso) {
+  if (!iso) return "";
+  const seg = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  if (seg < 90) return "agora mesmo";
+  const min = Math.round(seg / 60);
+  if (min < 60) return `ha ${min} min`;
+  const h = Math.floor(min / 60);
+  return h < 24 ? `ha ${h}h${String(min % 60).padStart(2, "0")}` : `ha ${Math.floor(h / 24)} dia(s)`;
+}
+
 function desenharStatus() {
   const run = estado.run;
   const el = $("status");
   el.className = "status" + (run?.estado === "erro" ? " erro" : run?.estado === "pronto" ? " ok" : "");
-  el.textContent = run?.mensagem || "Clique em “Puxar pedidos das contas”.";
+
+  const carimbo =
+    run?.estado === "pronto" && run?.gerado_em
+      ? ` · atualizado ${idadeEmTexto(run.gerado_em)}` +
+        (run.modo === "incremental" ? " (automatico)" : "")
+      : "";
+  el.textContent = (run?.mensagem || "Clique em “Puxar pedidos das contas”.") + carimbo;
 
   $("btn-rodar").disabled = run?.estado === "coletando" || run?.estado === "geocodificando";
 
   $("contas-resumo").innerHTML = (run?.contas || []).map(c =>
     `${escapar(c.nickname)} — ${c.erro ? "erro: " + escapar(c.erro)
       : `${c.pedidos} pedidos (${c.flex} Flex)` +
+        (c.novos ? ` · ${c.novos} nesta rodada` : "") +
         (c.truncado ? ` <b>— só os ${c.pedidos} mais recentes de ${c.truncado}</b>` : "")}`
   ).join("<br>");
 }
@@ -1131,10 +1149,15 @@ async function iniciar() {
   }
 
   await atualizar(true);
+  /*  Enquanto a coleta roda, acompanha de perto; parada, confere uma vez
+      por minuto — e assim a tela percebe a coleta que o servidor fez
+      sozinho, sem ninguem clicar em nada. */
   setInterval(() => {
     if (estado.semSessao) return;
     const rodando = estado.run?.estado === "coletando" || estado.run?.estado === "geocodificando";
-    if (rodando) atualizar(false);
+    const desdeALeitura = Date.now() - (estado.ultimaLeitura || 0);
+    if (rodando ? desdeALeitura > 2000 : desdeALeitura > 60000) atualizar(false);
+    else if (!rodando) desenharStatus(); // mantem o "atualizado ha X" correndo
   }, 2000);
 }
 
@@ -1144,6 +1167,14 @@ async function atualizar(primeira) {
   const antes = estado.paradas.filter(p => p.lat).length;
   const run = await pegarJson("/api/flex/estado");
   if (!run) return;
+  estado.ultimaLeitura = Date.now();
+
+  // Nada mudou no servidor: so acerta o "atualizado ha X" e sai, sem
+  // redesenhar o mapa embaixo de quem esta mexendo nele.
+  if (!primeira && run.gerado_em === estado.run?.gerado_em && run.estado === estado.run?.estado) {
+    desenharStatus();
+    return;
+  }
   aplicarRun(run);
   await desenharContas();
   const agora = estado.paradas.filter(p => p.lat).length;
