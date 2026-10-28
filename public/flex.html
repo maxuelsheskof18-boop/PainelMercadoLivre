@@ -13,8 +13,10 @@
       <p class="mini"><a href="/index.html">&larr; voltar ao painel</a></p>
       <p id="status" class="status">Carregando...</p>
       <div class="linha-botoes">
-        <button id="btn-atualizar" class="primario" title="Busca so o que mudou desde a ultima vez (rapido)">Atualizar</button>
-        <button id="btn-rodar" title="Le tudo de novo, do zero (demora alguns minutos)">Recarregar tudo</button>
+        <button id="btn-atualizar" class="primario"
+          title="Tira o que ja saiu para entrega e traz as vendas novas">Atualizar</button>
+        <button id="btn-rodar" class="discreto"
+          title="Le tudo de novo, do zero — so se desconfiar que falta algo">recarregar tudo</button>
       </div>
       <p id="contas-resumo" class="mini"></p>
     </header>
@@ -84,9 +86,10 @@
 
     <section>
       <h2>Parada extra</h2>
-      <div class="campo">
-        <input id="extra-texto" type="text" placeholder="Endereco ou CEP (ex: almoco, coleta)">
-        <button id="btn-extra">Adicionar</button>
+      <textarea id="extra-texto" rows="3"
+        placeholder="Cole aqui a venda do ERP (ou so o endereco)"></textarea>
+      <div class="linha-botoes" style="margin-top:6px">
+        <button id="btn-extra" class="primario">Adicionar parada</button>
       </div>
       <p id="extra-info" class="mini"></p>
       <div id="extras"></div>

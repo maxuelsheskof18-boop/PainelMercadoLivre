@@ -197,20 +197,147 @@ function desenharResumoFiltro() {
 
 /* =====================================================================
    PARADAS EXTRAS
-   Endereco que nao veio do Mercado Livre: coleta, almoco, uma entrega
-   combinada por fora. Entra no mapa, nas rotas e na folha impressa como
-   qualquer outra parada. Fica guardado no servidor (config), entao
-   sobrevive a recarregar a pagina e aparece para quem mais abrir.
+   Endereco que nao veio do Mercado Livre: uma venda do ERP, uma coleta,
+   o almoco. Entra no mapa, nas rotas, na folha impressa e no CSV do My
+   Maps como qualquer outra parada. Fica guardada no servidor (config),
+   entao sobrevive a recarregar a pagina.
+
+   O campo aceita desde um endereco solto ate a mensagem inteira do ERP
+   colada do WhatsApp — o interpretador abaixo separa empresa, pedido,
+   endereco, telefone, observacao e horario.
    ===================================================================== */
+
+// Tira emoji, asterisco de negrito e espaco sobrando, mantendo o texto.
+function limparLinha(l) {
+  return l
+    .replace(/[‍←-⯿☀-➿-️]/g, "")
+    .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, "")
+    .replace(/\*/g, "")
+    .trim();
+}
+
+const semAcentoMaiusc = (s) =>
+  (s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().trim();
+
+/*  Le "RÓTULO: valor", aceitando que o valor continue nas linhas
+    seguintes (o endereco do ERP quebra o CEP na linha de baixo). */
+function camposDaColagem(texto) {
+  const campos = {};
+  let atual = null;
+
+  for (const bruta of String(texto).split(/\r?\n/)) {
+    const linha = limparLinha(bruta);
+    if (!linha) continue;
+
+    const m = linha.match(/^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ \/]{2,30}?)\s*:\s*(.*)$/);
+    if (m) {
+      atual = semAcentoMaiusc(m[1]);
+      campos[atual] = (m[2] || "").trim();
+    } else if (atual) {
+      campos[atual] = (campos[atual] + " " + linha).trim();
+    } else {
+      campos.__SOLTO = ((campos.__SOLTO || "") + " " + linha).trim();
+    }
+  }
+  return campos;
+}
+
+const vazio = (v) => !v || v === "-" || v === "--" || semAcentoMaiusc(v) === "N/A";
+
+/*  Monta o prazo a partir de "DATA PREVISTA: 28/10" + "ate as 20:00".
+    Sem data, assume hoje; sem hora, fim do dia. O navegador do usuario
+    esta no fuso de SP, entao new Date(...) local resolve. */
+function prazoDaColagem(data, hora) {
+  const agora = new Date();
+  let dia = agora.getDate();
+  let mes = agora.getMonth();
+  let ano = agora.getFullYear();
+
+  const mData = (data || "").match(/(\d{1,2})\s*\/\s*(\d{1,2})(?:\s*\/\s*(\d{2,4}))?/);
+  if (mData) {
+    dia = Number(mData[1]);
+    mes = Number(mData[2]) - 1;
+    if (mData[3]) ano = Number(mData[3].length === 2 ? "20" + mData[3] : mData[3]);
+  }
+
+  const mHora = (hora || "").match(/(\d{1,2})\s*[:h]\s*(\d{2})?/);
+  const h = mHora ? Number(mHora[1]) : 23;
+  const min = mHora && mHora[2] ? Number(mHora[2]) : mHora ? 0 : 59;
+
+  const d = new Date(ano, mes, dia, h, min, 0);
+  return Number.isNaN(d.getTime()) ? "" : d.toISOString();
+}
+
+function interpretarExtra(texto) {
+  const campos = camposDaColagem(texto);
+  const pegar = (...nomes) => {
+    for (const n of nomes) {
+      const v = campos[semAcentoMaiusc(n)];
+      if (!vazio(v)) return v.trim();
+    }
+    return "";
+  };
+
+  const endereco = pegar("ENDERECO", "ENDEREÇO");
+  const temRotulos = !!(endereco || pegar("PEDIDO") || pegar("EMPRESA"));
+
+  // Sem rotulo nenhum: o texto inteiro e o endereco (uso simples do campo)
+  if (!temRotulos) {
+    return { endereco: limparLinha(String(texto).replace(/\s+/g, " ")), cliente: "", pedido: "", telefone: "", obs: "", prazo: "" };
+  }
+
+  // Telefone: tira o "-" que o ERP coloca antes do numero
+  let telefone = pegar("CONTATO", "TELEFONE", "FONE").replace(/\D/g, "");
+  if (telefone.length > 11 && telefone.startsWith("55")) telefone = telefone.slice(2);
+  if (![10, 11].includes(telefone.length)) telefone = "";
+
+  // "ate as 20:00" costuma vir solto no fim da mensagem
+  const solto = campos.__SOLTO || "";
+  const horaSolta = solto.match(/(?:ate|até)\s*(?:as|às)?\s*(\d{1,2}\s*[:h]\s*\d{0,2})/i);
+  const hora = pegar("HORARIO", "HORÁRIO") || (horaSolta ? horaSolta[1] : "");
+
+  const observacao = [
+    pegar("OBSERVACAO", "OBSERVAÇÃO"),
+    pegar("SUBIR NO LOCAL") ? "Subir: " + pegar("SUBIR NO LOCAL") : "",
+    pegar("TAXA DE SUBIDA") ? "Taxa: " + pegar("TAXA DE SUBIDA") : "",
+    pegar("PAGAMENTO") ? "Pgto: " + pegar("PAGAMENTO") : "",
+    pegar("FRETE") ? "Frete: " + pegar("FRETE") : "",
+    !horaSolta && solto ? solto : "",
+  ].filter(Boolean).join(" · ");
+
+  return {
+    endereco: endereco.replace(/\s+/g, " ").trim(),
+    cliente: pegar("EMPRESA", "CLIENTE", "NOME"),
+    pedido: pegar("PEDIDO", "N PEDIDO", "NUMERO DO PEDIDO"),
+    telefone,
+    obs: observacao,
+    prazo: prazoDaColagem(pegar("DATA PREVISTA", "DATA"), hora),
+  };
+}
+
+/*  Quebra o endereco do ERP em rua / bairro / cidade / CEP, para o
+    popup e a folha ficarem iguais aos dos pedidos do ML. */
+function partesDoEndereco(texto) {
+  const cep = (texto.match(/\d{5}-?\d{3}/) || [""])[0];
+  const bairro = (texto.match(/Bairro\s*:\s*([^.,;]+)/i) || ["", ""])[1].trim();
+  const cidade = (texto.match(/\d{5}-?\d{3}\s*-\s*([^,]+)/) || ["", ""])[1].trim();
+  const rua = texto
+    .replace(/Bairro\s*:\s*[^.,;]+[.,;]?/i, "")
+    .replace(/\d{5}-?\d{3}.*$/, "")
+    .replace(/[\s.,;-]+$/, "")
+    .trim();
+  return { rua: rua || texto, bairro, cidade, cep };
+}
+
 function paradasExtras() {
-  return (estado.extras || []).map(e => ({
+  return (estado.extras || []).map((e) => ({
     chave: "extra:" + e.id,
     extra: true,
-    rua: e.texto,
-    comp: "",
-    cep: "",
-    bairro: "",
-    cidade: "",
+    rua: e.rua || e.texto,
+    comp: e.obs || "",
+    cep: e.cep || "",
+    bairro: e.bairro || "",
+    cidade: e.cidade || "",
     region: "",
     zona: "Parada extra",
     lat: e.lat,
@@ -219,9 +346,17 @@ function paradasExtras() {
     valorTotal: 0,
     valorMax: 0,
     pedidos: [{
-      pedido: "", valor: null, nome: e.texto, quem: "", user: "",
-      telefone: "", whatsapp: "", conta: "", itens: [],
-      tipoEnvio: "parada extra", prazo_entrega: "",
+      pedido: e.pedido || "",
+      valor: null,
+      nome: e.cliente || "",
+      quem: e.cliente || "",
+      user: "",
+      telefone: e.telefone || "",
+      whatsapp: e.telefone ? "55" + e.telefone : "",
+      conta: "manual",
+      itens: [],
+      tipoEnvio: "parada extra",
+      prazo_entrega: e.prazo || "",
     }],
   }));
 }
@@ -229,19 +364,43 @@ function paradasExtras() {
 async function adicionarExtra() {
   const texto = $("extra-texto").value.trim();
   if (!texto) return;
-  $("extra-info").textContent = "Localizando...";
+  $("extra-info").textContent = "Lendo e localizando...";
 
-  const resp = await pegarJson("/api/flex/geocodificar?q=" + encodeURIComponent(texto));
-  if (!resp?.ok || !resp.ponto) {
-    $("extra-info").textContent = "Nao encontrei esse endereco. Tente com numero e cidade.";
+  const dados = interpretarExtra(texto);
+  if (!dados.endereco) {
+    $("extra-info").textContent = "Nao achei o endereco no texto colado.";
     return;
   }
 
-  estado.extras.push({ id: String(Date.now()), texto, lat: resp.ponto.lat, lng: resp.ponto.lng });
+  const ponto = await geocodificarTexto(dados.endereco);
+  if (!ponto) {
+    $("extra-info").textContent = "Nao consegui localizar: " + dados.endereco;
+    return;
+  }
+
+  const partes = partesDoEndereco(dados.endereco);
+  estado.extras.push({
+    id: String(Date.now()),
+    texto: dados.endereco,
+    ...partes,
+    cliente: dados.cliente,
+    pedido: dados.pedido,
+    telefone: dados.telefone,
+    obs: dados.obs,
+    prazo: dados.prazo,
+    lat: ponto.lat,
+    lng: ponto.lng,
+  });
+
   await salvarExtras();
   $("extra-texto").value = "";
   $("extra-info").textContent = "";
   recalcular();
+}
+
+async function geocodificarTexto(texto) {
+  const resp = await pegarJson("/api/flex/geocodificar?q=" + encodeURIComponent(texto));
+  return resp?.ok && resp.ponto ? resp.ponto : null;
 }
 
 async function salvarExtras() {
@@ -258,21 +417,96 @@ function desenharExtras() {
     alvo.innerHTML = "";
     return;
   }
-  alvo.innerHTML = estado.extras.map(e => `
-    <div class="extra-item">
-      <span class="bolinha" style="background:#111827"></span>
-      ${escapar(e.texto)}
-      <button class="mini-btn tirar" data-extra="${e.id}" title="Tirar">&times;</button>
-    </div>`).join("");
 
-  alvo.querySelectorAll("[data-extra]").forEach(b => {
+  alvo.innerHTML = estado.extras.map((e) => {
+    const q = rotuloPrazo(e.prazo);
+    return `
+    <div class="extra-item" data-id="${e.id}">
+      <div class="extra-corpo">
+        <b>${escapar(e.rua || e.texto)}</b>
+        <span>${escapar([e.cliente, e.pedido ? "#" + e.pedido : "", e.telefone ? formatarTel(e.telefone) : ""].filter(Boolean).join(" · "))}
+        ${q.texto ? `<span class="etiqueta ${q.classe}">${escapar(q.texto)}</span>` : ""}</span>
+        ${e.obs ? `<span>${escapar(e.obs)}</span>` : ""}
+      </div>
+      <button class="mini-btn" data-editar="${e.id}" title="Editar">editar</button>
+      <button class="mini-btn" data-extra="${e.id}" title="Tirar">&times;</button>
+    </div>`;
+  }).join("");
+
+  alvo.querySelectorAll("[data-extra]").forEach((b) => {
     b.onclick = async () => {
-      estado.extras = estado.extras.filter(e => e.id !== b.dataset.extra);
-      estado.manual.chaves = estado.manual.chaves.filter(c => c !== "extra:" + b.dataset.extra);
+      estado.extras = estado.extras.filter((e) => e.id !== b.dataset.extra);
+      estado.manual.chaves = estado.manual.chaves.filter((c) => c !== "extra:" + b.dataset.extra);
       await salvarExtras();
       recalcular();
     };
   });
+  alvo.querySelectorAll("[data-editar]").forEach((b) => {
+    b.onclick = () => editarExtra(b.dataset.editar);
+  });
+}
+
+function editarExtra(id) {
+  const e = estado.extras.find((x) => x.id === id);
+  if (!e) return;
+  const linha = $("extras").querySelector(`[data-id="${id}"]`);
+
+  const campo = (rotulo, nome, valor, tipo = "text") => `
+    <label class="campo-label">${rotulo}
+      <input data-campo="${nome}" type="${tipo}" value="${escapar(valor || "")}">
+    </label>`;
+
+  linha.innerHTML = `
+    <div class="extra-form">
+      ${campo("Endereco", "texto", e.texto)}
+      ${campo("Cliente", "cliente", e.cliente)}
+      ${campo("Pedido", "pedido", e.pedido)}
+      ${campo("Telefone", "telefone", e.telefone)}
+      ${campo("Observacao", "obs", e.obs)}
+      ${campo("Entregar ate", "prazo_local", e.prazo ? paraInputLocal(e.prazo) : "", "datetime-local")}
+      <div class="linha-botoes">
+        <button class="primario" data-salvar="${id}">Salvar</button>
+        <button data-cancelar="${id}">Cancelar</button>
+      </div>
+    </div>`;
+
+  linha.querySelector("[data-cancelar]").onclick = () => desenharExtras();
+  linha.querySelector("[data-salvar]").onclick = async () => {
+    const valor = (nome) => linha.querySelector(`[data-campo="${nome}"]`).value.trim();
+    const enderecoNovo = valor("texto");
+    const mudouEndereco = enderecoNovo && enderecoNovo !== e.texto;
+
+    if (mudouEndereco) {
+      const ponto = await geocodificarTexto(enderecoNovo);
+      if (!ponto) {
+        $("extra-info").textContent = "Nao consegui localizar o endereco novo; o antigo foi mantido.";
+        return;
+      }
+      Object.assign(e, ponto, { texto: enderecoNovo }, partesDoEndereco(enderecoNovo));
+    }
+
+    let tel = valor("telefone").replace(/\D/g, "");
+    if (tel.length > 11 && tel.startsWith("55")) tel = tel.slice(2);
+
+    e.cliente = valor("cliente");
+    e.pedido = valor("pedido");
+    e.telefone = [10, 11].includes(tel.length) ? tel : "";
+    e.obs = valor("obs");
+    const local = valor("prazo_local");
+    e.prazo = local ? new Date(local).toISOString() : "";
+
+    await salvarExtras();
+    $("extra-info").textContent = "";
+    recalcular();
+  };
+}
+
+// ISO -> valor aceito por <input type="datetime-local"> (hora local)
+function paraInputLocal(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 function paradasVisiveis() {

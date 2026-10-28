@@ -484,3 +484,30 @@ select {
   }
   @page { margin: 12mm; }
 }
+
+/* ---- parada extra: colagem e edicao ---- */
+#extra-texto {
+  width: 100%;
+  font: inherit;
+  font-size: 12px;
+  padding: 7px 8px;
+  border: 1px solid var(--borda);
+  border-radius: 5px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.extra-item { align-items: flex-start; }
+.extra-corpo { display: flex; flex-direction: column; gap: 2px; }
+.extra-corpo span { color: var(--suave); font-size: 11px; }
+.extra-form { width: 100%; }
+.extra-form .campo-label { gap: 6px; }
+.extra-form .campo-label input { width: 160px; }
+button.discreto {
+  background: none;
+  border: none;
+  color: var(--suave);
+  text-decoration: underline;
+  padding: 7px 4px;
+  font-size: 12px;
+}
+button.discreto:hover { color: var(--texto); background: none; }
