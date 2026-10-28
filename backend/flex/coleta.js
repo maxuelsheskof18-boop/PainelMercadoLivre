@@ -82,18 +82,54 @@ async function salvarConfig(patch) {
   return novo;
 }
 
+/* ---------------- endereco do envio ----------------
+   Com o cabecalho "x-format-new" o /shipments devolve o endereco em
+   destination.shipping_address (e o nome/telefone em destination); o
+   formato antigo usa receiver_address direto na raiz. Lemos os dois, e o
+   diagnostico mostra qual veio — assim nao dependemos de adivinhar. */
+// O telefone aparece como texto ("11 98888-7777") ou como objeto
+// ({ area_code, number }) dependendo do formato. Juntar DDD + numero
+// importa: so o numero reprovaria na validacao de 10/11 digitos e o
+// telefone seria descartado em silencio.
+function telefoneDe(v) {
+  if (!v) return "";
+  if (typeof v === "string" || typeof v === "number") return String(v);
+  const ddd = v.area_code || v.areaCode || "";
+  const num = v.number || v.phone_number || "";
+  return [ddd, num].filter(Boolean).join("");
+}
+
+function enderecoDoEnvio(envio) {
+  const dest = envio.destination || {};
+  const novo = dest.shipping_address || dest.receiver_address || null;
+  const antigo = envio.receiver_address || null;
+  const end = novo || antigo || {};
+  return {
+    end,
+    formato: novo ? "destination.shipping_address" : antigo ? "receiver_address" : "nao encontrado",
+    receiverName: dest.receiver_name || end.receiver_name || "",
+    receiverPhone:
+      telefoneDe(dest.receiver_phone) ||
+      telefoneDe(end.receiver_phone) ||
+      telefoneDe(end.phone) ||
+      telefoneDe(dest.phone) ||
+      "",
+  };
+}
+
 /* ---------------- montagem de um pedido ---------------- */
 async function montarRegistro(conta, pedido, envio, flexTypes) {
-  const end = envio.receiver_address || {};
+  const { end, receiverName, receiverPhone } = enderecoDoEnvio(envio);
   const logistic = String(envio.logistic_type || envio.logistic?.type || "").toLowerCase();
 
   const bairro = end.neighborhood?.name || end.neighborhood || "";
   const cidade = end.city?.name || end.city || "";
   const uf = String(end.state?.id || end.state?.name || end.state || "").replace(/^BR-/, "");
   const cep = end.zip_code || "";
-  const rua = [end.street_name, end.street_number].filter(Boolean).join(", ");
+  const rua =
+    [end.street_name, end.street_number].filter(Boolean).join(", ") || end.address_line || "";
 
-  let telefone = so(end.receiver_phone || end.phone?.number || pedido.buyer?.phone?.number || "");
+  let telefone = so(receiverPhone || telefoneDe(pedido.buyer?.phone) || "");
   if (telefone.length > 11 && telefone.startsWith("55")) telefone = telefone.slice(2);
   if (![10, 11].includes(telefone.length)) telefone = "";
 
@@ -122,10 +158,10 @@ async function montarRegistro(conta, pedido, envio, flexTypes) {
     valor: Number(pedido.total_amount) || null,
     nome:
       [pedido.buyer?.first_name, pedido.buyer?.last_name].filter(Boolean).join(" ") ||
-      end.receiver_name ||
+      receiverName ||
       "",
     user: pedido.buyer?.nickname || "",
-    quem: end.receiver_name || "",
+    quem: receiverName || "",
     telefone,
     whatsapp: telefone ? "55" + telefone : "",
     rua,
@@ -193,19 +229,22 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3 } = {}) {
       await progresso(`Lendo pedidos de ${conta.nickname}...`);
       try {
         const token = await getValidAccessToken(conta.id);
+        const limite = Number(process.env.FLEX_MAX_PEDIDOS) || 400;
         const pedidos = [];
         let offset = 0;
+        let total = 0;
 
-        while (offset < 400) {
+        while (offset < limite) {
           const r = await fetchRecentOrders(token, conta.id, {
             limit: 50,
             offset,
             dateCreatedFrom: desde,
           });
           const lote = r.results || [];
+          total = r.paging?.total || 0;
           pedidos.push(...lote);
           offset += lote.length;
-          if (lote.length < 50 || offset >= (r.paging?.total || 0)) break;
+          if (lote.length < 50 || offset >= total) break;
         }
 
         const envios = new Map(); // pedidos do mesmo pacote dividem o envio
@@ -233,18 +272,32 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3 } = {}) {
           }
         }
 
-        resumoContas.push({ nickname: conta.nickname, pedidos: pedidos.length, flex: doFlex });
+        resumoContas.push({
+          nickname: conta.nickname,
+          pedidos: pedidos.length,
+          flex: doFlex,
+          // Conta movimentada tem mais pedidos na janela do que o limite:
+          // pegamos os mais recentes (a busca vem ordenada por data desc).
+          truncado: total > pedidos.length ? total : 0,
+        });
       } catch (e) {
         resumoContas.push({ nickname: conta.nickname, erro: String(e?.message || e) });
       }
     }
 
-    /* coordenada e zona */
-    await progresso(`Localizando ${registros.length} enderecos...`, "geocodificando");
-    for (let i = 0; i < registros.length; i++) {
-      const reg = registros[i];
+    /* Coordenada: so para os Flex, que sao os que vao para o mapa. O
+       servico gratuito aceita 1 consulta por segundo — geocodificar os 800+
+       pedidos de todos os tipos levaria mais de dez minutos a toa. */
+    const paraLocalizar = registros.filter((r) => r.flex);
+    await progresso(`Localizando ${paraLocalizar.length} enderecos Flex...`, "geocodificando");
+
+    for (let i = 0; i < paraLocalizar.length; i++) {
+      const reg = paraLocalizar[i];
       if (i % 5 === 0) {
-        await progresso(`Localizando endereco ${i + 1} de ${registros.length}...`, "geocodificando");
+        await progresso(
+          `Localizando endereco ${i + 1} de ${paraLocalizar.length}...`,
+          "geocodificando"
+        );
       }
       if (!reg.lat) {
         try {
@@ -254,11 +307,14 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3 } = {}) {
           reg.geoErro = String(e?.message || e);
         }
       }
+    }
+    for (const reg of registros) {
+      if (!reg.flex && !reg.geoFonte) reg.geoFonte = "nao-flex";
       reg.zona = classificarZona(reg);
     }
 
-    const semGeo = registros.filter((r) => !r.lat).length;
-    const totalFlex = registros.filter((r) => r.flex).length;
+    const semGeo = paraLocalizar.filter((r) => !r.lat).length;
+    const totalFlex = paraLocalizar.length;
     await salvarEstado({
       estado: "pronto",
       registros,
@@ -267,7 +323,7 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3 } = {}) {
       gerado_em: new Date().toISOString(),
       mensagem:
         `${registros.length} pedidos (${totalFlex} Flex) de ${resumoContas.length} conta(s) | ` +
-        `${registros.length - semGeo} no mapa | ${semGeo} sem localizacao | ${falhas.length} falhas`,
+        `${totalFlex - semGeo} Flex no mapa | ${semGeo} sem localizacao | ${falhas.length} falhas`,
     });
   } catch (e) {
     await salvarEstado({
@@ -300,14 +356,17 @@ async function diagnosticar(conta, quantos = 10, dias = 7) {
     if (!shipId) continue;
     try {
       const envio = await buscarEnvio(token, shipId);
-      const end = envio.receiver_address || {};
+      const { end, formato, receiverPhone } = enderecoDoEnvio(envio);
       const logistic = String(envio.logistic_type || "").toLowerCase();
       tipos[logistic || "(vazio)"] = (tipos[logistic || "(vazio)"] || 0) + 1;
 
-      const tel = so(end.receiver_phone || end.phone?.number || "");
+      const tel = so(receiverPhone);
       linhas.push({
         pedido: String(pedido.id),
         logistic_type: logistic,
+        formato_do_endereco: formato,
+        chaves_do_envio: Object.keys(envio).join(", "),
+        chaves_do_endereco: Object.keys(end).join(", "),
         status: [envio.status, envio.substatus].filter(Boolean).join(" / "),
         tem_telefone: !!tel,
         telefone_mascarado: tel ? tel.slice(0, 2) + "*****" + tel.slice(-2) : "",
