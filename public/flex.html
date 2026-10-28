@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>Flex — mapa e rotas | Painel</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="flex.css">
+</head>
+<body>
+  <aside id="painel">
+    <header>
+      <h1>Flex — mapa e rotas</h1>
+      <p class="mini"><a href="/index.html">&larr; voltar ao painel</a></p>
+      <p id="status" class="status">Carregando...</p>
+      <div class="linha-botoes">
+        <button id="btn-rodar" class="primario">Puxar pedidos das contas</button>
+      </div>
+      <p id="contas-resumo" class="mini"></p>
+    </header>
+
+    <section>
+      <h2>Contas do Mercado Livre</h2>
+      <div id="contas" class="zonas"></div>
+      <div class="linha-botoes" style="margin-top:8px">
+        <a class="botao-link secundario" href="/connect">Conectar conta</a>
+        <a class="botao-link secundario" href="/api/flex/diagnostico" target="_blank" rel="noreferrer">Diagnóstico</a>
+      </div>
+    </section>
+
+    <section>
+      <h2>Partida</h2>
+      <div class="campo">
+        <input id="partida" type="text" placeholder="CEP ou endereço do CD">
+        <button id="btn-partida">Definir</button>
+      </div>
+      <p id="partida-info" class="mini"></p>
+    </section>
+
+    <section>
+      <h2>Filtros</h2>
+      <label class="campo-label">Valor mínimo do pedido
+        <input id="valor-min" type="number" value="0" min="0" step="10">
+      </label>
+      <label class="campo-label">Paradas por rota
+        <input id="max-paradas" type="number" value="9" min="2" max="23">
+      </label>
+      <label class="campo-check"><input id="so-flex" type="checkbox" checked> Somente Flex</label>
+      <label class="campo-check"><input id="sem-cancelados" type="checkbox" checked> Ignorar canceladas</label>
+      <p id="resumo-filtro" class="mini"></p>
+      <div id="zonas-filtro" class="zonas"></div>
+    </section>
+
+    <section>
+      <h2>Rotas</h2>
+      <div class="linha-botoes">
+        <button id="btn-rotas" class="primario">Gerar rotas por zona</button>
+      </div>
+      <div id="rotas"></div>
+    </section>
+
+    <section>
+      <h2>Exportar</h2>
+      <div class="linha-botoes">
+        <button id="btn-csv">Baixar CSV</button>
+        <button id="btn-json">Copiar JSON</button>
+      </div>
+    </section>
+
+    <section id="secao-problemas">
+      <h2>Pendências</h2>
+      <div id="problemas"></div>
+    </section>
+  </aside>
+
+  <main id="mapa-wrap">
+    <div id="mapa">
+      <div id="tiles"></div>
+      <svg id="linhas"></svg>
+      <div id="pins"></div>
+    </div>
+    <div id="zoom-controles">
+      <button id="btn-mais">+</button>
+      <button id="btn-menos">−</button>
+      <button id="btn-fit" title="Enquadrar todos os pedidos">⤢</button>
+    </div>
+    <div id="popup" hidden></div>
+    <p id="credito">© OpenStreetMap contributors</p>
+  </main>
+
+  <script src="flex.js"></script>
+</body>
+</html>
