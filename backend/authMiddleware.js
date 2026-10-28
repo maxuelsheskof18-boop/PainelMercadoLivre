@@ -5,7 +5,13 @@ function requireLogin(req, res, next) {
   if (req.session && req.session.loggedIn) {
     return next();
   }
-  if (req.path.startsWith("/api/")) {
+  // originalUrl, nao path: dentro de um router montado com
+  // app.use("/api", ...) o req.path vem SEM o /api (ex: "/flex/estado"),
+  // entao o teste falhava e a chamada de API era redirecionada para a tela
+  // de login. O front recebia o HTML do login onde esperava JSON e
+  // quebrava com "Unexpected token '<'". Vale para /api/prazos,
+  // /api/conversations, /api/questions e /api/flex.
+  if (req.originalUrl.startsWith("/api/")) {
     return res.status(401).json({ error: "Nao autenticado" });
   }
   return res.redirect("/login.html");
