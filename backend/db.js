@@ -218,6 +218,23 @@ async function init() {
     -- refresh_token ficam nulos ate o usuario conectar; origin_postal_code
     -- (o CEP de onde as encomendas saem) pode ser preenchido mesmo antes de
     -- conectar, e fica guardado independente da conexao OAuth.
+    -- Flex (mapa e rotas): "flex_estado" guarda o resultado da ultima
+    -- coleta e a configuracao da tela (ponto de partida) em uma linha por
+    -- chave; "flex_geocache" evita refazer geocodificacao de endereco que
+    -- ja foi resolvido antes (o servico gratuito aceita 1 consulta por
+    -- segundo, entao o cache e o que torna a coleta rapida na segunda vez).
+    CREATE TABLE IF NOT EXISTS flex_estado (
+      id TEXT PRIMARY KEY,
+      dados JSONB NOT NULL,
+      atualizado_em TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS flex_geocache (
+      chave TEXT PRIMARY KEY,
+      dados JSONB NOT NULL,
+      criado_em TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
     CREATE TABLE IF NOT EXISTS melhorenvio_account (
       id TEXT PRIMARY KEY DEFAULT 'main',
       access_token TEXT,

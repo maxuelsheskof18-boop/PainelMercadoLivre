@@ -18,6 +18,8 @@ const claimsRoutes = require("./routes/claims");
 const questionsRoutes = require("./routes/questions");
 const melhorenvioRoutes = require("./routes/melhorenvio");
 const prazosRoutes = require("./routes/prazos");
+const reputacaoRoutes = require("./routes/reputacao");
+const flexRoutes = require("./routes/flex");
 const { reconcileAllAccounts } = require("./sync");
 const { reconcileAllClaims } = require("./claimsSync");
 const { reconcileAllQuestions } = require("./questionsSync");
@@ -94,6 +96,12 @@ app.use("/api", questionsRoutes);
 // Monitor de prazos de despacho (coleta/agencia/Flex): /api/prazos.
 app.use("/api", prazosRoutes);
 
+// Reputacao, desempenho de envios e Full (fase 1: sonda).
+app.use("/api", reputacaoRoutes);
+
+// Flex: mapa de SP com os pedidos e rotas de carro por zona (/flex.html).
+app.use("/api", flexRoutes);
+
 // Pagina principal exige login. IMPORTANTE: isso precisa vir ANTES do
 // express.static abaixo — senao, como "index.html" e um arquivo real
 // dentro de public/, o proprio express.static serviria ele direto pra
@@ -102,6 +110,12 @@ app.use("/api", prazosRoutes);
 // arquivo pedido explicitamente).
 app.get(["/", "/index.html"], requireLogin, (req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "index.html"));
+});
+
+// Mapa do Flex: mesma protecao da pagina principal (e um arquivo real
+// dentro de public/, entao precisa vir antes do express.static).
+app.get("/flex.html", requireLogin, (req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "flex.html"));
 });
 
 // Arquivos publicos (tela de login e assets) sem exigir login
