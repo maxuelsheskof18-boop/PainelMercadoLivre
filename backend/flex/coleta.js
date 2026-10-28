@@ -132,6 +132,28 @@ function enderecoDoEnvio(envio) {
   };
 }
 
+/*  So interessa o que ainda esta para sair: etiqueta a imprimir ou a
+    reimprimir. Pedido ja despachado ("a caminho") ou entregue nao entra no
+    mapa — nao ha o que roteirizar nele.
+    O status manda (ready_to_ship); o substatus separa o que esta pronto
+    (ready_to_print / printed) do que ainda nem pode ser impresso. Quando o
+    ML nao manda substatus, o pedido entra: esconder algo pendente seria
+    pior do que mostrar um a mais. */
+function substatusAceitos() {
+  return (process.env.FLEX_SUBSTATUS || "ready_to_print,printed")
+    .split(",")
+    .map((x) => x.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function etiquetaPendente(envio) {
+  const status = String(envio.status || "").toLowerCase();
+  const sub = String(envio.substatus || "").toLowerCase();
+  if (status !== "ready_to_ship") return false;
+  if (!sub) return true;
+  return substatusAceitos().includes(sub);
+}
+
 /*  Prazo de entrega: o proprio /shipments ja traz lead_time, entao nao
     precisamos da chamada extra em /shipments/{id}/sla que o modulo de
     prazos usa — numa coleta de centenas de pedidos isso dobraria o custo.
@@ -195,6 +217,7 @@ async function montarRegistro(conta, pedido, envio, flexTypes) {
     atualizado_em: pedido.date_last_updated || "",
     prazo_entrega: prazo.data,
     prazo_fonte: prazo.fonte,
+    etiqueta_pendente: etiquetaPendente(envio),
     envio_id: String(envio.id || ""),
     conta: conta.nickname,
     conta_id: String(conta.id),
@@ -316,6 +339,8 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
 
         const envios = new Map(); // pedidos do mesmo pacote dividem o envio
         let novos = 0;
+        let descartados = 0;
+        let sairam = 0;
 
         for (let i = 0; i < pedidos.length; i++) {
           const pedido = pedidos[i];
@@ -328,8 +353,16 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
           try {
             if (!envios.has(shipId)) envios.set(shipId, await buscarEnvio(token, shipId));
             const reg = await montarRegistro(conta, pedido, envios.get(shipId), flexTypes);
-            porPedido.set(reg.pedido, reg);
-            novos++;
+            if (reg.etiqueta_pendente) {
+              porPedido.set(reg.pedido, reg);
+              novos++;
+            } else {
+              // Saiu da lista: foi despachado ou entregue desde a ultima
+              // rodada. Sem este delete, o pedido ficaria para sempre no
+              // mapa, porque a coleta incremental so acrescenta.
+              if (porPedido.delete(reg.pedido)) sairam++;
+              descartados++;
+            }
           } catch (e) {
             falhas.push({
               conta: conta.nickname,
@@ -342,6 +375,8 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
         lidosPorConta.push({
           nickname: conta.nickname,
           lidos: novos,
+          descartados,
+          sairam,
           // Conta movimentada tem mais pedidos na janela do que o limite:
           // pegamos os mais recentes (a busca vem ordenada por data desc).
           truncado: !desdeAlteracao && total > pedidos.length ? total : 0,
@@ -391,11 +426,14 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
         pedidos: meus.length,
         flex: meus.filter((r) => r.flex).length,
         novos: lido.lidos || 0,
+        descartados: lido.descartados || 0,
+        sairam: lido.sairam || 0,
         truncado: lido.truncado || 0,
         erro: lido.erro,
       };
     });
 
+    const foraDaLista = contasResumo.reduce((t, c) => t + (c.descartados || 0), 0);
     const doFlex = finais.filter((r) => r.flex);
     const semGeo = doFlex.filter((r) => !r.lat).length;
     await salvarEstado({
@@ -406,8 +444,9 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
       gerado_em: new Date().toISOString(),
       modo: desdeAlteracao ? "incremental" : "completa",
       mensagem:
-        `${finais.length} pedidos (${doFlex.length} Flex) de ${contasResumo.length} conta(s) | ` +
-        `${doFlex.length - semGeo} Flex no mapa | ${semGeo} sem localizacao | ${falhas.length} falhas`,
+        `${finais.length} a enviar (${doFlex.length} Flex) de ${contasResumo.length} conta(s) | ` +
+        `${doFlex.length - semGeo} Flex no mapa | ${semGeo} sem localizacao | ` +
+        `${foraDaLista} ja despachados/entregues | ${falhas.length} falhas`,
     });
   } catch (e) {
     await salvarEstado({
@@ -486,6 +525,7 @@ async function diagnosticar(conta, quantos = 30, dias = 7) {
           chaves_do_destination: Object.keys(envio.destination || {}).join(", "),
           chaves_do_endereco: Object.keys(end).join(", "),
           status: [envio.status, envio.substatus].filter(Boolean).join(" / "),
+          etiqueta_pendente: etiquetaPendente(envio),
           tem_telefone: !!tel,
           telefone_mascarado: tel ? tel.slice(0, 2) + "*****" + tel.slice(-2) : "",
           quem_recebe: receiverName ? receiverName.slice(0, 3) + "..." : "",
