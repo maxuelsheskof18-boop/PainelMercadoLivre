@@ -70,6 +70,8 @@ const estado = {
   semSessao: false,
   ultimaLeitura: 0,
   extras: [],
+  historico: null,
+  zonasAbertas: false,
   partida: null,
   centro: { lat: -23.5505, lng: -46.6333 },
   zoom: 11,
@@ -229,7 +231,7 @@ function camposDaColagem(texto) {
     const linha = limparLinha(bruta);
     if (!linha) continue;
 
-    const m = linha.match(/^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ \/]{2,30}?)\s*:\s*(.*)$/);
+    const m = linha.match(/^([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ \/]{2,60}?)\s*:\s*(.*)$/);
     if (m) {
       atual = semAcentoMaiusc(m[1]);
       campos[atual] = (m[2] || "").trim();
@@ -270,9 +272,19 @@ function prazoDaColagem(data, hora) {
 
 function interpretarExtra(texto) {
   const campos = camposDaColagem(texto);
+  /*  Busca por aproximacao: o ERP mudou "DATA PREVISTA" para "DATA
+      PREVISTA DE ENTREGA E CLIENTE" e um match exato pararia de achar.
+      Primeiro tenta o nome exato, depois qualquer rotulo que comece com
+      ele, depois qualquer um que o contenha. */
   const pegar = (...nomes) => {
+    const chaves = Object.keys(campos);
     for (const n of nomes) {
-      const v = campos[semAcentoMaiusc(n)];
+      const alvo = semAcentoMaiusc(n);
+      const achada =
+        chaves.find((k) => k === alvo) ||
+        chaves.find((k) => k.startsWith(alvo)) ||
+        chaves.find((k) => k.includes(alvo));
+      const v = achada ? campos[achada] : "";
       if (!vazio(v)) return v.trim();
     }
     return "";
@@ -305,13 +317,26 @@ function interpretarExtra(texto) {
     !horaSolta && solto ? solto : "",
   ].filter(Boolean).join(" · ");
 
+  /*  "DATA PREVISTA DE ENTREGA E CLIENTE: 30/10 - Fulano" traz as duas
+      informacoes na mesma linha: o que vem depois do primeiro travessao
+      e o cliente. */
+  const dataECliente = pegar("DATA PREVISTA", "DATA");
+  const depoisDoTraco = dataECliente.replace(/^[^-]*-\s*/, "").trim();
+  const clienteNaData =
+    depoisDoTraco && depoisDoTraco !== dataECliente ? depoisDoTraco : "";
+
+  // O rotulo da data contem a palavra CLIENTE, entao o valor pode vir
+  // como "30/10 - Fulano": a data no comeco sai fora.
+  const semData = (v) =>
+    v.replace(/^\s*\d{1,2}\s*\/\s*\d{1,2}(?:\s*\/\s*\d{2,4})?\s*[-–—]\s*/, "").trim();
+
   return {
     endereco: endereco.replace(/\s+/g, " ").trim(),
-    cliente: pegar("EMPRESA", "CLIENTE", "NOME"),
+    cliente: semData(pegar("EMPRESA", "CLIENTE", "NOME") || clienteNaData),
     pedido: pegar("PEDIDO", "N PEDIDO", "NUMERO DO PEDIDO"),
     telefone,
     obs: observacao,
-    prazo: prazoDaColagem(pegar("DATA PREVISTA", "DATA"), hora),
+    prazo: prazoDaColagem(dataECliente, hora),
   };
 }
 
@@ -329,6 +354,22 @@ function partesDoEndereco(texto) {
   return { rua: rua || texto, bairro, cidade, cep };
 }
 
+/*  O texto do ERP vem com "Nº 82" e "Bairro: Vila Guilherme." — nenhum
+    servico de geocodificacao entende esses rotulos, e a busca falha (era
+    o erro relatado: tirando o bairro e o Nº na mao, funcionava). Aqui a
+    consulta e remontada a partir das partes, em formato limpo. */
+function enderecoParaBusca(texto) {
+  const p = partesDoEndereco(texto);
+  const rua = p.rua
+    .replace(/\bn[º°o]?\.?\s*(?=\d)/gi, "")
+    .replace(/\s*,\s*/g, ", ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return [rua, p.bairro, p.cidade || "São Paulo", p.cep, "Brasil"]
+    .filter(Boolean)
+    .join(", ");
+}
+
 function paradasExtras() {
   return (estado.extras || []).map((e) => ({
     chave: "extra:" + e.id,
@@ -342,6 +383,7 @@ function paradasExtras() {
     zona: "Parada extra",
     lat: e.lat,
     lng: e.lng,
+    aprox: !!e.aprox,
     enderecoTexto: e.texto,
     valorTotal: 0,
     valorMax: 0,
@@ -361,6 +403,26 @@ function paradasExtras() {
   }));
 }
 
+/*  Geocodificar e aceitar o que vier e perigoso: o servico gratuito,
+    quando nao conhece a rua, devolve um ponto qualquer parecido em vez de
+    recusar — e um pino errado manda o motorista para o outro lado da
+    cidade sem ninguem desconfiar. Aqui o resultado so e aceito se estiver
+    perto do bairro informado (o bairro, esse, o mapa conhece bem).
+    Nao batendo, o pino fica no bairro e e marcado como aproximado. */
+async function localizarComConferencia(texto, partes) {
+  const consulta = enderecoParaBusca(texto);
+  const ponto = await geocodificarTexto(consulta);
+
+  const bairro = partes.bairro
+    ? await geocodificarTexto([partes.bairro, partes.cidade || "São Paulo", "Brasil"].join(", "))
+    : null;
+
+  const LIMITE_KM = 8;
+  if (ponto && (!bairro || distKm(ponto, bairro) <= LIMITE_KM)) return { ...ponto, aprox: false };
+  if (bairro) return { ...bairro, aprox: true };
+  return ponto ? { ...ponto, aprox: true } : null;
+}
+
 async function adicionarExtra() {
   const texto = $("extra-texto").value.trim();
   if (!texto) return;
@@ -372,13 +434,14 @@ async function adicionarExtra() {
     return;
   }
 
-  const ponto = await geocodificarTexto(dados.endereco);
-  if (!ponto) {
-    $("extra-info").textContent = "Nao consegui localizar: " + dados.endereco;
+  const partes = partesDoEndereco(dados.endereco);
+  const achado = await localizarComConferencia(dados.endereco, partes);
+  if (!achado) {
+    $("extra-info").textContent =
+      "Nao consegui localizar esse endereco. Confira rua, numero e cidade.";
     return;
   }
-
-  const partes = partesDoEndereco(dados.endereco);
+  const ponto = achado;
   estado.extras.push({
     id: String(Date.now()),
     texto: dados.endereco,
@@ -390,9 +453,13 @@ async function adicionarExtra() {
     prazo: dados.prazo,
     lat: ponto.lat,
     lng: ponto.lng,
+    aprox: !!ponto.aprox,
   });
 
   await salvarExtras();
+  $("extra-info").textContent = ponto.aprox
+    ? "Endereco exato nao encontrado: o pino ficou no bairro. Use editar para ajustar."
+    : "";
   $("extra-texto").value = "";
   $("extra-info").textContent = "";
   recalcular();
@@ -477,12 +544,13 @@ function editarExtra(id) {
     const mudouEndereco = enderecoNovo && enderecoNovo !== e.texto;
 
     if (mudouEndereco) {
-      const ponto = await geocodificarTexto(enderecoNovo);
+      const partesNovas = partesDoEndereco(enderecoNovo);
+      const ponto = await localizarComConferencia(enderecoNovo, partesNovas);
       if (!ponto) {
         $("extra-info").textContent = "Nao consegui localizar o endereco novo; o antigo foi mantido.";
         return;
       }
-      Object.assign(e, ponto, { texto: enderecoNovo }, partesDoEndereco(enderecoNovo));
+      Object.assign(e, { lat: ponto.lat, lng: ponto.lng, aprox: !!ponto.aprox }, { texto: enderecoNovo }, partesNovas);
     }
 
     let tel = valor("telefone").replace(/\D/g, "");
@@ -510,6 +578,8 @@ function paraInputLocal(iso) {
 }
 
 function paradasVisiveis() {
+  // Vendo um dia guardado: o mapa e a lista mostram aquele dia, nao o de hoje.
+  if (estado.historico) return estado.historico.paradas.filter(p => p.lat && p.lng);
   return estado.paradas.filter(p => !estado.zonasOcultas.has(p.zona) && p.lat && p.lng);
 }
 
@@ -1175,10 +1245,15 @@ function desenharRotas() {
             <a class="mini-btn" target="_blank" rel="noreferrer" href="${linkWaze(p)}">Waze</a></span>
           </li>`).join("")}
       </ol>
+      <div class="campos">
+        <input data-nome="${idx}" value="${escapar(rota.nome)}" placeholder="nome da rota">
+        <input data-motorista="${idx}" value="${escapar(rota.motorista || "")}" placeholder="quem levou">
+      </div>
       <div class="acoes">
         <a class="botao-link" target="_blank" rel="noreferrer" href="${escapar(linkGoogle(rota))}">Abrir no Google Maps</a>
         <a class="botao-link waze" target="_blank" rel="noreferrer" href="${linkWaze(rota.paradas[0])}">Waze (1ª parada)</a>
         <button class="btn-motorista" data-rota="${idx}">Modo motorista</button>
+        <button class="btn-guardar" data-rota="${idx}">Guardar no historico</button>
         <button class="btn-centrar" data-rota="${idx}">Ver no mapa</button>
       </div>
     </div>`).join("");
@@ -1191,6 +1266,16 @@ function desenharRotas() {
       desenharRotas();
       render();
     };
+  });
+
+  $("rotas").querySelectorAll("[data-nome]").forEach(i => {
+    i.onchange = () => { estado.rotas[Number(i.dataset.nome)].nome = i.value.trim() || "Rota"; };
+  });
+  $("rotas").querySelectorAll("[data-motorista]").forEach(i => {
+    i.onchange = () => { estado.rotas[Number(i.dataset.motorista)].motorista = i.value.trim(); };
+  });
+  $("rotas").querySelectorAll(".btn-guardar").forEach(b => {
+    b.onclick = () => guardarNoHistorico(estado.rotas[Number(b.dataset.rota)], b);
   });
 
   $("rotas").querySelectorAll(".btn-motorista").forEach(b => {
@@ -1250,6 +1335,113 @@ function avisarFalha(html) {
   const el = $("status");
   el.className = "status erro";
   el.innerHTML = html;
+}
+
+/* =====================================================================
+   MEMORIA DO DIA
+   Guarda a rota como ela saiu — nome, quem levou e a foto das paradas
+   com pedidos, cliente e prazo. Depois da para abrir o dia X e ver o que
+   foi entregue e por quem, inclusive imprimir a folha de novo.
+   ===================================================================== */
+async function guardarNoHistorico(rota, botao) {
+  if (!rota || !rota.paradas.length) return;
+  const texto = botao.textContent;
+  botao.disabled = true;
+  botao.textContent = "Guardando...";
+
+  const r = await pegarJson("/api/flex/historico", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      nome: rota.nome,
+      motorista: rota.motorista || "",
+      rotas: [{
+        nome: rota.nome,
+        motorista: rota.motorista || "",
+        km: rota.km,
+        zona: rota.zona,
+        paradas: rota.paradas,
+      }],
+    }),
+  });
+
+  botao.disabled = false;
+  botao.textContent = r ? "Guardado" : texto;
+  if (r) {
+    setTimeout(() => { botao.textContent = texto; }, 2000);
+    carregarHistorico();
+  }
+}
+
+async function carregarHistorico() {
+  const lista = await pegarJson("/api/flex/historico");
+  if (!lista) return;
+  if (!lista.length) {
+    $("historico").innerHTML = `<p class="mini">Nenhum dia guardado ainda.</p>`;
+    return;
+  }
+
+  $("historico").innerHTML = lista.map(item => {
+    const dia = String(item.dia).slice(0, 10).split("-").reverse().join("/");
+    return `
+    <div class="hist-item">
+      <div class="corpo">
+        <b>${escapar(dia)} · ${escapar(item.nome || "sem nome")}</b>
+        <span>${escapar(item.motorista || "sem motorista")} · ${item.paradas} paradas</span>
+      </div>
+      <div class="acoes">
+        <button class="mini-btn" data-ver="${item.id}">ver</button>
+        <button class="mini-btn" data-apagar="${item.id}">&times;</button>
+      </div>
+    </div>`;
+  }).join("");
+
+  $("historico").querySelectorAll("[data-ver]").forEach(b => {
+    b.onclick = () => abrirHistorico(b.dataset.ver);
+  });
+  $("historico").querySelectorAll("[data-apagar]").forEach(b => {
+    b.onclick = async () => {
+      if (!confirm("Apagar este dia do historico?")) return;
+      await pegarJson("/api/flex/historico/" + b.dataset.apagar, { method: "DELETE" });
+      carregarHistorico();
+    };
+  });
+}
+
+async function abrirHistorico(id) {
+  const item = await pegarJson("/api/flex/historico/" + id);
+  if (!item) return;
+
+  const rotas = (item.dados?.rotas || []).map(r => ({
+    ...r,
+    origem: null,
+    km: Number(r.km) || 0,
+    historico: true,
+  }));
+  const paradas = rotas.flatMap(r => r.paradas || []);
+
+  estado.historico = { item, paradas };
+  estado.rotas = rotas;
+  estado.manual = { ativo: false, chaves: [] };
+
+  const dia = String(item.dia).slice(0, 10).split("-").reverse().join("/");
+  $("historico-aviso").innerHTML = `<div class="aviso"><b>Vendo o dia ${escapar(dia)}</b>
+    ${escapar(item.nome || "")} ${item.motorista ? "· levou: " + escapar(item.motorista) : ""}
+    <br><button class="mini-btn" id="btn-sair-hist">voltar para hoje</button></div>`;
+  $("btn-sair-hist").onclick = sairDoHistorico;
+
+  desenharRotas();
+  desenharManual();
+  render();
+  enquadrar();
+}
+
+function sairDoHistorico() {
+  estado.historico = null;
+  estado.rotas = [];
+  $("historico-aviso").innerHTML = "";
+  recalcular();
+  enquadrar();
 }
 
 /* =====================================================================
@@ -1336,11 +1528,18 @@ function desenharZonas() {
       <span class="contagem">${c.pedidos} ped.${c.semGeo ? " · " + c.semGeo + " s/ local" : ""}</span>
     </label>`).join("");
 
+  const ligadas = [...cont.keys()].filter(z => !estado.zonasOcultas.has(z)).length;
+  $("zonas-rotulo").textContent =
+    `Zonas — ${ligadas} de ${cont.size} ligadas`;
+  $("zonas-seta").textContent = estado.zonasAbertas ? "▾" : "▸";
+  $("zonas-filtro").hidden = !estado.zonasAbertas;
+
   $("zonas-filtro").querySelectorAll("input").forEach(chk => {
     chk.onchange = () => {
       if (chk.checked) estado.zonasOcultas.delete(chk.dataset.zona);
       else estado.zonasOcultas.add(chk.dataset.zona);
       estado.rotas = [];
+      desenharZonas(); // mantem o rotulo "N de M ligadas" em dia
       desenharRotas();
       render();
     };
@@ -1771,6 +1970,11 @@ $("btn-manual").onclick = () => {
   $("mapa").classList.toggle("escolhendo", estado.manual.ativo);
   desenharManual();
   render();
+};
+$("btn-historico").onclick = carregarHistorico;
+$("btn-zonas").onclick = () => {
+  estado.zonasAbertas = !estado.zonasAbertas;
+  desenharZonas();
 };
 $("btn-csv").onclick = baixarCSV;
 $("btn-csv-mymaps").onclick = baixarCSVMyMaps;

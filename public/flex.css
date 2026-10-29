@@ -511,3 +511,47 @@ button.discreto {
   font-size: 12px;
 }
 button.discreto:hover { color: var(--texto); background: none; }
+
+/* ---- historico ---- */
+.hist-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 7px;
+  border: 1px solid var(--borda);
+  border-radius: 4px;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+.hist-item .corpo { display: flex; flex-direction: column; }
+.hist-item .corpo span { color: var(--suave); font-size: 11px; }
+.hist-item .acoes { margin-left: auto; display: flex; gap: 4px; }
+.rota .campos { display: flex; gap: 6px; padding: 0 10px 8px; }
+.rota .campos input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--borda);
+  border-radius: 4px;
+}
+
+/* ---- listas que abrem e fecham ---- */
+button.dobra {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 7px;
+  background: #f9fafb;
+  border: 1px solid var(--borda);
+  border-radius: 4px;
+  font-size: 12px;
+  text-align: left;
+}
+button.dobra span:last-child { margin-left: auto; color: var(--suave); }
+/* o atributo hidden perde para seletor de ID/classe com display proprio;
+   aqui nao ha display declarado, entao ele funciona sozinho */
+.zonas[hidden] { display: none; }
