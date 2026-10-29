@@ -489,7 +489,7 @@ function desenharExtras() {
     const q = rotuloPrazo(e.prazo);
     return `
     <div class="extra-item" data-id="${e.id}">
-      <div class="extra-corpo">
+      <div class="extra-corpo" data-ir="extra:${e.id}" title="Ver no mapa">
         <b>${escapar(e.rua || e.texto)}</b>
         <span>${escapar([e.cliente, e.pedido ? "#" + e.pedido : "", e.telefone ? formatarTel(e.telefone) : ""].filter(Boolean).join(" · "))}
         ${q.texto ? `<span class="etiqueta ${q.classe}">${escapar(q.texto)}</span>` : ""}</span>
@@ -500,6 +500,9 @@ function desenharExtras() {
     </div>`;
   }).join("");
 
+  alvo.querySelectorAll("[data-ir]").forEach((d) => {
+    d.onclick = () => irPara(d.dataset.ir);
+  });
   alvo.querySelectorAll("[data-extra]").forEach((b) => {
     b.onclick = async () => {
       estado.extras = estado.extras.filter((e) => e.id !== b.dataset.extra);
@@ -1742,12 +1745,22 @@ function baixarCSVMyMaps() {
     ];
   });
 
-  const csv = [cabecalho, ...linhas]
-    .map(l => l.map(v => '"' + String(v ?? "").replace(/"/g, '""') + '"').join(","))
-    .join("\n");
+  /*  Aspas so quando a celula precisa (virgula ou aspas dentro do texto).
+      O cabecalho sai limpo: o My Maps rejeita nome de coluna que contenha
+      aspas, e envolver tudo em aspas fazia exatamente isso. */
+  const celula = (v) => {
+    const t = String(v ?? "").replace(/[\r\n]+/g, " ").trim();
+    return /[",]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
 
+  const csv = [
+    cabecalho.join(","),
+    ...linhas.map(l => l.map(celula).join(",")),
+  ].join("\n");
+
+  // sem BOM: ele viraria parte do nome da primeira coluna no My Maps
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" }));
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
   a.download = `mymaps_${linhas.length}_paradas_${new Date().toLocaleDateString("pt-BR").replace(/\//g, "-")}.csv`;
   a.click();
 }

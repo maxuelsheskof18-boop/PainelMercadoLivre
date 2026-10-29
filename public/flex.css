@@ -555,3 +555,6 @@ button.dobra span:last-child { margin-left: auto; color: var(--suave); }
 /* o atributo hidden perde para seletor de ID/classe com display proprio;
    aqui nao ha display declarado, entao ele funciona sozinho */
 .zonas[hidden] { display: none; }
+
+.extra-corpo { cursor: pointer; }
+.extra-corpo:hover b { text-decoration: underline; }
