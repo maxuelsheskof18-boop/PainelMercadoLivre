@@ -558,3 +558,11 @@ button.dobra span:last-child { margin-left: auto; color: var(--suave); }
 
 .extra-corpo { cursor: pointer; }
 .extra-corpo:hover b { text-decoration: underline; }
+
+/* numeros alternativos da venda (pacote e envio) */
+.ids {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--suave);
+  margin-right: 6px;
+}

@@ -782,6 +782,8 @@ function abrirPopup(p) {
   const pedidos = p.pedidos.map(r => `
     <div style="margin-top:6px;padding-top:6px;border-top:1px dashed #e5e7eb">
       <b>#${r.pedido}</b> ${r.valor ? "— R$ " + r.valor.toFixed(2) : ""}
+      ${r.pack && r.pack !== r.pedido ? `<br><span class="ids">pacote #${escapar(r.pack)}</span>` : ""}
+      ${r.envio_id ? `<span class="ids">envio #${escapar(r.envio_id)}</span>` : ""}
       ${r.conta ? `<span class="etiqueta conta">${escapar(r.conta)}</span>` : ""}
       ${(() => { const q = rotuloPrazo(r.prazo_entrega);
          return q.texto ? `<span class="etiqueta ${q.classe}">${q.texto}</span>` : ""; })()}<br>
@@ -1175,6 +1177,7 @@ function desenharManual() {
            href="${escapar(linkGoogleDe(paradas, estado.partida))}">Abrir no Google Maps</a>
         <a class="botao-link waze" target="_blank" rel="noreferrer"
            href="${linkWaze(paradas[0])}">Waze (1ª parada)</a>
+        <button id="btn-imprimir-manual">Imprimir / PDF</button>
         <button id="btn-otimizar">Otimizar ordem</button>
         <button id="btn-limpar-manual">Limpar</button>
       </div>
@@ -1207,6 +1210,14 @@ function desenharManual() {
     desenharRotas();
     render();
   };
+
+  $("btn-imprimir-manual").onclick = () =>
+    imprimirRotas([{
+      nome: "Rota manual",
+      paradas: paradasManuais(),
+      km: kmTotal(paradasManuais(), estado.partida),
+      motorista: "",
+    }]);
 
   $("btn-otimizar").onclick = () => {
     estado.manual.chaves = ordenar(paradasManuais(), estado.partida).map(p => p.chave);
@@ -1256,6 +1267,7 @@ function desenharRotas() {
         <a class="botao-link" target="_blank" rel="noreferrer" href="${escapar(linkGoogle(rota))}">Abrir no Google Maps</a>
         <a class="botao-link waze" target="_blank" rel="noreferrer" href="${linkWaze(rota.paradas[0])}">Waze (1ª parada)</a>
         <button class="btn-motorista" data-rota="${idx}">Modo motorista</button>
+        <button class="btn-imprimir-rota" data-rota="${idx}">Imprimir / PDF</button>
         <button class="btn-guardar" data-rota="${idx}">Guardar no historico</button>
         <button class="btn-centrar" data-rota="${idx}">Ver no mapa</button>
       </div>
@@ -1276,6 +1288,9 @@ function desenharRotas() {
   });
   $("rotas").querySelectorAll("[data-motorista]").forEach(i => {
     i.onchange = () => { estado.rotas[Number(i.dataset.motorista)].motorista = i.value.trim(); };
+  });
+  $("rotas").querySelectorAll(".btn-imprimir-rota").forEach(b => {
+    b.onclick = () => imprimirRotas([estado.rotas[Number(b.dataset.rota)]]);
   });
   $("rotas").querySelectorAll(".btn-guardar").forEach(b => {
     b.onclick = () => guardarNoHistorico(estado.rotas[Number(b.dataset.rota)], b);
@@ -1468,7 +1483,11 @@ function buscar(termo) {
 
   const achados = (estado.registros || []).filter(r => {
     if (porDigitos) {
-      const campos = [r.pedido, r.telefone, r.cep, r.envio_id].map(v => String(v || "").replace(/[^0-9]/g, ""));
+      // pedido, pacote e envio: o numero que o usuario copia do ML pode
+      // ser qualquer um dos tres
+      const campos = [r.pedido, r.pack, r.envio_id, r.telefone, r.cep].map(v =>
+        String(v || "").replace(/[^0-9]/g, "")
+      );
       if (campos.some(v => v && v.includes(digitos))) return true;
     }
     return [r.nome, r.quem, r.user, r.rua, r.bairro, r.cidade, r.conta]
@@ -1487,6 +1506,8 @@ function buscar(termo) {
     return `<button class="resultado${escondido ? " escondido" : ""}" data-chave="${chave}" data-pedido="${r.pedido}">
       <b>#${escapar(r.pedido)} — ${escapar(r.quem || r.nome || "")}</b>
       <span>${escapar(r.rua)} · ${escapar(r.bairro || r.cidade || "")} · ${escapar(r.conta)}
+      ${r.pack && r.pack !== r.pedido ? "<br>pacote #" + escapar(r.pack) : ""}
+      ${r.envio_id ? " · envio #" + escapar(r.envio_id) : ""}
       ${escondido ? "<br>⚠ fora dos filtros atuais (Flex, cancelada, zona ou conta desligada)" : ""}</span>
     </button>`;
   }).join("");
@@ -1771,10 +1792,14 @@ function baixarCSVMyMaps() {
    PDF" na janela de impressao resolve — menos uma dependencia num
    servico que nao pode quebrar.
    ===================================================================== */
-function imprimirRotas() {
-  const rotas = estado.rotas.length
-    ? estado.rotas
-    : [{ nome: "Paradas no mapa", paradas: paradasVisiveis(), km: kmTotal(paradasVisiveis(), estado.partida) }];
+function imprimirRotas(apenas) {
+  // "apenas" vem do botao de uma rota especifica; sem ele, imprime todas
+  // (e, se nenhuma rota foi gerada, o que estiver no mapa).
+  const rotas = apenas?.length
+    ? apenas
+    : estado.rotas.length
+      ? estado.rotas
+      : [{ nome: "Paradas no mapa", paradas: paradasVisiveis(), km: kmTotal(paradasVisiveis(), estado.partida) }];
 
   if (!rotas[0].paradas.length) {
     alert("Nao ha paradas para imprimir.");
@@ -1787,6 +1812,7 @@ function imprimirRotas() {
     <div class="folha-rota">
       <h2>${escapar(rota.nome)}</h2>
       <p class="sub">${rota.paradas.length} paradas · ${rota.km.toFixed(1)} km
+        ${rota.motorista ? "· levou: " + escapar(rota.motorista) : ""}
         ${estado.partida ? "· saindo de " + escapar(estado.partida.enderecoTexto || "") : ""}
         · gerado em ${escapar(quando)}</p>
       <table class="folha-tabela">
