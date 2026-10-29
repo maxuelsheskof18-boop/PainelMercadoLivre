@@ -175,6 +175,43 @@ function prazoDoEnvio(envio) {
   return { data: "", fonte: "" };
 }
 
+/* ---------------- memoria do dia ---------------- */
+async function salvarHistorico({ dia, nome, motorista, rotas }) {
+  const id = String(Date.now()) + "-" + Math.random().toString(36).slice(2, 7);
+  const quando = dia || new Date().toISOString().slice(0, 10);
+  await db.query(
+    `INSERT INTO flex_historico (id, dia, nome, motorista, dados)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [id, quando, nome || "", motorista || "", { rotas: rotas || [] }]
+  );
+  return { id, dia: quando, nome, motorista };
+}
+
+async function listarHistorico(dias = 60) {
+  // o resumo nao carrega o jsonb inteiro: a lista fica leve mesmo com
+  // muitos dias guardados
+  const { rows } = await db.query(
+    `SELECT id, dia, nome, motorista, criado_em,
+            jsonb_array_length(dados->'rotas') AS rotas,
+            (SELECT COALESCE(SUM(jsonb_array_length(r->'paradas')), 0)
+               FROM jsonb_array_elements(dados->'rotas') r) AS paradas
+       FROM flex_historico
+      WHERE dia >= CURRENT_DATE - $1::int
+      ORDER BY dia DESC, criado_em DESC`,
+    [dias]
+  );
+  return rows;
+}
+
+async function lerHistorico(id) {
+  const { rows } = await db.query("SELECT * FROM flex_historico WHERE id = $1", [id]);
+  return rows[0] || null;
+}
+
+async function apagarHistorico(id) {
+  await db.query("DELETE FROM flex_historico WHERE id = $1", [id]);
+}
+
 /* ---------------- montagem de um pedido ---------------- */
 async function montarRegistro(conta, pedido, envio, flexTypes) {
   const { end, receiverName, receiverPhone } = enderecoDoEnvio(envio);
@@ -319,7 +356,11 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
       await progresso(`Lendo pedidos de ${conta.nickname}...`);
       try {
         const token = await getValidAccessToken(conta.id);
-        const limite = Number(process.env.FLEX_MAX_PEDIDOS) || 400;
+        /*  Conta grande tem milhares de pedidos na janela (a VESCO
+            SUPRIMENTOS teve 2008 em 3 dias). Com teto baixo, um pedido
+            ainda pendente de ontem ficava fora da leitura. O custo so
+            aparece na coleta cheia; o ciclo incremental le poucos. */
+        const limite = Number(process.env.FLEX_MAX_PEDIDOS) || 1200;
         const janela = desdeAlteracao
           ? { dateLastUpdatedFrom: desdeAlteracao }
           : { dateCreatedFrom: new Date(limiteJanela).toISOString() };
@@ -764,6 +805,10 @@ async function sondarTelefone(conta, { pedidoId, dias = 7 } = {}) {
 
 module.exports = {
   coletar,
+  salvarHistorico,
+  listarHistorico,
+  lerHistorico,
+  apagarHistorico,
   diagnosticar,
   sondarTelefone,
   lerEstado,
