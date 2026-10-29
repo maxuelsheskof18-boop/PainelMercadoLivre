@@ -229,6 +229,18 @@ async function init() {
       atualizado_em TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
+    -- Memoria do dia: cada rota fechada vira um registro com nome,
+    -- motorista e a foto das paradas como foram entregues. Serve para
+    -- olhar depois "o que saiu no dia X e com quem".
+    CREATE TABLE IF NOT EXISTS flex_historico (
+      id TEXT PRIMARY KEY,
+      dia DATE NOT NULL,
+      nome TEXT,
+      motorista TEXT,
+      dados JSONB NOT NULL,
+      criado_em TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
     CREATE TABLE IF NOT EXISTS flex_geocache (
       chave TEXT PRIMARY KEY,
       dados JSONB NOT NULL,
