@@ -1178,6 +1178,7 @@ function desenharManual() {
         <a class="botao-link waze" target="_blank" rel="noreferrer"
            href="${linkWaze(paradas[0])}">Waze (1ª parada)</a>
         <button id="btn-imprimir-manual">Imprimir / PDF</button>
+        <button id="btn-mymaps-manual">CSV My Maps</button>
         <button id="btn-otimizar">Otimizar ordem</button>
         <button id="btn-limpar-manual">Limpar</button>
       </div>
@@ -1218,6 +1219,9 @@ function desenharManual() {
       km: kmTotal(paradasManuais(), estado.partida),
       motorista: "",
     }]);
+
+  $("btn-mymaps-manual").onclick = () =>
+    baixarCSVMyMaps([{ nome: "Rota manual", paradas: paradasManuais() }]);
 
   $("btn-otimizar").onclick = () => {
     estado.manual.chaves = ordenar(paradasManuais(), estado.partida).map(p => p.chave);
@@ -1268,6 +1272,7 @@ function desenharRotas() {
         <a class="botao-link waze" target="_blank" rel="noreferrer" href="${linkWaze(rota.paradas[0])}">Waze (1ª parada)</a>
         <button class="btn-motorista" data-rota="${idx}">Modo motorista</button>
         <button class="btn-imprimir-rota" data-rota="${idx}">Imprimir / PDF</button>
+        <button class="btn-mymaps-rota" data-rota="${idx}">CSV My Maps</button>
         <button class="btn-guardar" data-rota="${idx}">Guardar no historico</button>
         <button class="btn-centrar" data-rota="${idx}">Ver no mapa</button>
       </div>
@@ -1291,6 +1296,9 @@ function desenharRotas() {
   });
   $("rotas").querySelectorAll(".btn-imprimir-rota").forEach(b => {
     b.onclick = () => imprimirRotas([estado.rotas[Number(b.dataset.rota)]]);
+  });
+  $("rotas").querySelectorAll(".btn-mymaps-rota").forEach(b => {
+    b.onclick = () => baixarCSVMyMaps([estado.rotas[Number(b.dataset.rota)]]);
   });
   $("rotas").querySelectorAll(".btn-guardar").forEach(b => {
     b.onclick = () => guardarNoHistorico(estado.rotas[Number(b.dataset.rota)], b);
@@ -1728,13 +1736,28 @@ function posicaoNasRotas() {
   return pos;
 }
 
-function baixarCSVMyMaps() {
-  const pos = posicaoNasRotas();
-  const paradas = paradasVisiveis().slice().sort((a, b) => {
-    const A = pos.get(a.chave), B = pos.get(b.chave);
-    if (A && B) return A.rota === B.rota ? A.ordem - B.ordem : A.rota.localeCompare(B.rota);
-    return A ? -1 : B ? 1 : 0;
-  });
+/*  Sem argumento: exporta tudo que esta no mapa. Com uma rota: exporta
+    so ela, na ordem de visita, para subir como uma camada do My Maps. */
+function baixarCSVMyMaps(apenas) {
+  const rotas = apenas?.length ? apenas : estado.rotas;
+
+  const pos = new Map();
+  rotas.forEach(r =>
+    (r.paradas || []).forEach((p, i) => pos.set(p.chave, { rota: r.nome, ordem: i + 1 }))
+  );
+
+  const paradas = apenas?.length
+    ? rotas.flatMap(r => r.paradas || [])
+    : paradasVisiveis().slice().sort((a, b) => {
+        const A = pos.get(a.chave), B = pos.get(b.chave);
+        if (A && B) return A.rota === B.rota ? A.ordem - B.ordem : A.rota.localeCompare(B.rota);
+        return A ? -1 : B ? 1 : 0;
+      });
+
+  if (!paradas.length) {
+    alert("Nao ha paradas localizadas para exportar.");
+    return;
+  }
 
   const cabecalho = ["nome", "latitude", "longitude", "endereco", "descricao",
     "rota", "ordem", "prazo", "conta", "telefone"];
@@ -1782,7 +1805,12 @@ function baixarCSVMyMaps() {
   // sem BOM: ele viraria parte do nome da primeira coluna no My Maps
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
-  a.download = `mymaps_${linhas.length}_paradas_${new Date().toLocaleDateString("pt-BR").replace(/\//g, "-")}.csv`;
+  const data = new Date().toLocaleDateString("pt-BR").replace(/\//g, "-");
+  const apelido =
+    apenas?.length === 1
+      ? semAcento(rotas[0].nome).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") + "_"
+      : "";
+  a.download = `mymaps_${apelido}${linhas.length}_paradas_${data}.csv`;
   a.click();
 }
 
