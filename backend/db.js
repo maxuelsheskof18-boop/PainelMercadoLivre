@@ -247,6 +247,29 @@ async function init() {
       criado_em TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
+    -- Busca de data Full: a extensao do Chrome (que roda num PC com o ML
+    -- logado) manda aqui a "foto" do que esta fazendo, uma linha por PC,
+    -- e busca os comandos que voce deu pelo celular (agendar data, aprovar
+    -- envio, ligar/desligar). O painel nunca fala com o ML por ela: quem
+    -- executa e sempre a extensao, com a sessao do vendedor naquele PC.
+    CREATE TABLE IF NOT EXISTS full_agenda_estado (
+      id TEXT PRIMARY KEY,                      -- id da maquina (gerado pela extensao)
+      dados JSONB NOT NULL,
+      atualizado_em TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS full_agenda_comandos (
+      id BIGSERIAL PRIMARY KEY,
+      maquina TEXT NOT NULL,
+      tipo TEXT NOT NULL,                       -- 'agendar' | 'aprovar_envio' | 'recusar_envio' | 'config' | 'verificar'
+      dados JSONB NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pendente',  -- 'pendente' | 'executando' | 'feito' | 'erro' | 'cancelado'
+      resultado JSONB,
+      criado_em TIMESTAMPTZ NOT NULL DEFAULT now(),
+      pego_em TIMESTAMPTZ,
+      concluido_em TIMESTAMPTZ
+    );
+
     CREATE TABLE IF NOT EXISTS melhorenvio_account (
       id TEXT PRIMARY KEY DEFAULT 'main',
       access_token TEXT,

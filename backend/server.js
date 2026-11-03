@@ -20,6 +20,7 @@ const melhorenvioRoutes = require("./routes/melhorenvio");
 const prazosRoutes = require("./routes/prazos");
 const reputacaoRoutes = require("./routes/reputacao");
 const flexRoutes = require("./routes/flex");
+const fullAgendaRoutes = require("./routes/fullAgenda");
 const { reconcileAllAccounts } = require("./sync");
 const { reconcileAllClaims } = require("./claimsSync");
 const { reconcileAllQuestions } = require("./questionsSync");
@@ -102,6 +103,10 @@ app.use("/api", reputacaoRoutes);
 // Flex: mapa de SP com os pedidos e rotas de carro por zona (/flex.html).
 app.use("/api", flexRoutes);
 
+// Busca de data Full: a extensao do Chrome manda o estado e busca comandos
+// (com token); a pagina /full.html acompanha e comanda (com login).
+app.use("/api", fullAgendaRoutes);
+
 // Pagina principal exige login. IMPORTANTE: isso precisa vir ANTES do
 // express.static abaixo — senao, como "index.html" e um arquivo real
 // dentro de public/, o proprio express.static serviria ele direto pra
@@ -118,6 +123,11 @@ app.get("/flex.html", requireLogin, (req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "flex.html"));
 });
 
+// Busca de data Full (celular): mesma protecao das outras paginas.
+app.get("/full.html", requireLogin, (req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "full.html"));
+});
+
 // Arquivos publicos (tela de login e assets) sem exigir login
 app.use(express.static(path.join(__dirname, "..", "public"), { index: false }));
 
@@ -131,6 +141,9 @@ db.init()
 
     // Prazos de despacho: atualiza a lista de envios a imprimir a cada 3 min.
     prazosRoutes.iniciarColetorPrazos();
+
+    // Flex: coleta automatica dos pedidos das contas (ciclo incremental).
+    flexRoutes.iniciarColetorFlex();
 
     // Reconciliacao periodica: cobre qualquer webhook que eventualmente se
     // perca. Enquanto o servico estiver "dormindo" (plano gratuito do
