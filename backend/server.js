@@ -74,6 +74,13 @@ app.use(
 // Webhook do Mercado Livre: sem login, e o proprio Mercado Livre quem chama.
 app.use(webhooksRoutes);
 
+// Busca de data Full: a extensao do Chrome manda o estado e busca comandos
+// (com token); a pagina /full.html acompanha e comanda (com login, rota a
+// rota). PRECISA vir antes dos outros app.use("/api", ...): conversations,
+// questions, prazos e flex fazem router.use(requireLogin), que barra QUALQUER
+// /api que passe por eles — inclusive a extensao, que nao tem sessao, so token.
+app.use("/api", fullAgendaRoutes);
+
 // Login/logout do painel
 app.use(sessionRoutes);
 
@@ -102,10 +109,6 @@ app.use("/api", reputacaoRoutes);
 
 // Flex: mapa de SP com os pedidos e rotas de carro por zona (/flex.html).
 app.use("/api", flexRoutes);
-
-// Busca de data Full: a extensao do Chrome manda o estado e busca comandos
-// (com token); a pagina /full.html acompanha e comanda (com login).
-app.use("/api", fullAgendaRoutes);
 
 // Pagina principal exige login. IMPORTANTE: isso precisa vir ANTES do
 // express.static abaixo — senao, como "index.html" e um arquivo real
