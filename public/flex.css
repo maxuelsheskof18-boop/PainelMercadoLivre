@@ -566,3 +566,17 @@ button.dobra span:last-child { margin-left: auto; color: var(--suave); }
   color: var(--suave);
   margin-right: 6px;
 }
+
+/* seletor de cor da conta */
+.cor-conta {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--borda);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.cor-conta::-webkit-color-swatch-wrapper { padding: 2px; }
+.cor-conta::-webkit-color-swatch { border: none; border-radius: 2px; }

@@ -70,6 +70,7 @@ const estado = {
   semSessao: false,
   ultimaLeitura: 0,
   extras: [],
+  cores: {},
   historico: null,
   zonasAbertas: false,
   partida: null,
@@ -99,6 +100,36 @@ const y2lat = (y, z) => {
 /* =====================================================================
    DADOS
    ===================================================================== */
+/*  Cor da conta: a escolhida pelo usuario ou, enquanto ele nao escolhe,
+    uma da paleta — sempre a mesma para a mesma conta (o indice sai da
+    lista ordenada, nao da ordem em que os pedidos chegaram). */
+const CORES_PADRAO = ["#dc2626", "#2563eb", "#16a34a", "#d97706", "#7c3aed", "#0891b2", "#be185d"];
+
+function contasConhecidas() {
+  const nomes = new Set((estado.registros || []).map(r => r.conta).filter(Boolean));
+  for (const c of estado.contasListadas || []) nomes.add(c);
+  return [...nomes].sort();
+}
+
+function corDaConta(conta) {
+  if (!conta) return "#6b7280";
+  if (estado.cores[conta]) return estado.cores[conta];
+  if (conta === "manual") return "#111827"; // parada extra
+  const i = contasConhecidas().indexOf(conta);
+  return CORES_PADRAO[(i < 0 ? 0 : i) % CORES_PADRAO.length];
+}
+
+const corDaParada = (p) => corDaConta(contasDaParada(p)[0] || "");
+
+// texto preto ou branco conforme o fundo, para a etiqueta ficar legivel
+function contraste(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+  if (!m) return "#fff";
+  const n = parseInt(m[1], 16);
+  const lum = (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+  return lum > 0.62 ? "#1f2328" : "#fff";
+}
+
 function corDaZona(zona) {
   if (CORES_FIXAS[zona]) return CORES_FIXAS[zona];
   const zonas = [...new Set(estado.paradas.map(p => p.zona))].filter(z => !CORES_FIXAS[z]).sort();
@@ -669,7 +700,7 @@ function render() {
     const marcaExtra = p.extra ? " extra" : "";
     return `<div class="pin${p.aprox ? " aprox" : ""}${escolhido}${achado}${marcaExtra}" data-chave="${p.chave}"
             title="${p.aprox ? "Localização aproximada" : ""}"
-            style="left:${q.x}px;top:${q.y}px;background:${corDaZona(p.zona)}"><b>${num}</b></div>`;
+            style="left:${q.x}px;top:${q.y}px;background:${corDaParada(p)}"><b>${num}</b></div>`;
   });
 
   if (estado.partida) {
@@ -784,7 +815,7 @@ function abrirPopup(p) {
       <b>#${r.pedido}</b> ${r.valor ? "— R$ " + r.valor.toFixed(2) : ""}
       ${r.pack && r.pack !== r.pedido ? `<br><span class="ids">pacote #${escapar(r.pack)}</span>` : ""}
       ${r.envio_id ? `<span class="ids">envio #${escapar(r.envio_id)}</span>` : ""}
-      ${r.conta ? `<span class="etiqueta conta">${escapar(r.conta)}</span>` : ""}
+      ${r.conta ? `<span class="etiqueta conta" style="background:${corDaConta(r.conta)};color:${contraste(corDaConta(r.conta))}">${escapar(r.conta)}</span>` : ""}
       ${(() => { const q = rotuloPrazo(r.prazo_entrega);
          return q.texto ? `<span class="etiqueta ${q.classe}">${q.texto}</span>` : ""; })()}<br>
       ${escapar(r.quem || r.nome)} ${r.telefone ? "· " + formatarTel(r.telefone) : "· sem telefone"}<br>
@@ -1258,7 +1289,7 @@ function desenharRotas() {
             <span>${p.pedidos.map(r => "#" + escapar(r.pedido)).join(" ")}
             · ${escapar(p.bairro || p.region || "")} · ${escapar(p.zona)}
             ${p.pedidos[0].telefone ? " · " + formatarTel(p.pedidos[0].telefone) : ""}<br>
-            <span class="etiqueta conta">${escapar(contasDaParada(p).join(" / "))}</span>
+            <span class="etiqueta conta" style="background:${corDaParada(p)};color:${contraste(corDaParada(p))}">${escapar(contasDaParada(p).join(" / "))}</span>
             <span class="etiqueta ${prazoDaParada(p).classe}">${escapar(prazoDaParada(p).texto)}</span>
             <a class="mini-btn" target="_blank" rel="noreferrer" href="${linkWaze(p)}">Waze</a></span>
           </li>`).join("")}
@@ -1640,6 +1671,7 @@ function desenharStatus() {
 async function desenharContas() {
   const contas = await pegarJson("/api/accounts");
   if (!contas) return;
+  estado.contasListadas = contas.map(c => c.nickname);
   if (!contas.length) {
     $("contas").innerHTML = `<p class="vazio">Nenhuma conta conectada ainda.</p>`;
     return;
@@ -1650,11 +1682,30 @@ async function desenharContas() {
   $("contas").innerHTML = contas.map(c => `
     <label class="conta-item">
       <input type="checkbox" data-conta="${escapar(c.nickname)}" ${estado.contasOcultas.has(c.nickname) ? "" : "checked"}>
+      <input type="color" class="cor-conta" data-cor="${escapar(c.nickname)}"
+             value="${corDaConta(c.nickname)}" title="Cor dos pinos desta conta">
       ${escapar(c.nickname)}
       <span class="contagem">${porConta[c.nickname] || 0} ped.</span>
     </label>`).join("");
 
-  $("contas").querySelectorAll("input").forEach(chk => {
+  $("contas").querySelectorAll(".cor-conta").forEach(inp => {
+    // "change" (e nao "input") para gravar quando o seletor fecha, em vez
+    // de uma chamada ao servidor a cada tom arrastado
+    inp.onchange = async () => {
+      estado.cores[inp.dataset.cor] = inp.value;
+      await pegarJson("/api/flex/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cores_contas: estado.cores }),
+      });
+      desenharZonas();
+      desenharRotas();
+      render();
+    };
+    inp.onclick = (e) => e.preventDefault === undefined || e.stopPropagation();
+  });
+
+  $("contas").querySelectorAll("input[type=checkbox]").forEach(chk => {
     chk.onchange = () => {
       if (chk.checked) estado.contasOcultas.delete(chk.dataset.conta);
       else estado.contasOcultas.add(chk.dataset.conta);
@@ -1934,6 +1985,7 @@ async function iniciar() {
 
   const cfg = (await pegarJson("/api/flex/config")) || {};
   estado.extras = Array.isArray(cfg.paradas_extras) ? cfg.paradas_extras : [];
+  estado.cores = cfg.cores_contas && typeof cfg.cores_contas === "object" ? cfg.cores_contas : {};
   if (cfg.partida) {
     estado.partida = cfg.partida;
     $("partida").value = cfg.partida.enderecoTexto || "";
