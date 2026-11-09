@@ -2,28 +2,40 @@
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
-  <title>Full — busca de data | Painel</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#ffe600">
+  <title>Envios Full | Painel</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#111318" media="(prefers-color-scheme: dark)">
   <link rel="stylesheet" href="full.css">
 </head>
 <body>
   <header class="topo">
-    <div>
-      <h1>📦 Full — busca de data</h1>
-      <a class="voltar" href="/index.html">&larr; painel</a>
+    <div class="marca">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 2 3 6.5v11L12 22l9-4.5v-11L12 2Zm0 2.2 6.6 3.3L12 10.8 5.4 7.5 12 4.2ZM5 9.1l6 3v7.6l-6-3V9.1Zm8 10.6v-7.6l6-3v7.6l-6 3Z"/></svg>
+      </span>
+      <div>
+        <h1>Envios Full</h1>
+        <p>Busca e agendamento de datas</p>
+      </div>
     </div>
-    <span id="atualizado" class="mudo">carregando…</span>
+    <div class="topo-dir">
+      <span id="aoVivo" class="ao-vivo"><i></i><span>conectando…</span></span>
+      <a class="link-painel" href="/index.html">Painel</a>
+    </div>
   </header>
 
-  <main id="app">
-    <p class="mudo centro">Carregando…</p>
+  <main>
+    <section id="resumo" class="resumo" aria-label="Resumo"></section>
+    <section id="acoes" class="acoes" aria-label="Precisa de você"></section>
+    <div id="app" class="maquinas">
+      <div class="vazio"><span class="spinner"></span> Carregando…</div>
+    </div>
+    <section class="cartao pedidos">
+      <h2>Pedidos enviados aos PCs</h2>
+      <ul id="comandos" class="lista-cmd"></ul>
+    </section>
   </main>
-
-  <section class="bloco">
-    <h2>Comandos enviados</h2>
-    <ul id="comandos" class="lista-cmd"></ul>
-  </section>
 
   <script src="full.js"></script>
 </body>
