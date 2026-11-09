@@ -230,7 +230,7 @@ function desenharEnvio(m, e, logada) {
 function desenharProposta(m, conta, p, nomeConta) {
   const ja = pendente(m.id, c => ['aprovar_envio', 'recusar_envio'].includes(c.tipo) && String(c.dados.propostaId) === String(p.id));
   return `<div class="acao-cab"><b>Envio pronto para criar</b><small>${esc(nomeMaquina(m))}${nomeConta ? ' · ' + esc(nomeConta) : ''} · montado ${hora(p.criada)}</small></div>
-    <div class="env-info">${p.itens.length} produto(s) · <b>${p.totalUn} un.</b></div>
+    <div class="env-info">${p.itens.length} produto(s) · <b>${p.totalUn} un.</b>${p.vol ? ` · ~${Number(p.vol).toLocaleString('pt-BR')} m³` : ''}${p.grandes ? ` · ${p.grandes} un. grandes` : ''}</div>
     <details><summary class="mudo">ver produtos</summary>
       <ul class="env-info">${p.itens.slice(0, 40).map(i => `<li>${esc(i.nome || i.id)} — <b>${i.unidades} un.</b>${i.regra ? ` <span class="mudo">(${esc(i.regra)})</span>` : ''}</li>`).join('')}
       ${p.itens.length > 40 ? `<li class="mudo">+${p.itens.length - 40} produto(s)</li>` : ''}</ul>
