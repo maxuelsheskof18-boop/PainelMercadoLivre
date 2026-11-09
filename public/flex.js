@@ -205,6 +205,7 @@ function recalcular() {
   estado.paradas = [...montarParadas(filtrarRegistros()), ...paradasExtras()];
   desenharExtras();
   estado.rotas = [];
+  guardarRotas(); // o filtro mudou as paradas: as rotas antigas nao valem mais
   desenharResumoFiltro();
   desenharZonas();
   desenharProblemas();
@@ -688,7 +689,13 @@ function render() {
 
   // --- pinos ---
   const ordem = new Map();
-  estado.rotas.forEach(rota => rota.paradas.forEach((p, i) => ordem.set(p.chave, i + 1)));
+  const emojis = new Map();
+  estado.rotas.forEach(rota =>
+    rota.paradas.forEach((p, i) => {
+      ordem.set(p.chave, i + 1);
+      if (rota.veiculo) emojis.set(p.chave, rota.veiculo);
+    })
+  );
   const manual = new Map();
   estado.manual.chaves.forEach((c, i) => manual.set(c, i + 1));
 
@@ -700,7 +707,9 @@ function render() {
     const marcaExtra = p.extra ? " extra" : "";
     return `<div class="pin${p.aprox ? " aprox" : ""}${escolhido}${achado}${marcaExtra}" data-chave="${p.chave}"
             title="${p.aprox ? "Localização aproximada" : ""}"
-            style="left:${q.x}px;top:${q.y}px;background:${corDaParada(p)}"><b>${num}</b></div>`;
+            style="left:${q.x}px;top:${q.y}px;background:${corDaParada(p)}"><b>${num}</b>${
+      emojis.has(p.chave) ? `<i class="pin-emoji">${emojis.get(p.chave)}</i>` : ""
+    }</div>`;
   });
 
   if (estado.partida) {
@@ -952,6 +961,63 @@ function ordenar(paradas, origem) {
   return ordem;
 }
 
+/* =====================================================================
+   ROTAS GUARDADAS
+   A rota montada nao pode sumir ao recarregar a pagina. Guardamos ela
+   na config do painel por CHAVE de parada (nao a parada inteira): assim,
+   na coleta seguinte, pedido que ja saiu para entrega desaparece da rota
+   sozinho, em vez de virar uma parada fantasma.
+   ===================================================================== */
+function rotasParaGuardar() {
+  return estado.rotas.map(r => ({
+    nome: r.nome,
+    motorista: r.motorista || "",
+    veiculo: r.veiculo || "",
+    zona: r.zona,
+    chaves: (r.paradas || []).map(p => p.chave),
+  }));
+}
+
+let tempoGuardarRotas = null;
+function guardarRotas() {
+  if (estado.historico) return; // vendo dia antigo: nao sobrescreve as de hoje
+  clearTimeout(tempoGuardarRotas);
+  tempoGuardarRotas = setTimeout(() => {
+    pegarJson("/api/flex/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rotas_abertas: rotasParaGuardar() }),
+    });
+  }, 500);
+}
+
+function montarRotaGuardada(r) {
+  const paradas = (r.chaves || [])
+    .map(c => estado.paradas.find(p => p.chave === c))
+    .filter(Boolean);
+  return {
+    ...r,
+    paradas,
+    origem: estado.partida,
+    km: kmTotal(paradas, estado.partida),
+  };
+}
+
+function restaurarRotas(guardadas) {
+  if (!Array.isArray(guardadas) || !guardadas.length) return;
+  estado.rotas = guardadas.map(montarRotaGuardada).filter(r => r.paradas.length);
+}
+
+/*  Depois de cada atualizacao de dados as paradas sao objetos novos:
+    as rotas precisam apontar para os novos, e quem saiu da lista (ja
+    despachado) deixa a rota. */
+function religarRotas() {
+  if (!estado.rotas.length || estado.historico) return;
+  estado.rotas = estado.rotas
+    .map(r => montarRotaGuardada({ ...r, chaves: (r.paradas || []).map(p => p.chave) }))
+    .filter(r => r.paradas.length);
+}
+
 function gerarRotas() {
   const visiveis = paradasVisiveis();
   const porZona = new Map();
@@ -978,6 +1044,7 @@ function gerarRotas() {
       estado.rotas.push({
         zona,
         nome: zona + (ordenadas.length > maxParadas ? ` — trecho ${Math.floor(i / maxParadas) + 1}` : ""),
+        veiculo: "🚗", // valor de verdade, nao so no botao: e o que vai para o mapa
         paradas: trecho,
         origem: i === 0 ? estado.partida : anterior,
         km: kmTotal(trecho, i === 0 ? estado.partida : anterior)
@@ -987,6 +1054,7 @@ function gerarRotas() {
 
   desenharRotas();
   render();
+  guardarRotas();
 }
 
 function kmTotal(paradas, origem) {
@@ -1233,6 +1301,7 @@ function desenharManual() {
     estado.rotas.push({
       zona: "Rota manual",
       nome: "Rota manual " + n,
+      veiculo: "🚗",
       paradas: escolhidas,
       origem: estado.partida,
       km: kmTotal(escolhidas, estado.partida),
@@ -1242,6 +1311,7 @@ function desenharManual() {
     desenharManual();
     desenharRotas();
     render();
+    guardarRotas();
   };
 
   $("btn-imprimir-manual").onclick = () =>
@@ -1321,6 +1391,7 @@ function desenharRotas() {
       estado.rotas.splice(Number(b.dataset.remove), 1);
       desenharRotas();
       render();
+      guardarRotas();
     };
   });
 
@@ -1328,10 +1399,16 @@ function desenharRotas() {
     b.onclick = () => abrirEmojis(Number(b.dataset.emoji), b);
   });
   $("rotas").querySelectorAll("[data-nome]").forEach(i => {
-    i.onchange = () => { estado.rotas[Number(i.dataset.nome)].nome = i.value.trim() || "Rota"; };
+    i.onchange = () => {
+      estado.rotas[Number(i.dataset.nome)].nome = i.value.trim() || "Rota";
+      guardarRotas();
+    };
   });
   $("rotas").querySelectorAll("[data-motorista]").forEach(i => {
-    i.onchange = () => { estado.rotas[Number(i.dataset.motorista)].motorista = i.value.trim(); };
+    i.onchange = () => {
+      estado.rotas[Number(i.dataset.motorista)].motorista = i.value.trim();
+      guardarRotas();
+    };
   });
   $("rotas").querySelectorAll(".btn-imprimir-rota").forEach(b => {
     b.onclick = () => imprimirRotas([estado.rotas[Number(b.dataset.rota)]]);
@@ -1439,6 +1516,7 @@ function abrirEmojis(idx, botao) {
       grade.remove();
       desenharRotas();
       render();
+      guardarRotas();
     };
   });
 }
@@ -1544,11 +1622,18 @@ async function abrirHistorico(id) {
   enquadrar();
 }
 
-function sairDoHistorico() {
+async function sairDoHistorico() {
   estado.historico = null;
   estado.rotas = [];
   $("historico-aviso").innerHTML = "";
   recalcular();
+
+  // traz de volta as rotas de hoje, que ficaram guardadas enquanto o dia
+  // antigo estava aberto
+  const cfg = await pegarJson("/api/flex/config");
+  restaurarRotas(cfg?.rotas_abertas);
+  desenharRotas();
+  render();
   enquadrar();
 }
 
@@ -2106,6 +2191,7 @@ function aplicarRun(run) {
   estado.registros = run?.registros || [];
   estado.paradas = [...montarParadas(filtrarRegistros()), ...paradasExtras()];
   desenharExtras();
+  religarRotas();
   desenharStatus();
   desenharResumoFiltro();
   desenharZonas();
@@ -2127,6 +2213,9 @@ async function iniciar() {
   }
 
   await atualizar(true);
+  restaurarRotas(cfg.rotas_abertas);
+  desenharRotas();
+  render();
 
   /*  Abrir a tela ja vale como "atualizar": se o ultimo dado tem mais de
       3 minutos e nao ha coleta em andamento, dispara a incremental (que e
@@ -2213,6 +2302,7 @@ $("btn-limpar-rotas").onclick = () => {
   estado.rotas = [];
   desenharRotas();
   render();
+  guardarRotas();
 };
 $("btn-rotas").onclick = gerarRotas;
 $("juntar-zonas").onchange = () => { if (estado.rotas.length) gerarRotas(); };
