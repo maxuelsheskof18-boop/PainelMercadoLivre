@@ -1210,6 +1210,7 @@ function desenharManual() {
            href="${linkWaze(paradas[0])}">Waze (1ª parada)</a>
         <button id="btn-imprimir-manual">Imprimir / PDF</button>
         <button id="btn-mymaps-manual">CSV My Maps</button>
+        <button id="btn-lalamove-manual">CSV Lalamove</button>
         <button id="btn-otimizar">Otimizar ordem</button>
         <button id="btn-limpar-manual">Limpar</button>
       </div>
@@ -1253,6 +1254,8 @@ function desenharManual() {
 
   $("btn-mymaps-manual").onclick = () =>
     baixarCSVMyMaps([{ nome: "Rota manual", paradas: paradasManuais() }]);
+  $("btn-lalamove-manual").onclick = () =>
+    baixarCSVLalamove([{ nome: "Rota manual", paradas: paradasManuais() }]);
 
   $("btn-otimizar").onclick = () => {
     estado.manual.chaves = ordenar(paradasManuais(), estado.partida).map(p => p.chave);
@@ -1305,6 +1308,7 @@ function desenharRotas() {
         <button class="btn-motorista" data-rota="${idx}">Modo motorista</button>
         <button class="btn-imprimir-rota" data-rota="${idx}">Imprimir / PDF</button>
         <button class="btn-mymaps-rota" data-rota="${idx}">CSV My Maps</button>
+        <button class="btn-lalamove-rota" data-rota="${idx}">CSV Lalamove</button>
         <button class="btn-guardar" data-rota="${idx}">Guardar no historico</button>
         <button class="btn-centrar" data-rota="${idx}">Ver no mapa</button>
       </div>
@@ -1334,6 +1338,9 @@ function desenharRotas() {
   });
   $("rotas").querySelectorAll(".btn-mymaps-rota").forEach(b => {
     b.onclick = () => baixarCSVMyMaps([estado.rotas[Number(b.dataset.rota)]]);
+  });
+  $("rotas").querySelectorAll(".btn-lalamove-rota").forEach(b => {
+    b.onclick = () => baixarCSVLalamove([estado.rotas[Number(b.dataset.rota)]]);
   });
   $("rotas").querySelectorAll(".btn-guardar").forEach(b => {
     b.onclick = () => guardarNoHistorico(estado.rotas[Number(b.dataset.rota)], b);
@@ -1910,6 +1917,89 @@ function baixarCSVMyMaps(apenas) {
 }
 
 /* =====================================================================
+   CSV DO LALAMOVE
+   Mesmo formato do template que o Lalamove disponibiliza: cabecalho,
+   a linha de instrucoes (ela faz parte do arquivo deles — e a linha
+   "Digite aqui..." que o usuario substitui) e uma linha por parada.
+   ===================================================================== */
+const LALA_CABECALHO = ["1. Endereço", "2. Nome", "3. Telefone", "4. Bloco/piso"];
+
+// copiada do template, inclusive as quebras de linha dentro das celulas
+const LALA_AJUDA = [
+  "o número e o nome da rua\nOU o nome do edifício\n\nex. 21 High Street",
+  'O nome do destinatário do ponto de entrega em particular. Por exemplo, "Maria dos Santos"',
+  "o número de telefone (com ou sem código de país)\ndo destinatário nesta parada\n\npor ex. 11998747856",
+  'Insira o bloco, andar, sala ou qualquer informação adicional sobre o endereço. Por exemplo, "13º andar, sala 21"',
+];
+
+function baixarCSVLalamove(apenas) {
+  const rotas = apenas?.length ? apenas : estado.rotas;
+  const pos = new Map();
+  rotas.forEach(r =>
+    (r.paradas || []).forEach((p, i) => pos.set(p.chave, { rota: r.nome, ordem: i + 1 }))
+  );
+
+  const paradas = apenas?.length
+    ? rotas.flatMap(r => r.paradas || [])
+    : paradasVisiveis().slice().sort((a, b) => {
+        const A = pos.get(a.chave), B = pos.get(b.chave);
+        if (A && B) return A.rota === B.rota ? A.ordem - B.ordem : A.rota.localeCompare(B.rota);
+        return A ? -1 : B ? 1 : 0;
+      });
+
+  if (!paradas.length) {
+    alert("Nao ha paradas para exportar.");
+    return;
+  }
+
+  const linhas = paradas.map(p => {
+    const endereco = [p.rua, p.bairro, p.cidade, p.cep].filter(Boolean).join(", ");
+    const nome = p.pedidos.map(r => r.quem || r.nome).filter(Boolean).join(" / ");
+    const telefone = p.pedidos.map(r => r.telefone).filter(Boolean)[0] || "";
+    // "qualquer informacao adicional": complemento, pedidos e conta —
+    // e o que o motorista precisa ler na porta
+    const extra = [
+      p.comp,
+      p.pedidos.map(r => (r.pedido ? "#" + r.pedido : "")).filter(Boolean).join(" "),
+      contasDaParada(p).join(" / "),
+    ].filter(Boolean).join(" · ");
+    return [endereco, nome, telefone, extra];
+  });
+
+  // o Lalamove le o arquivo como CSV comum: aspas so onde precisa, e as
+  // quebras internas das celulas de ajuda ficam dentro das aspas
+  const celula = (v) => {
+    const t = String(v ?? "");
+    return /["\n,]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
+
+  const csv =
+    "\ufeff" +
+    [LALA_CABECALHO, LALA_AJUDA, ...linhas]
+      .map(l => l.map(celula).join(","))
+      .join("\r\n");
+
+  const semTelefone = linhas.filter(l => !l[2]).length;
+  const data = new Date().toLocaleDateString("pt-BR").replace(/\//g, "-");
+  const apelido =
+    apenas?.length === 1
+      ? semAcento(rotas[0].nome).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") + "_"
+      : "";
+
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+  a.download = `lalamove_${apelido}${linhas.length}_paradas_${data}.csv`;
+  a.click();
+
+  if (semTelefone) {
+    alert(
+      `${semTelefone} de ${linhas.length} paradas foram sem telefone — o Mercado Livre ` +
+      `nao entrega esse dado pela API. Se o Lalamove recusar, preencha a coluna 3 antes de subir.`
+    );
+  }
+}
+
+/* =====================================================================
    FOLHA DE ROTA (imprimir / salvar em PDF)
    Sem biblioteca de PDF: o navegador ja sabe gerar um, e "Salvar como
    PDF" na janela de impressao resolve — menos uma dependencia num
@@ -2140,7 +2230,8 @@ $("btn-zonas").onclick = () => {
   desenharZonas();
 };
 $("btn-csv").onclick = baixarCSV;
-$("btn-csv-mymaps").onclick = baixarCSVMyMaps;
+$("btn-csv-mymaps").onclick = () => baixarCSVMyMaps();
+$("btn-csv-lalamove").onclick = () => baixarCSVLalamove();
 $("btn-imprimir").onclick = imprimirRotas;
 $("btn-json").onclick = async () => {
   await navigator.clipboard.writeText(JSON.stringify(estado.run?.registros || [], null, 2));
