@@ -580,3 +580,42 @@ button.dobra span:last-child { margin-left: auto; color: var(--suave); }
 }
 .cor-conta::-webkit-color-swatch-wrapper { padding: 2px; }
 .cor-conta::-webkit-color-swatch { border: none; border-radius: 2px; }
+
+/* emoji do veiculo */
+.emoji-botao {
+  flex: 0 0 auto;
+  width: 30px;
+  padding: 2px 0;
+  font-size: 16px;
+  line-height: 1.2;
+  border: 1px solid var(--borda);
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+.rota .campos { position: relative; }
+.emoji-grade {
+  position: absolute;
+  z-index: 20;
+  top: 34px;
+  left: 0;
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 2px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid var(--borda);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.18);
+}
+.emoji-grade button {
+  border: none;
+  background: none;
+  font-size: 16px;
+  line-height: 1.4;
+  padding: 2px 0;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.emoji-grade button:hover { background: #eef2ff; }

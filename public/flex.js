@@ -1279,7 +1279,7 @@ function desenharRotas() {
     <div class="rota">
       <header>
         <span class="bolinha" style="background:${corDaZona(rota.zona)}"></span>
-        ${escapar(rota.nome)}
+        ${rota.veiculo ? rota.veiculo + " " : ""}${escapar(rota.nome)}
         <span class="contagem">${rota.paradas.length} paradas · ${rota.km.toFixed(1)} km</span>
         <button class="mini-btn" data-remove="${idx}" title="Tirar esta rota do mapa">&times;</button>
       </header>
@@ -1295,6 +1295,7 @@ function desenharRotas() {
           </li>`).join("")}
       </ol>
       <div class="campos">
+        <button class="emoji-botao" data-emoji="${idx}" title="Com o que vai sair">${rota.veiculo || "🚗"}</button>
         <input data-nome="${idx}" value="${escapar(rota.nome)}" placeholder="nome da rota">
         <input data-motorista="${idx}" value="${escapar(rota.motorista || "")}" placeholder="quem levou">
       </div>
@@ -1319,6 +1320,9 @@ function desenharRotas() {
     };
   });
 
+  $("rotas").querySelectorAll("[data-emoji]").forEach(b => {
+    b.onclick = () => abrirEmojis(Number(b.dataset.emoji), b);
+  });
   $("rotas").querySelectorAll("[data-nome]").forEach(i => {
     i.onchange = () => { estado.rotas[Number(i.dataset.nome)].nome = i.value.trim() || "Rota"; };
   });
@@ -1395,6 +1399,44 @@ function avisarFalha(html) {
 }
 
 /* =====================================================================
+   EMOJI DA ROTA
+   Para marcar com o que a rota vai sair. Os bichos servem de codigo
+   proprio (a tartaruga para a rota lenta, por exemplo) — o painel nao
+   atribui significado nenhum, quem decide e voce.
+   ===================================================================== */
+const EMOJIS = [
+  "🛵", "🏍️", "🚗", "🚙", "🚐", "🚚", "🚛", "🚲", "🛴", "🚶",
+  "🐢", "🐌", "🐇", "🐆", "🦅", "🐝", "🐕", "🐈", "🦖", "🐘",
+  "⚡", "🔥", "⭐", "❄️", "☀️", "🌧️", "📦", "🎯", "🚨", "✅",
+];
+
+function abrirEmojis(idx, botao) {
+  const antiga = document.querySelector(".emoji-grade");
+  if (antiga) {
+    const eraMinha = antiga.dataset.de === String(idx);
+    antiga.remove();
+    if (eraMinha) return; // segundo clique no mesmo botao: so fecha
+  }
+
+  const grade = document.createElement("div");
+  grade.className = "emoji-grade";
+  grade.dataset.de = String(idx);
+  grade.innerHTML =
+    EMOJIS.map(e => `<button type="button" data-e="${e}">${e}</button>`).join("") +
+    `<button type="button" data-e="" title="Sem emoji">✕</button>`;
+
+  botao.parentElement.appendChild(grade);
+  grade.querySelectorAll("button").forEach(b => {
+    b.onclick = () => {
+      estado.rotas[idx].veiculo = b.dataset.e;
+      grade.remove();
+      desenharRotas();
+      render();
+    };
+  });
+}
+
+/* =====================================================================
    MEMORIA DO DIA
    Guarda a rota como ela saiu — nome, quem levou e a foto das paradas
    com pedidos, cliente e prazo. Depois da para abrir o dia X e ver o que
@@ -1412,9 +1454,11 @@ async function guardarNoHistorico(rota, botao) {
     body: JSON.stringify({
       nome: rota.nome,
       motorista: rota.motorista || "",
+      veiculo: rota.veiculo || "",
       rotas: [{
         nome: rota.nome,
         motorista: rota.motorista || "",
+        veiculo: rota.veiculo || "",
         km: rota.km,
         zona: rota.zona,
         paradas: rota.paradas,
@@ -1443,7 +1487,7 @@ async function carregarHistorico() {
     return `
     <div class="hist-item">
       <div class="corpo">
-        <b>${escapar(dia)} · ${escapar(item.nome || "sem nome")}</b>
+        <b>${escapar(dia)} · ${escapar(item.veiculo || "")} ${escapar(item.nome || "sem nome")}</b>
         <span>${escapar(item.motorista || "sem motorista")} · ${item.paradas} paradas</span>
       </div>
       <div class="acoes">
@@ -1889,7 +1933,7 @@ function imprimirRotas(apenas) {
 
   $("folha").innerHTML = rotas.map(rota => `
     <div class="folha-rota">
-      <h2>${escapar(rota.nome)}</h2>
+      <h2>${rota.veiculo ? rota.veiculo + " " : ""}${escapar(rota.nome)}</h2>
       <p class="sub">${rota.paradas.length} paradas · ${rota.km.toFixed(1)} km
         ${rota.motorista ? "· levou: " + escapar(rota.motorista) : ""}
         ${estado.partida ? "· saindo de " + escapar(estado.partida.enderecoTexto || "") : ""}
