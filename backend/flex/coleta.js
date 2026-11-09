@@ -193,6 +193,7 @@ async function listarHistorico(dias = 60) {
   const { rows } = await db.query(
     `SELECT id, dia, nome, motorista, criado_em,
             jsonb_array_length(dados->'rotas') AS rotas,
+            dados->'rotas'->0->>'veiculo' AS veiculo,
             (SELECT COALESCE(SUM(jsonb_array_length(r->'paradas')), 0)
                FROM jsonb_array_elements(dados->'rotas') r) AS paradas
        FROM flex_historico
