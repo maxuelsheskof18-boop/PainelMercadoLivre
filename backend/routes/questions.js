@@ -381,83 +381,19 @@ router.get("/debug/probe-item-batch", async (req, res) => {
         })(),
       };
 
-      // 4) Mesma chamada de novo, mas com um "User-Agent" de navegador de
-      // verdade — o resultado da tentativa 3 (sem token nenhum) mostrou que
-      // o bloqueio acontece MESMO sem autenticacao, ou seja, nao e sobre
-      // permissao do aplicativo: e um bloqueio de seguranca contra
-      // "robôs"/tráfego automatizado, aplicado com base em como a chamada
-      // se parece (sem User-Agent = "obviamente um programa", nao uma
-      // pessoa navegando) — bem comum em sites que sofrem raspagem de
-      // dados de produto. Servidores como o Render, sem esse cabecalho,
-      // caem direto nesse bloqueio.
-      const uaRes = await fetch(`https://api.mercadolibre.com/items/${itemIds[0]}`, {
-        headers: {
-          Accept: "application/json",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          "Accept-Language": "pt-BR,pt;q=0.9",
-        },
-      });
-      const uaText = await uaRes.text();
-      entry.chamadaComUserAgentDeNavegador = {
-        itemId: itemIds[0],
-        status: uaRes.status,
-        ok: uaRes.ok,
-        corpo: (() => {
-          try {
-            return JSON.parse(uaText);
-          } catch {
-            return uaText;
-          }
-        })(),
-      };
+      // (Antes havia aqui uma tentativa se passando por navegador e outra
+      // lendo a pagina publica do anuncio. As duas foram removidas: os
+      // termos do Mercado Livre proibem raspagem e disfarce para contornar
+      // bloqueio — este painel so fala com a API oficial, se identificando
+      // como aplicativo.)
 
-      // 5) Confirma, no mesmo instante, que outra chamada AUTENTICADA
+      // 4) Confirma, no mesmo instante, que outra chamada AUTENTICADA
       // qualquer (essa nunca falhou pra nenhuma conta) continua funcionando
       // — descarta a hipotese de o token ter expirado bem na hora do teste.
       const meRes = await fetch(`https://api.mercadolibre.com/users/me`, {
         headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
       });
       entry.chamadaUsersMeAindaFunciona = { status: meRes.status, ok: meRes.ok };
-
-      // 6) O bloqueio (tentativas 1 a 4) se repete identico com ou sem
-      // token e com ou sem User-Agent de navegador — ou seja, nao e sobre
-      // autenticacao nem sobre "parecer um robô": e a API de Itens
-      // (api.mercadolibre.com/items) bloqueando esse servidor
-      // especificamente (bloqueio por IP, bem comum contra raspagem de
-      // preco/produto, e o /users/me confirma que o resto da API aceita
-      // esse mesmo servidor numa boa). Ultima alternativa: em vez da API,
-      // buscar o TITULO direto na PAGINA PUBLICA do anuncio (a mesma que
-      // qualquer comprador ve no navegador) — e um dominio/sistema
-      // diferente (site de vendas, nao a API), que pode nao estar sob o
-      // mesmo bloqueio.
-      // "articulo.mercadolibre.com.br" (tentativa anterior) nem existe de
-      // verdade (deu erro de rede, nao de bloqueio) — o dominio publico
-      // certo do Brasil e "produto.mercadolivre.com.br" (com "v", igual o
-      // link que a propria API devolve no campo "permalink" quando
-      // funciona).
-      let paginaPublica = { tentativa: `https://produto.mercadolivre.com.br/${itemIds[0].replace(/^([A-Z]+)(\d+)$/, "$1-$2")}` };
-      try {
-        const pageRes = await fetch(paginaPublica.tentativa, {
-          redirect: "follow",
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            Accept: "text/html",
-          },
-        });
-        const pageHtml = await pageRes.text();
-        const titleMatch = /<title>([^<]*)<\/title>/i.exec(pageHtml);
-        const ogTitleMatch = /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']*)["']/i.exec(pageHtml);
-        paginaPublica.status = pageRes.status;
-        paginaPublica.ok = pageRes.ok;
-        paginaPublica.urlFinalAposRedirect = pageRes.url;
-        paginaPublica.tituloEncontrado = ogTitleMatch?.[1] || titleMatch?.[1] || null;
-        paginaPublica.tamanhoHtml = pageHtml.length;
-      } catch (errPage) {
-        paginaPublica.erro = errPage.message;
-      }
-      entry.chamadaPaginaPublica = paginaPublica;
     } catch (err) {
       entry.erro = { status: err.status, body: err.body || err.message };
     }

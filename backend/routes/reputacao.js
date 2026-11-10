@@ -19,6 +19,7 @@
 
 const express = require("express");
 const db = require("../db");
+const { USER_AGENT } = require("../ml/api");
 const { requireLogin } = require("../authMiddleware");
 const { getValidAccessToken } = require("../ml/tokens");
 
@@ -34,8 +35,7 @@ async function rawGet(path, token) {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/json",
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": USER_AGENT,
       },
     });
     const text = await res.text();

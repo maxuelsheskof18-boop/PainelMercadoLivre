@@ -20,7 +20,7 @@ const express = require("express");
 const db = require("../db");
 const { requireLogin } = require("../authMiddleware");
 const { getValidAccessToken } = require("../ml/tokens");
-const { fetchRecentOrders } = require("../ml/api");
+const { fetchRecentOrders, USER_AGENT } = require("../ml/api");
 
 const API_BASE = "https://api.mercadolibre.com";
 const router = express.Router();
@@ -36,8 +36,7 @@ async function rawGet(path, accessToken, extraHeaders = {}) {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         Accept: "application/json",
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": USER_AGENT,
         ...extraHeaders,
       },
     });
@@ -202,7 +201,24 @@ router.get("/debug/probe-prazos", async (req, res) => {
 const { fetchShipment, fetchResource } = require("../ml/api");
 
 // mlFetch nao e exportado por ml/api.js; fetchResource e o mesmo mlFetch.
-const mlGet = (path, token) => fetchResource(token, path);
+// Com nova tentativa: o ML devolve 429 ("muitas requisicoes") quando a conta
+// passa do limite — visto na VESCO SUPRIMENTOS em 08/10, que tambem e
+// consultada pelas mensagens/reclamacoes do painel. 429 e 5xx esperam e
+// tentam de novo (1,5s / 4s / 8s); o resto falha na hora.
+const ESPERAS_MS = [1500, 4000, 8000];
+const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
+async function comRetentativa(fn) {
+  for (let i = 0; ; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const transitorio = err.status === 429 || (err.status >= 500 && err.status < 600);
+      if (!transitorio || i >= ESPERAS_MS.length) throw err;
+      await dormir(ESPERAS_MS[i]);
+    }
+  }
+}
+const mlGet = (path, token) => comRetentativa(() => fetchResource(token, path));
 
 const CICLO_MS = 3 * 60 * 1000;
 const SLA_TTL_MS = 10 * 60 * 1000;
@@ -358,7 +374,7 @@ async function buscarPedidos(sellerId, token, substatus) {
 
 async function tipoLogistico(shipId, token) {
   if (cacheEnvio.has(shipId)) return cacheEnvio.get(shipId);
-  const s = await fetchShipment(token, shipId);
+  const s = await comRetentativa(() => fetchShipment(token, shipId));
   const info = { logistic_type: s?.logistic_type ?? s?.logistic?.type ?? null };
   cacheEnvio.set(shipId, info);
   return info;
@@ -460,12 +476,11 @@ async function coletarConta(acc, config, agora, hojeSP) {
   // em 06/10): invoice_pending = falta a nota fiscal, o ML nem libera a
   // etiqueta (contas com NF obrigatoria); ready_for_pickup = impresso e
   // esperando o motorista da coleta. picked_up/dropped_off/in_hub ja sairam.
-  const [aImprimir, nfPendente, impressos, prontosColeta] = await Promise.all([
-    buscarPedidos(sellerId, token, "ready_to_print"),
-    buscarPedidos(sellerId, token, "invoice_pending"),
-    buscarPedidos(sellerId, token, "printed"),
-    buscarPedidos(sellerId, token, "ready_for_pickup"),
-  ]);
+  // Em sequencia (nao em paralelo) para nao estourar o limite de requisicoes.
+  const aImprimir = await buscarPedidos(sellerId, token, "ready_to_print");
+  const nfPendente = await buscarPedidos(sellerId, token, "invoice_pending");
+  const impressos = await buscarPedidos(sellerId, token, "printed");
+  const prontosColeta = await buscarPedidos(sellerId, token, "ready_for_pickup");
 
   // Pedidos de um mesmo carrinho (pack) dividem o mesmo envio.
   const porEnvio = new Map();
@@ -483,7 +498,7 @@ async function coletarConta(acc, config, agora, hojeSP) {
     }
   }
 
-  const envios = await emLotes([...porEnvio.values()], 5, async (e) => {
+  const envios = await emLotes([...porEnvio.values()], 3, async (e) => {
     const { logistic_type } = await tipoLogistico(e.shipId, token);
     const modalidade = MODALIDADE[logistic_type];
     if (!modalidade) return null; // Full ou modalidade desconhecida
@@ -789,7 +804,21 @@ async function rodarCiclo() {
         contasOk.push(String(acc.id));
       } catch (err) {
         console.error(`[prazos] conta ${acc.nickname}:`, err.message);
-        erros.push({ sellerId: String(acc.id), conta: acc.nickname, erro: err.message });
+        // Mantem os ultimos dados dessa conta em vez de sumir com ela da
+        // tela (os contadores despencavam quando uma conta tomava 429).
+        const sid = String(acc.id);
+        const anteriores = estado.envios.filter((e) => e.sellerId === sid);
+        const contaAnterior = estado.contas.find((c) => c.sellerId === sid);
+        if (contaAnterior) contas.push(contaAnterior);
+        envios.push(...anteriores);
+        const ultimoOk = estado.ultimoOkPorConta?.[sid] || null;
+        erros.push({
+          sellerId: sid,
+          conta: acc.nickname,
+          erro: err.message,
+          status: err.status || null,
+          dadosDe: anteriores.length || contaAnterior ? ultimoOk : null,
+        });
       }
     }
     // Esquece envios que ja sairam da lista (despachados/cancelados).
@@ -797,11 +826,15 @@ async function rodarCiclo() {
     for (const id of cacheSla.keys()) if (!vivos.has(id)) cacheSla.delete(id);
     for (const id of cacheEnvio.keys()) if (!vivos.has(id)) cacheEnvio.delete(id);
 
-    estado = { atualizadoEm: agora.toISOString(), emAndamento: false, contas, envios, erros };
+    const ultimoOkPorConta = { ...(estado.ultimoOkPorConta || {}) };
+    for (const sid of contasOk) ultimoOkPorConta[sid] = agora.toISOString();
+    estado = { atualizadoEm: agora.toISOString(), emAndamento: false, contas, envios, erros, ultimoOkPorConta };
 
     // Historico (calendario): falha no banco nao pode derrubar a tela ao vivo.
     try {
-      await gravarHistorico(envios, contasOk, agora);
+      // So o que foi lido agora: dados repetidos de conta que falhou nao
+      // podem atualizar o historico.
+      await gravarHistorico(envios.filter((e) => contasOk.includes(e.sellerId)), contasOk, agora);
       // A tela de impressos mostra a que horas cada pacote foi impresso.
       const impressos = envios.filter((e) => e.impresso);
       if (impressos.length) {
