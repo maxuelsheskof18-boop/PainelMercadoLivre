@@ -8,6 +8,8 @@
 // e so ajustar aqui — a estrutura do resto do app nao muda.
 
 const API_BASE = "https://api.mercadolibre.com";
+// Como o painel se apresenta ao Mercado Livre em toda chamada da API.
+const USER_AGENT = "ml-painel/1.0 (+https://painelmercadolivre.onrender.com)";
 
 // Nenhuma chamada a uma API externa deve poder travar pra sempre — ja
 // aconteceu na pratica de o botao "Atualizar" do painel ficar girando
@@ -38,16 +40,11 @@ async function mlFetch(path, accessToken, options = {}) {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",
-      // O Mercado Livre bloqueia (do lado dele, anti-raspagem — erro 403
-      // "blocked_by: PolicyAgent" / "PA_UNAUTHORIZED_RESULT_FROM_POLICIES")
-      // chamadas que "parecem robô": sem User-Agent de navegador. Isso
-      // atingia principalmente a busca de detalhes de anuncio (/items) feita
-      // pelas Perguntas, deixando o titulo do anuncio em branco ("Anúncio
-      // não identificado"). Mandar cabecalhos de navegador de verdade
-      // costuma passar por esse bloqueio. Nao muda em nada as chamadas que
-      // ja funcionavam.
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      // Identifica o painel como o aplicativo que ele e. Antes ia um
+      // User-Agent de Chrome para escapar do bloqueio anti-robo do ML
+      // (403 PolicyAgent em /items); os termos do ML proibem contornar
+      // bloqueio assim, entao o painel aceita o bloqueio quando vier.
+      "User-Agent": USER_AGENT,
       "Accept-Language": "pt-BR,pt;q=0.9",
       ...(options.headers || {}),
     },
@@ -460,6 +457,7 @@ async function fetchMe(accessToken) {
 }
 
 module.exports = {
+  USER_AGENT,
   fetchUnreadMessagePacks,
   fetchPackMessages,
   markPackRead,
