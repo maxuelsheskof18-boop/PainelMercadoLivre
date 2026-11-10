@@ -10,7 +10,7 @@
 
 const db = require("../db");
 const { listAccounts, getValidAccessToken } = require("../ml/tokens");
-const { fetchRecentOrders } = require("../ml/api");
+const { fetchRecentOrders, USER_AGENT } = require("../ml/api");
 const { geocodificar, consultarCep } = require("./geo");
 const { classificarZona, extrairCidade } = require("./zonas");
 
@@ -46,10 +46,8 @@ async function buscarEnvioUmaVez(accessToken, shipmentId) {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",
       "x-format-new": "true",
-      // Mesmo motivo documentado em ml/api.js: sem User-Agent de navegador o
-      // ML bloqueia como "robo" (403 PolicyAgent).
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      // O painel se identifica como aplicativo (ver USER_AGENT em ml/api.js).
+      "User-Agent": USER_AGENT,
       "Accept-Language": "pt-BR,pt;q=0.9",
     },
   });
@@ -628,8 +626,7 @@ async function chamarCru(caminho, token, cabecalhos = {}) {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/json",
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": USER_AGENT,
         "Accept-Language": "pt-BR,pt;q=0.9",
         ...cabecalhos,
       },
@@ -664,8 +661,7 @@ async function baixarEtiqueta(envioId, token, tipo) {
         signal: AbortSignal.timeout(25_000),
         headers: {
           Authorization: `Bearer ${token}`,
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "User-Agent": USER_AGENT,
         },
       }
     );
