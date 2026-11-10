@@ -21,6 +21,7 @@ const prazosRoutes = require("./routes/prazos");
 const reputacaoRoutes = require("./routes/reputacao");
 const flexRoutes = require("./routes/flex");
 const fullAgendaRoutes = require("./routes/fullAgenda");
+const melisafeRoutes = require("./routes/melisafe");
 const { reconcileAllAccounts } = require("./sync");
 const { reconcileAllClaims } = require("./claimsSync");
 const { reconcileAllQuestions } = require("./questionsSync");
@@ -80,6 +81,10 @@ app.use(webhooksRoutes);
 // questions, prazos e flex fazem router.use(requireLogin), que barra QUALQUER
 // /api que passe por eles — inclusive a extensao, que nao tem sessao, so token.
 app.use("/api", fullAgendaRoutes);
+
+// Melisafe: a extensao pede tarifa/frete/metricas pela API (com token, sem
+// sessao) — pelo mesmo motivo do Full, vem antes dos routers com requireLogin.
+app.use("/api", melisafeRoutes);
 
 // Login/logout do painel
 app.use(sessionRoutes);
