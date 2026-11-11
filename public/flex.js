@@ -891,7 +891,13 @@ function abrirPopup(p) {
       ${(() => { const q = rotuloPrazo(r.prazo_entrega);
          return q.texto ? `<span class="etiqueta ${q.classe}">${q.texto}</span>` : ""; })()}<br>
       ${escapar(r.quem || r.nome)} ${r.telefone ? "· " + formatarTel(r.telefone) : "· sem telefone"}<br>
-      <span style="color:#6b7280">${escapar(r.itens.map(i => i.qtd + "x " + i.titulo).join(" | "))}</span>
+      <span style="color:#6b7280">${escapar(
+        r.itens.map(i => i.qtd + "x " + i.titulo + (i.variacao ? " (" + i.variacao + ")" : "")).join(" | ")
+      )}</span>
+      ${r.pagamento || r.peso || r.rastreio ? `<br><span class="ids">${
+        [r.pagamento, r.peso ? r.peso + "g" : "", r.rastreio ? "rastreio " + r.rastreio : ""]
+          .filter(Boolean).map(escapar).join(" · ")
+      }</span>` : ""}
     </div>`).join("");
 
   const wa = p.pedidos.find(r => r.whatsapp)?.whatsapp;
@@ -903,6 +909,7 @@ function abrirPopup(p) {
       <dt>Zona</dt><dd>${escapar(p.zona)}</dd>
       <dt>Envio</dt><dd>${escapar(p.pedidos[0].tipoEnvio || (p.pedidos[0].flex ? "Flex" : "—"))}</dd>
       <dt>Entregar</dt><dd>${escapar(prazoDaParada(p).texto)}</dd>
+      ${recadoDaParada(p) ? `<dt>Recado</dt><dd><b>${escapar(recadoDaParada(p))}</b></dd>` : ""}
       <dt>Conta</dt><dd>${escapar(contasDaParada(p).join(" / "))}</dd>
       <dt>CEP</dt><dd>${escapar(p.cep)}</dd>
       ${p.comp ? `<dt>Compl.</dt><dd>${escapar(p.comp)}</dd>` : ""}
@@ -968,6 +975,10 @@ function prazoDaParada(p) {
   const ordem = { atrasado: 0, hoje: 1, amanha: 2, "": 3 };
   return rotulos.sort((a, b) => (ordem[a.classe] ?? 9) - (ordem[b.classe] ?? 9))[0];
 }
+
+// recado que o comprador escreveu na compra (pode haver um por pedido)
+const recadoDaParada = (p) =>
+  [...new Set((p.pedidos || []).map(r => r.comentario_entrega).filter(Boolean))].join(" · ");
 
 const contasDaParada = p => [...new Set(p.pedidos.map(r => r.conta).filter(Boolean))];
 
@@ -1064,7 +1075,14 @@ function paradaEnxuta(p) {
       comp: r.comp || "",
       prazo_entrega: r.prazo_entrega || "",
       tipoEnvio: r.tipoEnvio || "",
+      comentario_entrega: r.comentario_entrega || "",
+      pagamento: r.pagamento || "",
+      rastreio: r.rastreio || "",
+      peso: r.peso ?? "",
+      metodo_envio: r.metodo_envio || "",
       enderecoCompleto: r.enderecoCompleto || "",
+      user: r.user || "",
+      frete_cobrado: r.frete_cobrado ?? 0,
       nome_loja: r.nome_loja || "",
       prodComp: r.prodComp || "",
       prodLala: r.prodLala || "",
@@ -1300,6 +1318,7 @@ function desenharMotorista() {
       <p class="mot-sub">${escapar(p.bairro || "")}${p.cidade ? " · " + escapar(p.cidade) : ""} · ${escapar(p.cep)}</p>
       <dl class="mot-dados">
         ${p.comp ? `<dt>Compl.</dt><dd>${escapar(p.comp)}</dd>` : ""}
+        ${recadoDaParada(p) ? `<dt>Recado</dt><dd><b>${escapar(recadoDaParada(p))}</b></dd>` : ""}
         <dt>Entregar</dt><dd><b>${escapar(prazoDaParada(p).texto)}</b></dd>
         <dt>Conta</dt><dd>${escapar(contasDaParada(p).join(" / "))}</dd>
         <dt>Quem recebe</dt><dd>${escapar(p.pedidos.map(r => r.quem || r.nome).join(" / "))}</dd>
@@ -2081,7 +2100,9 @@ async function desenharContas() {
 const CABECALHO = ["endereco", "titulo", "nome_lalamove", "telefone", "complemento_lalamove",
   "complemento", "produto_completo", "ordem", "nome", "username", "pedido", "nome_loja",
   "frete", "cep", "quem_recebe", "whatsapp", "zona", "rota", "ordem_na_rota",
-  "conta", "prazo_entrega", "entregar_em"];
+  "conta", "prazo_entrega", "entregar_em",
+  "recado_do_cliente", "pagamento", "parcelas", "frete_cobrado", "taxa_ml",
+  "rastreio", "metodo_envio", "peso", "dimensoes", "variacao", "anuncio", "categoria", "canal"];
 
 function baixarCSV() {
   const posicao = new Map();
@@ -2118,7 +2139,20 @@ function baixarCSV() {
         pos?.ordem || "",
         r.conta || "",
         r.prazo_entrega || "",
-        rotuloPrazo(r.prazo_entrega).texto
+        rotuloPrazo(r.prazo_entrega).texto,
+        r.comentario_entrega || "",
+        r.pagamento || "",
+        r.parcelas || "",
+        r.frete_cobrado ?? "",
+        r.taxa_ml ?? "",
+        r.rastreio || "",
+        r.metodo_envio || "",
+        r.peso ?? "",
+        r.dimensoes || "",
+        (r.itens || []).map(i => i.variacao).filter(Boolean).join(" | "),
+        (r.itens || []).map(i => i.anuncio).filter(Boolean).join(" "),
+        (r.itens || []).map(i => i.categoria).filter(Boolean).join(" "),
+        r.canal || ""
       ]);
     }
   }
@@ -2140,6 +2174,14 @@ function baixarCSV() {
    lugar certo sem ele precisar adivinhar pelo endereco. Na importacao,
    escolha "latitude" e "longitude" como posicao e "nome" como titulo.
    ===================================================================== */
+/*  Codigo curto da loja ("VESCO SUPRIMENTOS" -> "VS"). O campo de
+    complemento do Lalamove e apertado — por isso o nome da conta entra
+    inteiro na coluna nome_loja e abreviado no texto colado. */
+function codigoLoja(nome) {
+  const palavras = String(nome || "").trim().split(/\s+/).filter(Boolean);
+  return palavras.map(w => w[0]).join("").toUpperCase().slice(0, 3);
+}
+
 function posicaoNasRotas() {
   const pos = new Map();
   estado.rotas.forEach(rota =>
@@ -2171,34 +2213,68 @@ function baixarCSVMyMaps(apenas) {
     return;
   }
 
-  const cabecalho = ["nome", "latitude", "longitude", "endereco", "descricao",
-    "rota", "ordem", "prazo", "conta", "telefone"];
+  /*  Mesmas colunas do arquivo que ja era usado no My Maps, na mesma
+      ordem — assim a ficha do pino abre igual (titulo = username -
+      #pedido, produto completo, quem recebe...). Uma linha por PEDIDO,
+      como no arquivo antigo: duas vendas no mesmo endereco viram duas
+      fichas. O que mudou a favor: latitude/longitude vem do proprio
+      Mercado Livre — escolha "latitude" e "longitude" como posicao e
+      "titulo" como titulo, e o My Maps nao precisa adivinhar o ponto
+      pelo endereco. */
+  const cabecalho = ["endereco", "titulo", "nome_lalamove", "telefone",
+    "complemento_lalamove", "complemento", "produto_completo", "ordem",
+    "nome", "username", "pedido", "nome_loja", "frete", "cep",
+    "quem_recebe", "whatsapp", "latitude", "longitude"];
 
-  const linhas = paradas.map(p => {
+  const linhas = paradas.flatMap(p => {
     const d = pos.get(p.chave);
     const prazo = prazoDaParada(p).texto;
-    const tel = p.pedidos.map(r => r.telefone).filter(Boolean)[0] || "";
-    const descricao = [
-      p.pedidos.map(r => (r.pedido ? "#" + r.pedido : "")).filter(Boolean).join(" "),
-      p.pedidos.map(r => r.quem || r.nome).filter(Boolean).join(" / "),
-      tel ? formatarTel(tel) : "sem telefone",
-      p.comp || "",
-      p.pedidos.flatMap(r => r.itens.map(i => i.qtd + "x " + i.titulo)).join(" | "),
-      prazo ? "Entregar: " + prazo : "",
-      contasDaParada(p).join(" / "),
-    ].filter(Boolean).join(" — ");
+    const enderecoDaParada =
+      p.enderecoTexto || [p.rua, p.bairro, p.cidade, p.cep].filter(Boolean).join(", ");
+    const ordem = d?.ordem || 1;
 
-    return [
-      (d ? d.ordem + " · " : "") + p.rua,
-      p.lat, p.lng,
-      p.enderecoTexto || p.rua,
-      descricao,
-      d?.rota || "",
-      d?.ordem || "",
-      prazo,
-      contasDaParada(p).join(" / "),
-      tel,
-    ];
+    // parada extra sem pedido ainda assim vira uma linha
+    const pedidos = p.pedidos && p.pedidos.length ? p.pedidos : [{}];
+
+    return pedidos.map(r => {
+      const itens = r.itens || [];
+      const comp = r.comp || p.comp || "";
+      const loja = r.conta || r.nome_loja || "";
+      const id = r.pedido || "";
+      const tel = r.telefone || "";
+      const prodComp =
+        r.prodComp ||
+        itens
+          .map((i, k) => `${k + 1}_${i.titulo}_Q:${i.qtd}_Pr:${i.preco || ""}-SKU:${i.sku || ""}`)
+          .join("| ");
+      const prodLala =
+        r.prodLala ||
+        itens.map(i => `${i.qtd}x${String(i.titulo).substring(0, 15)}_${i.sku || ""}`).join("|");
+
+      return [
+        r.enderecoCompleto || enderecoDaParada,
+        (r.user || r.nome || r.quem || p.rua) + (id ? " - #" + id : ""),
+        [r.nome, r.user].filter(Boolean).join(" - "),
+        tel,
+        comp + (id ? "|#" + id : "") + "|" + prodLala + codigoLoja(loja),
+        [
+          comp,
+          r.comentario_entrega ? "Recado: " + r.comentario_entrega : "",
+          prazo ? "Entregar: " + prazo : "",
+        ].filter(Boolean).join(" · "),
+        prodComp,
+        ordem,
+        r.nome || "",
+        r.user || "",
+        id ? "#" + id : "",
+        loja,
+        (Number(r.frete_cobrado) || 0).toFixed(2),
+        p.cep ? "'" + String(p.cep).replace(/\D/g, "") : "",
+        r.quem || "",
+        r.whatsapp || (tel ? "55" + tel : ""),
+        p.lat, p.lng,
+      ];
+    });
   });
 
   /*  Aspas so quando a celula precisa (virgula ou aspas dentro do texto).
@@ -2270,6 +2346,7 @@ function baixarCSVLalamove(apenas) {
     // e o que o motorista precisa ler na porta
     const extra = [
       p.comp,
+      recadoDaParada(p),
       p.pedidos.map(r => (r.pedido ? "#" + r.pedido : "")).filter(Boolean).join(" "),
       contasDaParada(p).join(" / "),
     ].filter(Boolean).join(" · ");
@@ -2353,6 +2430,7 @@ function imprimirRotas(apenas) {
               <td>
                 <b>${escapar(p.rua)}</b>${p.comp ? " — " + escapar(p.comp) : ""}<br>
                 ${escapar([p.bairro, p.cidade, p.cep].filter(Boolean).join(" · "))}
+                ${recadoDaParada(p) ? "<br><b>Recado: " + escapar(recadoDaParada(p)) + "</b>" : ""}
                 ${p.pedidos.some(r => r.itens.length)
                   ? "<br>" + escapar(p.pedidos.flatMap(r => r.itens.map(it => it.qtd + "x " + it.titulo)).join(" | "))
                   : ""}
