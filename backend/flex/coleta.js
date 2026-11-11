@@ -271,6 +271,21 @@ async function montarRegistro(conta, pedido, envio, flexTypes) {
   const taxaML = itens.reduce((t, i) => t + (Number(i.taxa_ml) || 0), 0);
   const dim = envio.dimensions || {};
 
+  /*  Etiqueta: o ML marca no substatus do envio se ela ja saiu da
+      impressora — "ready_to_print" = nunca impressa (botao "Imprimir"),
+      "printed" = ja impressa (botao vira "Reimprimir"). Quando a conta
+      devolve o historico do envio, pega tambem a hora da 1a impressao. */
+  const hist = envio.status_history || envio.shipping_history || {};
+  const impressoEm =
+    hist.date_first_printed || hist.date_printed || envio.date_first_printed || "";
+  const subEnvio = String(envio.substatus || "").toLowerCase();
+  const etiqueta =
+    String(envio.status || "").toLowerCase() !== "ready_to_ship"
+      ? ""
+      : subEnvio === "printed" || impressoEm
+        ? "reimprimir"
+        : "imprimir";
+
   let info = {};
   if (!bairro || !cidade) info = await consultarCep(so(cep));
 
@@ -304,6 +319,9 @@ async function montarRegistro(conta, pedido, envio, flexTypes) {
     comprador_id: String(pedido.buyer?.id || ""),
     fechado_em: pedido.date_closed || "",
     etiqueta_pendente: etiquetaPendente(envio),
+    substatus: envio.substatus || "",
+    etiqueta, // "imprimir" | "reimprimir" | "" (ja despachado)
+    impresso_em: impressoEm,
     envio_id: String(envio.id || ""),
     conta: conta.nickname,
     conta_id: String(conta.id),
@@ -613,6 +631,14 @@ async function diagnosticar(conta, quantos = 30, dias = 7) {
           logistic_cru: envio.logistic || null,
           formato_do_endereco: formato,
           chaves_do_pedido: Object.keys(pedido).join(", "),
+          chaves_do_envio: Object.keys(envio).join(", "),
+          etiqueta_estado:
+            String(envio.substatus || "").toLowerCase() === "printed"
+              ? "ja impressa (reimprimir)"
+              : "a imprimir",
+          historico_do_envio: JSON.stringify(
+            envio.status_history || envio.shipping_history || {}
+          ).slice(0, 300),
           chaves_do_destination: Object.keys(envio.destination || {}).join(", "),
           chaves_do_lead_time_detalhe: Object.keys(envio.lead_time || {}).join(", "),
           tem_comentario_do_comprador: !!(envio.destination?.comments || ""),
