@@ -229,7 +229,9 @@ router.get("/flex/config", async (req, res) => {
   }
 });
 
-router.put("/flex/config", express.json(), async (req, res) => {
+// 4mb: a config carrega as rotas abertas com as paradas inteiras — com
+// o dia cheio isso passa do limite padrao de 100kb do express.json()
+router.put("/flex/config", express.json({ limit: "4mb" }), async (req, res) => {
   try {
     res.json(await salvarConfig(req.body || {}));
   } catch (err) {
