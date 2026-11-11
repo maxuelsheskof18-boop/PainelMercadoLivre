@@ -119,6 +119,9 @@ function enderecoDoEnvio(envio) {
   const end = novo || antigo || {};
   return {
     end,
+    // instrucao que o comprador escreveu na compra ("portao azul",
+    // "deixar na portaria") — e o campo mais util que estava sobrando
+    comentarios: dest.comments || end.comment || "",
     formato: novo ? "destination.shipping_address" : antigo ? "receiver_address" : "nao encontrado",
     receiverName: dest.receiver_name || end.receiver_name || "",
     receiverPhone:
@@ -213,7 +216,7 @@ async function apagarHistorico(id) {
 
 /* ---------------- montagem de um pedido ---------------- */
 async function montarRegistro(conta, pedido, envio, flexTypes) {
-  const { end, receiverName, receiverPhone } = enderecoDoEnvio(envio);
+  const { end, receiverName, receiverPhone, comentarios } = enderecoDoEnvio(envio);
   const logistic = String(envio.logistic_type || envio.logistic?.type || "").toLowerCase();
 
   const bairro = end.neighborhood?.name || end.neighborhood || "";
@@ -227,16 +230,46 @@ async function montarRegistro(conta, pedido, envio, flexTypes) {
   if (telefone.length > 11 && telefone.startsWith("55")) telefone = telefone.slice(2);
   if (![10, 11].includes(telefone.length)) telefone = "";
 
-  const itens = (pedido.order_items || []).map((it) => ({
-    titulo: it.item?.title || "Produto",
-    qtd: String(it.quantity ?? 1),
-    sku: it.item?.seller_sku || it.item?.seller_custom_field || "",
-    preco: it.unit_price != null ? String(it.unit_price) : "",
-  }));
+  const itens = (pedido.order_items || []).map((it) => {
+    const id = it.item?.id ? String(it.item.id) : "";
+    return {
+      titulo: it.item?.title || "Produto",
+      qtd: String(it.quantity ?? 1),
+      sku: it.item?.seller_sku || it.item?.seller_custom_field || "",
+      preco: it.unit_price != null ? String(it.unit_price) : "",
+      // o que ja vinha na resposta e eu descartava:
+      item_id: id,
+      anuncio: id ? "https://produto.mercadolivre.com.br/" + id.replace(/^MLB/, "MLB-") : "",
+      variacao: (it.item?.variation_attributes || [])
+        .map((a) => a.name + ": " + a.value_name)
+        .join(", "),
+      categoria: it.item?.category_id || "",
+      tipo_anuncio: it.listing_type_id || "",
+      taxa_ml: it.sale_fee != null ? Number(it.sale_fee) : null,
+      preco_cheio: it.full_unit_price != null ? Number(it.full_unit_price) : null,
+    };
+  });
 
   const lat = end.latitude != null ? Number(end.latitude) : null;
   const lng = end.longitude != null ? Number(end.longitude) : null;
   const prazo = prazoDoEnvio(envio);
+
+  /*  Pagamento, taxa e frete vem dentro do proprio pedido; peso,
+      dimensoes, rastreio e metodo de envio, dentro do proprio envio. */
+  const pagamentos = pedido.payments || [];
+  const pagamento = pagamentos
+    .map((p) =>
+      [p.payment_method_id, p.installments > 1 ? p.installments + "x" : "", p.status]
+        .filter(Boolean)
+        .join(" ")
+    )
+    .join(" | ");
+  const freteCobrado =
+    Number(pedido.shipping_cost) ||
+    pagamentos.reduce((t, p) => t + (Number(p.shipping_cost) || 0), 0) ||
+    0;
+  const taxaML = itens.reduce((t, i) => t + (Number(i.taxa_ml) || 0), 0);
+  const dim = envio.dimensions || {};
 
   let info = {};
   if (!bairro || !cidade) info = await consultarCep(so(cep));
@@ -253,6 +286,23 @@ async function montarRegistro(conta, pedido, envio, flexTypes) {
     atualizado_em: pedido.date_last_updated || "",
     prazo_entrega: prazo.data,
     prazo_fonte: prazo.fonte,
+
+    // --- extras que ja vinham na resposta da API ---
+    comentario_entrega: comentarios, // recado do comprador
+    pagamento,
+    parcelas: pagamentos[0]?.installments || 1,
+    frete_cobrado: freteCobrado,
+    taxa_ml: Number(taxaML.toFixed(2)),
+    recebido: Number(pedido.paid_amount) || null,
+    rastreio: envio.tracking_number || "",
+    metodo_envio: envio.lead_time?.shipping_method?.name || "",
+    promessa_entrega: envio.lead_time?.estimated_delivery_time?.date || "",
+    peso: dim.weight ?? "",
+    dimensoes: [dim.height, dim.width, dim.length].filter(Boolean).join("x"),
+    tags: (pedido.tags || []).join(" "),
+    canal: pedido.context?.channel || "",
+    comprador_id: String(pedido.buyer?.id || ""),
+    fechado_em: pedido.date_closed || "",
     etiqueta_pendente: etiquetaPendente(envio),
     envio_id: String(envio.id || ""),
     conta: conta.nickname,
@@ -562,7 +612,12 @@ async function diagnosticar(conta, quantos = 30, dias = 7) {
           logistic_type: tipo,
           logistic_cru: envio.logistic || null,
           formato_do_endereco: formato,
+          chaves_do_pedido: Object.keys(pedido).join(", "),
           chaves_do_destination: Object.keys(envio.destination || {}).join(", "),
+          chaves_do_lead_time_detalhe: Object.keys(envio.lead_time || {}).join(", "),
+          tem_comentario_do_comprador: !!(envio.destination?.comments || ""),
+          tem_pagamento: (pedido.payments || []).length,
+          tem_peso: envio.dimensions?.weight ?? "(sem)",
           chaves_do_endereco: Object.keys(end).join(", "),
           status: [envio.status, envio.substatus].filter(Boolean).join(" / "),
           etiqueta_pendente: etiquetaPendente(envio),
