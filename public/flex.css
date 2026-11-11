@@ -619,3 +619,91 @@ button.dobra span:last-child { margin-left: auto; color: var(--suave); }
   border-radius: 4px;
 }
 .emoji-grade button:hover { background: #eef2ff; }
+
+/* emoji da rota no pino (o pino e girado 45deg: o selinho desgira) */
+.pin-emoji {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,.45);
+  transform: rotate(-45deg);
+  pointer-events: none;
+}
+.pin.extra .pin-emoji,
+.pin.partida .pin-emoji { transform: none; }
+
+/* ---- calendario do historico ---- */
+.cal { margin: 8px 0; }
+.cal-topo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.cal-topo b { flex: 1; text-align: center; text-transform: capitalize; }
+.cal-topo button {
+  width: 26px;
+  padding: 2px 0;
+  font-size: 14px;
+  line-height: 1;
+}
+.cal-grade {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.cal-semana {
+  text-align: center;
+  font-size: 10px;
+  color: var(--suave);
+  padding: 2px 0;
+}
+.cal-dia {
+  position: relative;
+  padding: 5px 0 9px;
+  font-size: 11px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--suave);
+  cursor: default;
+}
+.cal-dia.tem {
+  color: var(--texto);
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  cursor: pointer;
+  font-weight: 600;
+}
+.cal-dia.tem:hover { background: #dbeafe; }
+.cal-dia.hoje { outline: 1px solid var(--azul); }
+.cal-dia.escolhido { background: var(--azul); color: #fff; border-color: var(--azul); }
+.cal-dia i {
+  position: absolute;
+  bottom: 1px;
+  left: 0;
+  right: 0;
+  font-size: 8px;
+  font-style: normal;
+  opacity: .8;
+}
+.cal-resumo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin: 6px 0;
+}
+.cal-resumo b { text-transform: capitalize; }
+.cal-resumo button { margin-left: auto; }

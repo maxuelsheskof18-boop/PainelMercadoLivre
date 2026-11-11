@@ -72,6 +72,7 @@ const estado = {
   extras: [],
   cores: {},
   historico: null,
+  hist: { lista: [], mes: null, dia: null },
   zonasAbertas: false,
   partida: null,
   centro: { lat: -23.5505, lng: -46.6333 },
@@ -267,7 +268,9 @@ function camposDaColagem(texto) {
     if (m) {
       atual = semAcentoMaiusc(m[1]);
       campos[atual] = (m[2] || "").trim();
-    } else if (atual) {
+    } else if (atual && !/^[-–—]?$/.test((campos[atual] || "").trim())) {
+      // continuacao de um campo que ja tem conteudo (o endereco quebra o
+      // CEP na linha de baixo, por exemplo)
       campos[atual] = (campos[atual] + " " + linha).trim();
     } else {
       campos.__SOLTO = ((campos.__SOLTO || "") + " " + linha).trim();
@@ -340,13 +343,21 @@ function interpretarExtra(texto) {
   const horaSolta = solto.match(/(?:ate|até)\s*(?:as|às)?\s*(\d{1,2}\s*[:h]\s*\d{0,2})/i);
   const hora = pegar("HORARIO", "HORÁRIO") || (horaSolta ? horaSolta[1] : "");
 
+  /*  O cabecalho da mensagem ("VENDA - ERP WHATSAPP") e a hora ja lida
+      nao sao recado: saem fora. O que sobra e instrucao de verdade. */
+  const recado = solto
+    .replace(/VENDA\s*-\s*ERP\s*WHATSAPP/i, "")
+    .replace(horaSolta ? horaSolta[0] : "", "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
   const observacao = [
     pegar("OBSERVACAO", "OBSERVAÇÃO"),
     pegar("SUBIR NO LOCAL") ? "Subir: " + pegar("SUBIR NO LOCAL") : "",
     pegar("TAXA DE SUBIDA") ? "Taxa: " + pegar("TAXA DE SUBIDA") : "",
     pegar("PAGAMENTO") ? "Pgto: " + pegar("PAGAMENTO") : "",
     pegar("FRETE") ? "Frete: " + pegar("FRETE") : "",
-    !horaSolta && solto ? solto : "",
+    recado,
   ].filter(Boolean).join(" · ");
 
   /*  "DATA PREVISTA DE ENTREGA E CLIENTE: 30/10 - Fulano" traz as duas
@@ -375,32 +386,81 @@ function interpretarExtra(texto) {
 /*  Quebra o endereco do ERP em rua / bairro / cidade / CEP, para o
     popup e a folha ficarem iguais aos dos pedidos do ML. */
 function partesDoEndereco(texto) {
-  const cep = (texto.match(/\d{5}-?\d{3}/) || [""])[0];
-  const bairro = (texto.match(/Bairro\s*:\s*([^.,;]+)/i) || ["", ""])[1].trim();
-  const cidade = (texto.match(/\d{5}-?\d{3}\s*-\s*([^,]+)/) || ["", ""])[1].trim();
-  const rua = texto
-    .replace(/Bairro\s*:\s*[^.,;]+[.,;]?/i, "")
-    .replace(/\d{5}-?\d{3}.*$/, "")
-    .replace(/[\s.,;-]+$/, "")
-    .trim();
-  return { rua: rua || texto, bairro, cidade, cep };
+  let t = String(texto || "").replace(/\s+/g, " ").trim();
+
+  // 1. complemento depois da barra ("... / Conjunto 1511") ou com rotulo
+  let comp = "";
+  const barra = t.match(/\s\/\s*(.+)$/);
+  if (barra) {
+    comp = barra[1].trim();
+    t = t.slice(0, barra.index).trim();
+  }
+  const rotulado = t.match(/\b(conjunto|conj|sala|apto?|apartamento|bloco|andar|casa|loja)\b[\s.:]*([\w\d-]+)/i);
+  if (!comp && rotulado) {
+    comp = rotulado[0].trim();
+    t = t.replace(rotulado[0], " ");
+  }
+
+  // 2. CEP e UF saem do texto (voltam depois, ja separados)
+  const cep = (t.match(/\d{5}-?\d{3}/) || [""])[0];
+  t = t.replace(/\d{5}-?\d{3}/, " ");
+  const uf = (t.match(/[-,\/]\s*([A-Z]{2})\b/) || ["", ""])[1];
+  t = t.replace(/[-,\/]\s*[A-Z]{2}\b/, " ");
+
+  // 3. rotulo "Bairro:" vira separador
+  t = t.replace(/\bbairro\s*:\s*/i, ", ");
+
+  // 4. ponto de abreviacao ("Av.", "R.", "Dr.") nao e fim de parte
+  t = t.replace(/\b([A-Za-zÀ-ÿ]{1,4})\./g, "$1");
+
+  // 5. bairro colado na cidade: "Água BrancaSão Paulo" -> "Água Branca, São Paulo"
+  t = t.replace(/([a-zà-ÿ])([A-ZÀ-Ý])/g, "$1, $2");
+
+  const partes = t.split(/\s*[,;.]\s*|\s+-\s+/).map(x => x.trim()).filter(Boolean);
+
+  // 6. rua + numero (o numero costuma vir como parte separada)
+  let rua = partes.shift() || "";
+  if (partes.length && /^(n[º°o]?\.?\s*)?\d+[a-z]?$/i.test(partes[0])) {
+    rua += ", " + partes.shift().replace(/^n[º°o]?\.?\s*/i, "");
+  }
+
+  // 7. do que sobrou, o ultimo e a cidade e o anterior o bairro
+  const cidade = partes.length ? partes.pop() : "";
+  const bairro = partes.length ? partes.pop() : "";
+
+  const limpo = (v) => String(v || "").replace(/^[\s,.-]+|[\s,.-]+$/g, "").trim();
+  return {
+    rua: limpo(rua) || limpo(t),
+    bairro: limpo(bairro),
+    cidade: limpo(cidade),
+    cep,
+    uf,
+    comp: limpo(comp),
+  };
 }
 
-/*  O texto do ERP vem com "Nº 82" e "Bairro: Vila Guilherme." — nenhum
-    servico de geocodificacao entende esses rotulos, e a busca falha (era
-    o erro relatado: tirando o bairro e o Nº na mao, funcionava). Aqui a
-    consulta e remontada a partir das partes, em formato limpo. */
+/*  Consulta limpa para o geocodificador: sem "Nº", sem complemento
+    (conjunto/sala/andar atrapalham a busca) e com cidade garantida. */
 function enderecoParaBusca(texto) {
   const p = partesDoEndereco(texto);
-  const rua = p.rua
-    .replace(/\bn[º°o]?\.?\s*(?=\d)/gi, "")
-    .replace(/\s*,\s*/g, ", ")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-  return [rua, p.bairro, p.cidade || "São Paulo", p.cep, "Brasil"]
+
+  // sobra de hifen/virgula nas pontas atrapalha a busca
+  const limpar = (v) => String(v || "").replace(/^[\s,.-]+|[\s,.-]+$/g, "").trim();
+
+  const rua = limpar(
+    p.rua
+      .replace(/\bn[º°o]?\.?\s*(?=\d)/gi, "") // "Nº 82" -> "82"
+      .replace(/\s*,\s*/g, ", ")
+      .replace(/\s{2,}/g, " ")
+  );
+
+  // o complemento (conjunto/sala/andar) fica de fora de proposito:
+  // nenhum geocodificador entende e so atrapalha
+  return [rua, limpar(p.bairro), limpar(p.cidade) || "São Paulo", p.cep, "Brasil"]
     .filter(Boolean)
     .join(", ");
 }
+
 
 function paradasExtras() {
   return (estado.extras || []).map((e) => ({
@@ -468,6 +528,9 @@ async function adicionarExtra() {
 
   const partes = partesDoEndereco(dados.endereco);
   const achado = await localizarComConferencia(dados.endereco, partes);
+  // "Conjunto 1511", "sala 4"... vem do proprio endereco e e o que o
+  // motorista precisa ler na portaria
+  const observacao = [partes.comp, dados.obs].filter(Boolean).join(" · ");
   if (!achado) {
     $("extra-info").textContent =
       "Nao consegui localizar esse endereco. Confira rua, numero e cidade.";
@@ -481,7 +544,7 @@ async function adicionarExtra() {
     cliente: dados.cliente,
     pedido: dados.pedido,
     telefone: dados.telefone,
-    obs: dados.obs,
+    obs: observacao,
     prazo: dados.prazo,
     lat: ponto.lat,
     lng: ponto.lng,
@@ -968,13 +1031,54 @@ function ordenar(paradas, origem) {
    na coleta seguinte, pedido que ja saiu para entrega desaparece da rota
    sozinho, em vez de virar uma parada fantasma.
    ===================================================================== */
+/*  Guarda a parada enxuta: o que a tela, a folha e os CSVs usam. Sem os
+    campos crus do pedido, que sao grandes e nao fazem falta aqui. */
+function paradaEnxuta(p) {
+  return {
+    chave: p.chave,
+    rua: p.rua,
+    comp: p.comp || "",
+    bairro: p.bairro || "",
+    cidade: p.cidade || "",
+    cep: p.cep || "",
+    region: p.region || "",
+    zona: p.zona,
+    lat: p.lat,
+    lng: p.lng,
+    aprox: !!p.aprox,
+    extra: !!p.extra,
+    enderecoTexto: p.enderecoTexto || "",
+    valorMax: p.valorMax || 0,
+    valorTotal: p.valorTotal || 0,
+    pedidos: (p.pedidos || []).map(r => ({
+      pedido: r.pedido || "",
+      pack: r.pack || "",
+      envio_id: r.envio_id || "",
+      valor: r.valor ?? null,
+      nome: r.nome || "",
+      quem: r.quem || "",
+      telefone: r.telefone || "",
+      whatsapp: r.whatsapp || "",
+      conta: r.conta || "",
+      itens: r.itens || [],
+      comp: r.comp || "",
+      prazo_entrega: r.prazo_entrega || "",
+      tipoEnvio: r.tipoEnvio || "",
+      enderecoCompleto: r.enderecoCompleto || "",
+      nome_loja: r.nome_loja || "",
+      prodComp: r.prodComp || "",
+      prodLala: r.prodLala || "",
+    })),
+  };
+}
+
 function rotasParaGuardar() {
   return estado.rotas.map(r => ({
     nome: r.nome,
     motorista: r.motorista || "",
     veiculo: r.veiculo || "",
     zona: r.zona,
-    chaves: (r.paradas || []).map(p => p.chave),
+    paradas: (r.paradas || []).map(paradaEnxuta),
   }));
 }
 
@@ -992,9 +1096,10 @@ function guardarRotas() {
 }
 
 function montarRotaGuardada(r) {
-  const paradas = (r.chaves || [])
-    .map(c => estado.paradas.find(p => p.chave === c))
-    .filter(Boolean);
+    // "chaves" e o formato antigo; "paradas" e o atual
+  const paradas = Array.isArray(r.paradas) && r.paradas.length
+    ? r.paradas
+    : (r.chaves || []).map(c => estado.paradas.find(p => p.chave === c)).filter(Boolean);
   return {
     ...r,
     paradas,
@@ -1013,9 +1118,25 @@ function restaurarRotas(guardadas) {
     despachado) deixa a rota. */
 function religarRotas() {
   if (!estado.rotas.length || estado.historico) return;
+
+  /*  So mexe nas rotas quando os dados sao confiaveis: coleta terminada e
+      com pedidos. No meio de uma coleta cheia o estado fica vazio por
+      minutos — apagar a rota ali seria apagar o trabalho de quem montou. */
+  if (estado.run?.estado !== "pronto" || !(estado.registros || []).length) return;
+
+  const atuais = new Map(estado.paradas.map(p => [p.chave, p]));
   estado.rotas = estado.rotas
-    .map(r => montarRotaGuardada({ ...r, chaves: (r.paradas || []).map(p => p.chave) }))
+    .map(r => {
+      const paradas = (r.paradas || [])
+        // parada que sumiu da coleta ja foi despachada: sai da rota.
+        // A que continua e trocada pela versao nova (dados atualizados).
+        .filter(p => atuais.has(p.chave) || p.extra)
+        .map(p => atuais.get(p.chave) || p);
+      return { ...r, paradas, origem: estado.partida, km: kmTotal(paradas, estado.partida) };
+    })
     .filter(r => r.paradas.length);
+
+  guardarRotas();
 }
 
 function gerarRotas() {
@@ -1560,14 +1681,109 @@ async function guardarNoHistorico(rota, botao) {
 }
 
 async function carregarHistorico() {
-  const lista = await pegarJson("/api/flex/historico");
+  const lista = await pegarJson("/api/flex/historico?dias=365");
   if (!lista) return;
-  if (!lista.length) {
+  estado.hist.lista = lista;
+  if (!estado.hist.mes) estado.hist.mes = new Date();
+  desenharCalendario();
+  desenharListaHistorico();
+}
+
+/*  Calendario de um mes: dia com rota guardada fica destacado e clicavel.
+    E a forma natural de perguntar "o que saiu no dia 9?". */
+const diaISO = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+function porDia() {
+  const mapa = new Map();
+  for (const item of estado.hist.lista) {
+    const dia = String(item.dia).slice(0, 10);
+    mapa.set(dia, (mapa.get(dia) || 0) + 1);
+  }
+  return mapa;
+}
+
+function desenharCalendario() {
+  const alvo = $("calendario");
+  if (!estado.hist.lista.length) {
+    alvo.innerHTML = "";
+    return;
+  }
+
+  const mes = estado.hist.mes || new Date();
+  const ano = mes.getFullYear();
+  const m = mes.getMonth();
+  const primeiro = new Date(ano, m, 1);
+  const dias = new Date(ano, m + 1, 0).getDate();
+  const contagem = porDia();
+  const hoje = diaISO(new Date());
+
+  const semanas = ["D", "S", "T", "Q", "Q", "S", "S"]
+    .map(d => `<span class="cal-semana">${d}</span>`)
+    .join("");
+
+  const vazios = Array(primeiro.getDay()).fill('<span class="cal-dia"></span>').join("");
+
+  const celulas = Array.from({ length: dias }, (_, i) => {
+    const data = new Date(ano, m, i + 1);
+    const iso = diaISO(data);
+    const quantos = contagem.get(iso) || 0;
+    const classe = [
+      "cal-dia",
+      quantos ? "tem" : "",
+      iso === hoje ? "hoje" : "",
+      iso === estado.hist.dia ? "escolhido" : "",
+    ].filter(Boolean).join(" ");
+    return `<button type="button" class="${classe}" ${quantos ? `data-dia="${iso}"` : "disabled"}>
+      ${i + 1}${quantos ? `<i>${quantos}</i>` : ""}
+    </button>`;
+  }).join("");
+
+  alvo.innerHTML = `
+    <div class="cal">
+      <div class="cal-topo">
+        <button type="button" data-mes="-1" title="Mes anterior">‹</button>
+        <b>${mes.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}</b>
+        <button type="button" data-mes="1" title="Proximo mes">›</button>
+      </div>
+      <div class="cal-grade">${semanas}${vazios}${celulas}</div>
+    </div>`;
+
+  alvo.querySelectorAll("[data-mes]").forEach(b => {
+    b.onclick = () => {
+      const atual = estado.hist.mes || new Date();
+      estado.hist.mes = new Date(atual.getFullYear(), atual.getMonth() + Number(b.dataset.mes), 1);
+      desenharCalendario();
+    };
+  });
+  alvo.querySelectorAll("[data-dia]").forEach(b => {
+    b.onclick = () => {
+      estado.hist.dia = estado.hist.dia === b.dataset.dia ? null : b.dataset.dia;
+      desenharCalendario();
+      desenharListaHistorico();
+    };
+  });
+}
+
+function desenharListaHistorico() {
+  const lista = estado.hist.dia
+    ? estado.hist.lista.filter(i => String(i.dia).slice(0, 10) === estado.hist.dia)
+    : estado.hist.lista;
+
+  if (!estado.hist.lista.length) {
     $("historico").innerHTML = `<p class="mini">Nenhum dia guardado ainda.</p>`;
     return;
   }
 
-  $("historico").innerHTML = lista.map(item => {
+  const cabecalho = estado.hist.dia
+    ? `<div class="cal-resumo">
+         <b>${new Date(estado.hist.dia + "T12:00:00").toLocaleDateString("pt-BR", { day: "numeric", month: "long" })}</b>
+         <span class="mini">${lista.length} rota(s)</span>
+         <button type="button" id="cal-todos" class="mini-btn">ver todos os dias</button>
+       </div>`
+    : "";
+
+  $("historico").innerHTML = cabecalho + lista.map(item => {
     const dia = String(item.dia).slice(0, 10).split("-").reverse().join("/");
     return `
     <div class="hist-item">
@@ -1592,6 +1808,15 @@ async function carregarHistorico() {
       carregarHistorico();
     };
   });
+
+  const todos = document.getElementById("cal-todos");
+  if (todos) {
+    todos.onclick = () => {
+      estado.hist.dia = null;
+      desenharCalendario();
+      desenharListaHistorico();
+    };
+  }
 }
 
 async function abrirHistorico(id) {
