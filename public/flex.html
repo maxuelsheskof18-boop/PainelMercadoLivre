@@ -56,6 +56,13 @@
       <label class="campo-label">Paradas por rota
         <input id="max-paradas" type="number" value="9" min="2" max="23">
       </label>
+      <label class="campo-label">Etiqueta
+        <select id="filtro-etiqueta">
+          <option value="">todas</option>
+          <option value="imprimir">a imprimir</option>
+          <option value="reimprimir">ja impressa</option>
+        </select>
+      </label>
       <label class="campo-label">Entrega
         <select id="filtro-prazo">
           <option value="">todas</option>
@@ -88,10 +95,10 @@
     </section>
 
     <section>
-      <h2>Historico</h2>
+      <h2>Memoria do dia — calendario</h2>
       <div id="historico-aviso"></div>
       <div class="linha-botoes">
-        <button id="btn-historico">Ver dias guardados</button>
+        <button id="btn-historico">Recarregar dias guardados</button>
       </div>
       <div id="calendario"></div>
       <div id="historico"></div>

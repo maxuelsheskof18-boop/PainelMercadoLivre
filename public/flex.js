@@ -186,12 +186,16 @@ function filtrarRegistros() {
   const soFlex = $("so-flex").checked;
   const semCancelados = $("sem-cancelados").checked;
   const quando = $("filtro-prazo").value;
+  const etiq = $("filtro-etiqueta").value;
 
   return (estado.registros || []).filter(r => {
     if (estado.contasOcultas.has(r.conta)) return false;
     if (soFlex && !r.flex) return false;
     if (semCancelados && r.cancelado) return false;
     if ((Number(r.valor) || 0) < min) return false;
+    /*  Pedido sem o campo (coletado antes desta versao) nao e escondido
+        pelo filtro de etiqueta — sumir em silencio seria pior. */
+    if (etiq && r.etiqueta && r.etiqueta !== etiq) return false;
     if (quando) {
       const q = rotuloPrazo(r.prazo_entrega).quando;
       // Pedido sem prazo informado nunca e escondido: sumir com ele em
@@ -222,8 +226,10 @@ function desenharResumoFiltro() {
   const deHoje = (estado.registros || []).filter(
     r => r.flex && ["hoje"].includes(rotuloPrazo(r.prazo_entrega).quando)
   ).length;
+  const aImprimir = (estado.registros || []).filter(r => r.etiqueta === "imprimir").length;
   $("resumo-filtro").textContent = total
     ? `${passam} de ${total} pedidos no mapa` +
+      (aImprimir ? ` · ${aImprimir} etiqueta(s) a imprimir` : "") +
       (naoFlex ? ` · ${naoFlex} fora do Flex` : "") +
       (cancelados ? ` · ${cancelados} cancelada(s)` : "") +
       (deHoje ? ` · ${deHoje} Flex para hoje` : "")
@@ -889,7 +895,12 @@ function abrirPopup(p) {
       ${r.envio_id ? `<span class="ids">envio #${escapar(r.envio_id)}</span>` : ""}
       ${r.conta ? `<span class="etiqueta conta" style="background:${corDaConta(r.conta)};color:${contraste(corDaConta(r.conta))}">${escapar(r.conta)}</span>` : ""}
       ${(() => { const q = rotuloPrazo(r.prazo_entrega);
-         return q.texto ? `<span class="etiqueta ${q.classe}">${q.texto}</span>` : ""; })()}<br>
+         return q.texto ? `<span class="etiqueta ${q.classe}">${q.texto}</span>` : ""; })()}
+      ${r.etiqueta ? `<span class="etiqueta ${r.etiqueta}" title="${
+         r.etiqueta === "reimprimir"
+           ? "o Mercado Livre ja registrou a impressao desta etiqueta"
+           : "etiqueta ainda nao impressa"
+       }">${r.etiqueta}${r.impresso_em ? " · " + horaCurta(r.impresso_em) : ""}</span>` : ""}<br>
       ${escapar(r.quem || r.nome)} ${r.telefone ? "· " + formatarTel(r.telefone) : "· sem telefone"}<br>
       <span style="color:#6b7280">${escapar(
         r.itens.map(i => i.qtd + "x " + i.titulo + (i.variacao ? " (" + i.variacao + ")" : "")).join(" | ")
@@ -983,6 +994,14 @@ const recadoDaParada = (p) =>
 const contasDaParada = p => [...new Set(p.pedidos.map(r => r.conta).filter(Boolean))];
 
 const escapar = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const horaCurta = (iso) =>
+  iso && !Number.isNaN(Date.parse(iso))
+    ? new Intl.DateTimeFormat("pt-BR", {
+        timeZone: "America/Sao_Paulo",
+        day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+      }).format(new Date(iso))
+    : "";
+
 const formatarTel = t => t && t.length >= 10 ? `(${t.slice(0, 2)}) ${t.slice(2, -4)}-${t.slice(-4)}` : (t || "");
 
 /* =====================================================================
@@ -1075,6 +1094,8 @@ function paradaEnxuta(p) {
       comp: r.comp || "",
       prazo_entrega: r.prazo_entrega || "",
       tipoEnvio: r.tipoEnvio || "",
+      etiqueta: r.etiqueta || "",
+      impresso_em: r.impresso_em || "",
       comentario_entrega: r.comentario_entrega || "",
       pagamento: r.pagamento || "",
       rastreio: r.rastreio || "",
@@ -1701,8 +1722,7 @@ async function guardarNoHistorico(rota, botao) {
 
 async function carregarHistorico() {
   const lista = await pegarJson("/api/flex/historico?dias=365");
-  if (!lista) return;
-  estado.hist.lista = lista;
+  estado.hist.lista = Array.isArray(lista) ? lista : [];
   if (!estado.hist.mes) estado.hist.mes = new Date();
   desenharCalendario();
   desenharListaHistorico();
@@ -1724,11 +1744,9 @@ function porDia() {
 
 function desenharCalendario() {
   const alvo = $("calendario");
-  if (!estado.hist.lista.length) {
-    alvo.innerHTML = "";
-    return;
-  }
-
+  /*  Antes o calendario so aparecia quando ja existia dia guardado — e
+      quem nunca tinha guardado nada achava que a funcao nao existia.
+      Agora o mes aparece sempre; o que falta e so o recado. */
   const mes = estado.hist.mes || new Date();
   const ano = mes.getFullYear();
   const m = mes.getMonth();
@@ -1766,6 +1784,10 @@ function desenharCalendario() {
         <button type="button" data-mes="1" title="Proximo mes">›</button>
       </div>
       <div class="cal-grade">${semanas}${vazios}${celulas}</div>
+      ${estado.hist.lista.length
+        ? ""
+        : `<p class="mini">Nenhum dia guardado ainda. Em uma rota, clique
+            em <b>Guardar o dia</b> e ela passa a aparecer aqui.</p>`}
     </div>`;
 
   alvo.querySelectorAll("[data-mes]").forEach(b => {
@@ -2102,7 +2124,8 @@ const CABECALHO = ["endereco", "titulo", "nome_lalamove", "telefone", "complemen
   "frete", "cep", "quem_recebe", "whatsapp", "zona", "rota", "ordem_na_rota",
   "conta", "prazo_entrega", "entregar_em",
   "recado_do_cliente", "pagamento", "parcelas", "frete_cobrado", "taxa_ml",
-  "rastreio", "metodo_envio", "peso", "dimensoes", "variacao", "anuncio", "categoria", "canal"];
+  "rastreio", "metodo_envio", "peso", "dimensoes", "variacao", "anuncio", "categoria", "canal",
+  "etiqueta", "impressa_em"];
 
 function baixarCSV() {
   const posicao = new Map();
@@ -2152,7 +2175,9 @@ function baixarCSV() {
         (r.itens || []).map(i => i.variacao).filter(Boolean).join(" | "),
         (r.itens || []).map(i => i.anuncio).filter(Boolean).join(" "),
         (r.itens || []).map(i => i.categoria).filter(Boolean).join(" "),
-        r.canal || ""
+        r.canal || "",
+        r.etiqueta || "",
+        r.impresso_em ? horaCurta(r.impresso_em) : ""
       ]);
     }
   }
@@ -2435,7 +2460,12 @@ function imprimirRotas(apenas) {
                   ? "<br>" + escapar(p.pedidos.flatMap(r => r.itens.map(it => it.qtd + "x " + it.titulo)).join(" | "))
                   : ""}
               </td>
-              <td>${p.pedidos.map(r => (r.pedido ? "#" + escapar(r.pedido) : "")).filter(Boolean).join("<br>")}
+              <td>${p.pedidos.map(r =>
+                  r.pedido
+                    ? "#" + escapar(r.pedido) +
+                      (r.etiqueta === "reimprimir" ? " <b>(reimprimir)</b>" : "")
+                    : ""
+                ).filter(Boolean).join("<br>")}
                 <br>${escapar(contasDaParada(p).join(" / "))}</td>
               <td>${escapar(p.pedidos.map(r => r.quem || r.nome).filter(Boolean).join(" / "))}
                 ${p.pedidos[0].telefone ? "<br>" + formatarTel(p.pedidos[0].telefone) : ""}</td>
@@ -2516,6 +2546,7 @@ async function iniciar() {
   }
 
   await atualizar(true);
+  carregarHistorico(); // calendario na tela sem precisar de clique
   restaurarRotas(cfg.rotas_abertas);
   desenharRotas();
   render();
@@ -2637,6 +2668,7 @@ $("extra-texto").onkeydown = e => { if (e.key === "Enter") adicionarExtra(); };
 $("valor-min").onchange = recalcular;
 $("so-flex").onchange = recalcular;
 $("filtro-prazo").onchange = recalcular;
+$("filtro-etiqueta").onchange = recalcular;
 $("sem-cancelados").onchange = recalcular;
 window.addEventListener("resize", render);
 

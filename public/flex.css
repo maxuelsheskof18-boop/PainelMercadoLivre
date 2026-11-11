@@ -427,6 +427,9 @@ a.waze { background: #33ccff; color: #073b4c; border-color: #33ccff; }
 .etiqueta.hoje { background: #dcfce7; color: #14532d; }
 .etiqueta.amanha { background: #fef9c3; color: #713f12; }
 .etiqueta.atrasado { background: #fee2e2; color: #7f1d1d; }
+/* etiqueta do envio: a imprimir chama atencao, ja impressa fica discreta */
+.etiqueta.imprimir { background: #e0e7ff; color: #312e81; }
+.etiqueta.reimprimir { background: #f1f5f9; color: #475569; font-weight: 500; }
 
 select {
   font: inherit;
