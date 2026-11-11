@@ -195,7 +195,7 @@ function filtrarRegistros() {
     if ((Number(r.valor) || 0) < min) return false;
     /*  Pedido sem o campo (coletado antes desta versao) nao e escondido
         pelo filtro de etiqueta — sumir em silencio seria pior. */
-    if (etiq && r.etiqueta && r.etiqueta !== etiq) return false;
+    if (etiq && etiquetaDoPedido(r) && etiquetaDoPedido(r) !== etiq) return false;
     if (quando) {
       const q = rotuloPrazo(r.prazo_entrega).quando;
       // Pedido sem prazo informado nunca e escondido: sumir com ele em
@@ -226,7 +226,9 @@ function desenharResumoFiltro() {
   const deHoje = (estado.registros || []).filter(
     r => r.flex && ["hoje"].includes(rotuloPrazo(r.prazo_entrega).quando)
   ).length;
-  const aImprimir = (estado.registros || []).filter(r => r.etiqueta === "imprimir").length;
+  const aImprimir = (estado.registros || []).filter(
+    r => etiquetaDoPedido(r) === "imprimir"
+  ).length;
   $("resumo-filtro").textContent = total
     ? `${passam} de ${total} pedidos no mapa` +
       (aImprimir ? ` · ${aImprimir} etiqueta(s) a imprimir` : "") +
@@ -896,11 +898,12 @@ function abrirPopup(p) {
       ${r.conta ? `<span class="etiqueta conta" style="background:${corDaConta(r.conta)};color:${contraste(corDaConta(r.conta))}">${escapar(r.conta)}</span>` : ""}
       ${(() => { const q = rotuloPrazo(r.prazo_entrega);
          return q.texto ? `<span class="etiqueta ${q.classe}">${q.texto}</span>` : ""; })()}
-      ${r.etiqueta ? `<span class="etiqueta ${r.etiqueta}" title="${
-         r.etiqueta === "reimprimir"
-           ? "o Mercado Livre ja registrou a impressao desta etiqueta"
-           : "etiqueta ainda nao impressa"
-       }">${r.etiqueta}${r.impresso_em ? " · " + horaCurta(r.impresso_em) : ""}</span>` : ""}<br>
+      ${(() => { const e = etiquetaDoPedido(r);
+         return e ? `<span class="etiqueta ${e}" title="${
+           e === "reimprimir"
+             ? "o Mercado Livre ja registrou a impressao desta etiqueta"
+             : "etiqueta ainda nao impressa"
+         }">${e}${r.impresso_em ? " · " + horaCurta(r.impresso_em) : ""}</span>` : ""; })()}<br>
       ${escapar(r.quem || r.nome)} ${r.telefone ? "· " + formatarTel(r.telefone) : "· sem telefone"}<br>
       <span style="color:#6b7280">${escapar(
         r.itens.map(i => i.qtd + "x " + i.titulo + (i.variacao ? " (" + i.variacao + ")" : "")).join(" | ")
@@ -994,6 +997,18 @@ const recadoDaParada = (p) =>
 const contasDaParada = p => [...new Set(p.pedidos.map(r => r.conta).filter(Boolean))];
 
 const escapar = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+/*  Estado da etiqueta do envio. "ready_to_print" = nunca impressa,
+    "printed" = ja impressa (no ML o botao vira "Reimprimir"). O campo
+    pronto vem da coleta; registro guardado antes dela ainda nao tem —
+    nesse caso deduz do substatus, que ja vinha dentro de tipoEnvio. */
+function etiquetaDoPedido(r) {
+  if (r.etiqueta) return r.etiqueta;
+  const sub = String(r.substatus || r.tipoEnvio || "").toLowerCase();
+  if (/printed/.test(sub)) return "reimprimir";
+  if (/ready_to_print/.test(sub)) return "imprimir";
+  return "";
+}
+
 const horaCurta = (iso) =>
   iso && !Number.isNaN(Date.parse(iso))
     ? new Intl.DateTimeFormat("pt-BR", {
@@ -1095,6 +1110,7 @@ function paradaEnxuta(p) {
       prazo_entrega: r.prazo_entrega || "",
       tipoEnvio: r.tipoEnvio || "",
       etiqueta: r.etiqueta || "",
+      substatus: r.substatus || "",
       impresso_em: r.impresso_em || "",
       comentario_entrega: r.comentario_entrega || "",
       pagamento: r.pagamento || "",
@@ -2176,7 +2192,7 @@ function baixarCSV() {
         (r.itens || []).map(i => i.anuncio).filter(Boolean).join(" "),
         (r.itens || []).map(i => i.categoria).filter(Boolean).join(" "),
         r.canal || "",
-        r.etiqueta || "",
+        etiquetaDoPedido(r),
         r.impresso_em ? horaCurta(r.impresso_em) : ""
       ]);
     }
@@ -2463,7 +2479,7 @@ function imprimirRotas(apenas) {
               <td>${p.pedidos.map(r =>
                   r.pedido
                     ? "#" + escapar(r.pedido) +
-                      (r.etiqueta === "reimprimir" ? " <b>(reimprimir)</b>" : "")
+                      (etiquetaDoPedido(r) === "reimprimir" ? " <b>(reimprimir)</b>" : "")
                     : ""
                 ).filter(Boolean).join("<br>")}
                 <br>${escapar(contasDaParada(p).join(" / "))}</td>
