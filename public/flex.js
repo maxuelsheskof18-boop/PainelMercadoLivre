@@ -305,7 +305,11 @@ function prazoDaColagem(data, hora) {
     if (mData[3]) ano = Number(mData[3].length === 2 ? "20" + mData[3] : mData[3]);
   }
 
-  const mHora = (hora || "").match(/(\d{1,2})\s*[:h]\s*(\d{2})?/);
+  /*  "Segunda a sexta das 9:00 as 18:00" e a JANELA em que o cliente
+      recebe, nao um prazo. Vale a ULTIMA hora do texto: com a primeira,
+      a parada nascia "atrasada 09:00" as dez da manha. */
+  const horas = [...String(hora || "").matchAll(/(\d{1,2})\s*[:h]\s*(\d{2})?/g)];
+  const mHora = horas.length ? horas[horas.length - 1] : null;
   const h = mHora ? Number(mHora[1]) : 23;
   const min = mHora && mHora[2] ? Number(mHora[2]) : mHora ? 0 : 59;
 
@@ -365,6 +369,7 @@ function interpretarExtra(texto) {
     pegar("TAXA DE SUBIDA") ? "Taxa: " + pegar("TAXA DE SUBIDA") : "",
     pegar("PAGAMENTO") ? "Pgto: " + pegar("PAGAMENTO") : "",
     pegar("CONDICAO", "CONDIÇÃO") ? "Cond.: " + pegar("CONDICAO", "CONDIÇÃO") : "",
+    pegar("HORARIO", "HORÁRIO") ? "Recebe: " + pegar("HORARIO", "HORÁRIO") : "",
     pegar("FRETE") ? "Frete: " + pegar("FRETE") : "",
     recado,
   ].filter(Boolean).join(" · ");
@@ -548,6 +553,9 @@ async function corrigirPeloCep(partes) {
     cidade: info.cidade,
     uf: info.uf || partes.uf,
     bairro_cep: info.bairro || "", // 2a opiniao quando o bairro do ERP falha
+    // a BrasilAPI devolve coordenada do CEP: serve de ancora da cidade
+    lat_cep: Number.isFinite(Number(info.lat)) ? Number(info.lat) : null,
+    lng_cep: Number.isFinite(Number(info.lng)) ? Number(info.lng) : null,
   };
 
   /*  O que o texto chamava de cidade pode ser "bairro + cidade" grudados:
@@ -585,18 +593,38 @@ async function localizarComConferencia(texto, partes) {
     if (ponto) break;
   }
 
-  const bairro = p.bairro
+  /*  Conferencia em DUAS camadas.
+
+      A cidade e referencia confiavel (nome + UF). O bairro NAO e: pedir
+      "Vila Pompéia, São Paulo, SP" devolve a Vila Pompeia de RIBEIRAO
+      PRETO, a 300 km — e foi assim que a conferencia recusou o ponto
+      certo da Rua Cajaiba e ficou com o errado. Por isso o ponto do
+      bairro so serve de referencia se ele mesmo cair dentro da cidade. */
+  const cidade = p.cidade || "São Paulo";
+  const LIMITE_BAIRRO = 8;   // rua x bairro, dentro da mesma cidade
+  const LIMITE_CIDADE = 60;  // qualquer coisa alem disso e outro municipio
+
+  const ancoraCidade =
+    Number.isFinite(p.lat_cep) && Number.isFinite(p.lng_cep)
+      ? { lat: p.lat_cep, lng: p.lng_cep }
+      : await geocodificarTexto([cidade, p.uf, "Brasil"].filter(Boolean).join(", "));
+
+  const naCidade = (q) => !q || !ancoraCidade || distKm(q, ancoraCidade) <= LIMITE_CIDADE;
+
+  let bairro = p.bairro
     ? await geocodificarTexto(
-        [p.bairro, p.cidade || "São Paulo", p.uf, "Brasil"].filter(Boolean).join(", ")
+        [p.bairro, cidade, p.uf, "Brasil"].filter(Boolean).join(", ")
       )
     : null;
+  if (bairro && !naCidade(bairro)) bairro = null; // homonimo em outra cidade
 
-  const LIMITE_KM = 8;
-  if (ponto && (!bairro || distKm(ponto, bairro) <= LIMITE_KM)) {
+  if (ponto && naCidade(ponto) && (!bairro || distKm(ponto, bairro) <= LIMITE_BAIRRO)) {
     return { ponto: { ...ponto, aprox: false }, partes: p };
   }
   if (bairro) return { ponto: { ...bairro, aprox: true }, partes: p };
-  return { ponto: ponto ? { ...ponto, aprox: true } : null, partes: p };
+  if (ponto && naCidade(ponto)) return { ponto: { ...ponto, aprox: true }, partes: p };
+  if (ancoraCidade) return { ponto: { ...ancoraCidade, aprox: true }, partes: p };
+  return { ponto: null, partes: p };
 }
 
 async function adicionarExtra() {
