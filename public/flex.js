@@ -364,6 +364,7 @@ function interpretarExtra(texto) {
     pegar("SUBIR NO LOCAL") ? "Subir: " + pegar("SUBIR NO LOCAL") : "",
     pegar("TAXA DE SUBIDA") ? "Taxa: " + pegar("TAXA DE SUBIDA") : "",
     pegar("PAGAMENTO") ? "Pgto: " + pegar("PAGAMENTO") : "",
+    pegar("CONDICAO", "CONDIÇÃO") ? "Cond.: " + pegar("CONDICAO", "CONDIÇÃO") : "",
     pegar("FRETE") ? "Frete: " + pegar("FRETE") : "",
     recado,
   ].filter(Boolean).join(" · ");
@@ -418,8 +419,19 @@ function partesDoEndereco(texto) {
   // 3. rotulo "Bairro:" vira separador
   t = t.replace(/\bbairro\s*:\s*/i, ", ");
 
-  // 4. ponto de abreviacao ("Av.", "R.", "Dr.") nao e fim de parte
-  t = t.replace(/\b([A-Za-zÀ-ÿ]{1,4})\./g, "$1");
+  /*  4. abreviacao de logradouro vira o nome inteiro: o geocodificador
+         acha "Rua Monte Fuji" e erra com "R Monte Fuji". O ponto das
+         demais abreviacoes ("Dr.") so e removido, como antes. */
+  const ABREV = {
+    r: "Rua", rua: "Rua", av: "Avenida", avn: "Avenida", al: "Alameda",
+    tv: "Travessa", trav: "Travessa", pc: "Praça", pca: "Praça",
+    rod: "Rodovia", estr: "Estrada", est: "Estrada", lgo: "Largo",
+    jd: "Jardim", pq: "Parque", vl: "Vila",
+  };
+  t = t.replace(/(^|[\s,;])([A-Za-zÀ-ÿ]{1,5})\.\s*/g, (todo, antes, sigla) => {
+    const porExtenso = ABREV[semAcento(sigla)];
+    return antes + (porExtenso || sigla) + " ";
+  });
 
   // 5. bairro colado na cidade: "Água BrancaSão Paulo" -> "Água Branca, São Paulo"
   t = t.replace(/([a-zà-ÿ])([A-ZÀ-Ý])/g, "$1, $2");
@@ -449,8 +461,8 @@ function partesDoEndereco(texto) {
 
 /*  Consulta limpa para o geocodificador: sem "Nº", sem complemento
     (conjunto/sala/andar atrapalham a busca) e com cidade garantida. */
-function enderecoParaBusca(texto) {
-  const p = partesDoEndereco(texto);
+function enderecoParaBusca(texto, partes) {
+  const p = partes || partesDoEndereco(texto);
 
   // sobra de hifen/virgula nas pontas atrapalha a busca
   const limpar = (v) => String(v || "").replace(/^[\s,.-]+|[\s,.-]+$/g, "").trim();
@@ -464,7 +476,7 @@ function enderecoParaBusca(texto) {
 
   // o complemento (conjunto/sala/andar) fica de fora de proposito:
   // nenhum geocodificador entende e so atrapalha
-  return [rua, limpar(p.bairro), limpar(p.cidade) || "São Paulo", p.cep, "Brasil"]
+  return [rua, limpar(p.bairro), limpar(p.cidade) || "São Paulo", limpar(p.uf), p.cep, "Brasil"]
     .filter(Boolean)
     .join(", ");
 }
@@ -509,18 +521,82 @@ function paradasExtras() {
     cidade sem ninguem desconfiar. Aqui o resultado so e aceito se estiver
     perto do bairro informado (o bairro, esse, o mapa conhece bem).
     Nao batendo, o pino fica no bairro e e marcado como aproximado. */
-async function localizarComConferencia(texto, partes) {
-  const consulta = enderecoParaBusca(texto);
-  const ponto = await geocodificarTexto(consulta);
+/*  O CEP manda. No texto do ERP bairro e cidade as vezes vem sem
+    separador ("Jardim Florida Barueri"), e ai a cidade lida esta errada
+    — o painel procurava em Sao Paulo um endereco de Barueri. */
+async function corrigirPeloCep(partes) {
+  const cep = String(partes.cep || "").replace(/\D/g, "");
+  if (cep.length !== 8) return partes;
 
-  const bairro = partes.bairro
-    ? await geocodificarTexto([partes.bairro, partes.cidade || "São Paulo", "Brasil"].join(", "))
+  /*  Chamada direta, nao pelo pegarJson: sem a rota (backend antigo) o
+      404 vem em HTML e o pegarJson trataria como sessao expirada. Aqui
+      a falta do CEP so faz seguir com o que o texto deu. */
+  let info = null;
+  try {
+    const r = await fetch("/api/flex/cep?cep=" + cep);
+    if (r.ok && (r.headers.get("content-type") || "").includes("json")) info = await r.json();
+  } catch {
+    /* sem rede ou sem a rota: segue sem a correcao */
+  }
+  if (!info || !info.ok || !info.cidade) return partes;
+
+  const igual = (a, b) =>
+    semAcento(a).replace(/[^a-z0-9]/g, "") === semAcento(b).replace(/[^a-z0-9]/g, "");
+
+  const p = {
+    ...partes,
+    cidade: info.cidade,
+    uf: info.uf || partes.uf,
+    bairro_cep: info.bairro || "", // 2a opiniao quando o bairro do ERP falha
+  };
+
+  /*  O que o texto chamava de cidade pode ser "bairro + cidade" grudados:
+      tira o nome da cidade do fim e o resto e o bairro. */
+  if (!p.bairro && partes.cidade && !igual(partes.cidade, info.cidade)) {
+    const resto = semAcento(partes.cidade).endsWith(semAcento(info.cidade))
+      ? partes.cidade.slice(0, partes.cidade.length - info.cidade.length).trim()
+      : "";
+    p.bairro = resto || info.bairro || "";
+  }
+  if (!p.bairro) p.bairro = info.bairro || "";
+  return p;
+}
+
+/*  Devolve { ponto, partes }: as partes podem ter sido corrigidas pelo
+    CEP, e e com elas que a parada e guardada. */
+async function localizarComConferencia(texto, partes) {
+  const p = await corrigirPeloCep(partes || partesDoEndereco(texto));
+
+  /*  Cascata de buscas. O bairro e a parte mais erradica do endereco do
+      ERP, e bairro errado nao atrapalha: faz o geocodificador devolver
+      NADA. Por isso, se o endereco completo falhar, tenta sem bairro
+      (rua + cidade + UF acerta na maioria) e depois com o bairro do CEP. */
+  const tentativas = [
+    enderecoParaBusca(texto, p),
+    enderecoParaBusca(texto, { ...p, bairro: "", cep: "" }),
+    p.bairro_cep && semAcento(p.bairro_cep) !== semAcento(p.bairro)
+      ? enderecoParaBusca(texto, { ...p, bairro: p.bairro_cep, cep: "" })
+      : "",
+  ].filter((v, i, todas) => v && todas.indexOf(v) === i);
+
+  let ponto = null;
+  for (const consulta of tentativas) {
+    ponto = await geocodificarTexto(consulta);
+    if (ponto) break;
+  }
+
+  const bairro = p.bairro
+    ? await geocodificarTexto(
+        [p.bairro, p.cidade || "São Paulo", p.uf, "Brasil"].filter(Boolean).join(", ")
+      )
     : null;
 
   const LIMITE_KM = 8;
-  if (ponto && (!bairro || distKm(ponto, bairro) <= LIMITE_KM)) return { ...ponto, aprox: false };
-  if (bairro) return { ...bairro, aprox: true };
-  return ponto ? { ...ponto, aprox: true } : null;
+  if (ponto && (!bairro || distKm(ponto, bairro) <= LIMITE_KM)) {
+    return { ponto: { ...ponto, aprox: false }, partes: p };
+  }
+  if (bairro) return { ponto: { ...bairro, aprox: true }, partes: p };
+  return { ponto: ponto ? { ...ponto, aprox: true } : null, partes: p };
 }
 
 async function adicionarExtra() {
@@ -534,8 +610,10 @@ async function adicionarExtra() {
     return;
   }
 
-  const partes = partesDoEndereco(dados.endereco);
-  const achado = await localizarComConferencia(dados.endereco, partes);
+  const { ponto: achado, partes } = await localizarComConferencia(
+    dados.endereco,
+    partesDoEndereco(dados.endereco)
+  );
   // "Conjunto 1511", "sala 4"... vem do proprio endereco e e o que o
   // motorista precisa ler na portaria
   const observacao = [partes.comp, dados.obs].filter(Boolean).join(" · ");
@@ -650,8 +728,10 @@ function editarExtra(id) {
     const mudouEndereco = enderecoNovo && enderecoNovo !== e.texto;
 
     if (mudouEndereco) {
-      const partesNovas = partesDoEndereco(enderecoNovo);
-      const ponto = await localizarComConferencia(enderecoNovo, partesNovas);
+      const { ponto, partes: partesNovas } = await localizarComConferencia(
+        enderecoNovo,
+        partesDoEndereco(enderecoNovo)
+      );
       if (!ponto) {
         $("extra-info").textContent = "Nao consegui localizar o endereco novo; o antigo foi mantido.";
         return;
