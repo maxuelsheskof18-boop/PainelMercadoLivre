@@ -23,7 +23,7 @@ const {
   lerConfig,
   salvarConfig,
 } = require("../flex/coleta");
-const { buscar } = require("../flex/geo");
+const { buscar, consultarCep } = require("../flex/geo");
 
 const router = express.Router();
 router.use(requireLogin);
@@ -187,6 +187,22 @@ router.post("/flex/historico", express.json({ limit: "4mb" }), async (req, res) 
   } catch (err) {
     console.error("[flex/historico post]", err);
     res.status(500).json({ erro: String(err?.message || err) });
+  }
+});
+
+/*  O CEP e a parte mais confiavel do endereco colado do ERP: diz
+    cidade, UF e bairro sem depender da pontuacao do texto. Usa o
+    consultarCep que a coleta ja usa (BrasilAPI -> ViaCEP, com cache
+    em flex_geocache), entao consultar de novo o mesmo CEP sai de graca. */
+router.get("/flex/cep", async (req, res) => {
+  try {
+    const cep = String(req.query.cep || "").replace(/\D/g, "");
+    if (cep.length !== 8) return res.json({ ok: false, erro: "CEP invalido" });
+    const info = await consultarCep(cep);
+    res.json({ ok: !!info?.cidade, ...info });
+  } catch (err) {
+    console.error("[flex/cep]", err);
+    res.status(500).json({ ok: false, erro: String(err?.message || err) });
   }
 });
 
