@@ -1,5 +1,5 @@
 const state = {
-  module: "messages", // "messages" | "claims" | "questions" | "history" | "prazos" — qual painel (menu lateral) esta ativo
+  module: "messages", // "messages" | "claims" | "questions" | "history" | "prazos" | "shopee" — qual painel (menu lateral) esta ativo
   status: "pending", // aba dentro do modulo "messages"
   claimStatus: "pending", // aba dentro do modulo "claims": "pending" | "answered" | "closed"
   questionStatus: "pending", // aba dentro do modulo "questions": "pending" | "answered"
@@ -2287,7 +2287,9 @@ moduleNavItems.forEach((btn) => {
     // Prazos de despacho: tela de largura inteira como o Histórico, mas toda
     // a logica fica em prazos.js (que mostra/esconde o proprio #prazos-pane).
     const isPrazos = state.module === "prazos";
-    const isFullWidth = isHistory || isPrazos;
+    // Shopee: mesmo esquema do Prazos, logica toda em shopee.js.
+    const isShopee = state.module === "shopee";
+    const isFullWidth = isHistory || isPrazos || isShopee;
 
     tabsMessages.classList.toggle("hidden", !isMessages);
     tabsClaims.classList.toggle("hidden", !isClaims);
@@ -2302,7 +2304,7 @@ moduleNavItems.forEach((btn) => {
     if (isHistory) {
       populateOperatorFilter();
       loadHistory();
-    } else if (!isPrazos) {
+    } else if (!isPrazos && !isShopee) {
       loadList();
     }
   });
@@ -2649,7 +2651,7 @@ setInterval(loadPendingCount, 20000);
 // vezes a pagina").
 setInterval(() => {
   if (document.hidden) return; // aba em segundo plano: nao gasta a toa
-  if (state.module === "history" || state.module === "prazos") return; // têm o proprio botao
+  if (state.module === "history" || state.module === "prazos" || state.module === "shopee") return; // têm o proprio botao
   loadList({ silent: true });
 }, 20000);
 

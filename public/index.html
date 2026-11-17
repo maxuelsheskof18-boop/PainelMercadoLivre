@@ -108,6 +108,12 @@
           <span class="module-nav-label">Prazos</span>
           <span id="module-badge-prazos" class="tab-count module-badge hidden">0</span>
         </button>
+        <button class="module-nav-item" data-module="shopee" title="Shopee">
+          <span class="module-nav-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1 13H6z"/><path d="M9 7a3 3 0 0 1 6 0"/></svg>
+          </span>
+          <span class="module-nav-label">Shopee</span>
+        </button>
       </div>
       <button type="button" id="module-nav-toggle" class="module-nav-toggle" title="Recolher menu">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
@@ -354,6 +360,9 @@
       </div>
     </section>
 
+    <!-- Shopee (lojas, sonda; depois prazos/chat/devolucoes). Logica em shopee.js. -->
+    <section id="shopee-pane" class="history-pane shopee-pane hidden"></section>
+
     <!-- Prazos de despacho (coleta / agencia / Flex). Logica em prazos.js. -->
     <section id="prazos-pane" class="history-pane prazos-pane hidden">
       <div class="history-header">
@@ -387,5 +396,6 @@
 
   <script src="/app.js"></script>
   <script src="/prazos.js"></script>
+  <script src="/shopee.js"></script>
 </body>
 </html>
