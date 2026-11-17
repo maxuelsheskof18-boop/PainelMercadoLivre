@@ -34,9 +34,24 @@ function ambiente() {
 }
 
 function config() {
-  const partnerId = Number(process.env.SHOPEE_PARTNER_ID || 0);
-  const partnerKey = process.env.SHOPEE_PARTNER_KEY || "";
+  // trim: chave colada no Render com espaco/quebra de linha no fim muda o
+  // HMAC inteiro e a Shopee responde "error_sign / Wrong sign".
+  const partnerId = Number(String(process.env.SHOPEE_PARTNER_ID || "").trim() || 0);
+  const partnerKey = String(process.env.SHOPEE_PARTNER_KEY || "").trim();
   return { partnerId, partnerKey, host: HOSTS[ambiente()], ambiente: ambiente() };
+}
+
+// Diagnostico do "Wrong sign" sem expor a chave: so tamanho e formato.
+function diagnosticoChave() {
+  const bruta = String(process.env.SHOPEE_PARTNER_KEY || "");
+  const limpa = bruta.trim();
+  return {
+    tamanho: limpa.length,
+    tinhaEspacoOuQuebra: bruta !== limpa,
+    comecaComShpk: limpa.startsWith("shpk"),
+    temAsteriscos: limpa.includes("*"),
+    partnerIdBruto: String(process.env.SHOPEE_PARTNER_ID || "").trim(),
+  };
 }
 
 function configurado() {
@@ -225,6 +240,7 @@ async function removerConta(shopId) {
 module.exports = {
   config,
   configurado,
+  diagnosticoChave,
   ambiente,
   linkAutorizacao,
   trocarCodigo,
