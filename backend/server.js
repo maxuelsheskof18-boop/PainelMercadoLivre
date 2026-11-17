@@ -22,6 +22,7 @@ const reputacaoRoutes = require("./routes/reputacao");
 const flexRoutes = require("./routes/flex");
 const fullAgendaRoutes = require("./routes/fullAgenda");
 const melisafeRoutes = require("./routes/melisafe");
+const shopeeRoutes = require("./routes/shopee");
 const { reconcileAllAccounts } = require("./sync");
 const { reconcileAllClaims } = require("./claimsSync");
 const { reconcileAllQuestions } = require("./questionsSync");
@@ -91,6 +92,9 @@ app.use(sessionRoutes);
 
 // Conexao de contas ML (OAuth) + listagem
 app.use(accountsRoutes);
+
+// Shopee: conexao das lojas (OAuth) + sonda. Rotas com login uma a uma.
+app.use(shopeeRoutes);
 
 // Conexao com o Melhor Envio (OAuth) + calculadora de frete
 app.use(melhorenvioRoutes);
