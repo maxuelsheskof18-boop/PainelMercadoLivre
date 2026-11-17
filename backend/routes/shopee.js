@@ -1,4 +1,5 @@
-// Modulo Shopee — fase 1: conectar lojas (OAuth) + sonda da API.
+// Modulo Shopee: conectar lojas (OAuth), sonda da API, prazos de despacho,
+// chat e devolucoes.
 //
 // Rotas (todas exigem login no painel):
 //   GET    /shopee/conectar            manda para a tela de autorizacao da Shopee
@@ -7,6 +8,13 @@
 //   PUT    /api/shopee/contas/:shopId  { nome } — apelido da loja
 //   DELETE /api/shopee/contas/:shopId  desconecta (apaga os tokens daqui)
 //   GET    /api/debug/probe-shopee     sonda (?shopId= para uma loja so)
+//   GET    /api/shopee/resumo          numeros para o selo do menu
+//   GET    /api/shopee/prazos          pedidos a despachar (POST .../atualizar forca)
+//   GET    /api/shopee/chat            conversas de todas as lojas (?forcar=1)
+//   GET    /api/shopee/chat/:shopId/:conversa            mensagens
+//   POST   /api/shopee/chat/:shopId/:conversa/enviar     { compradorId, texto }
+//   POST   /api/shopee/chat/:shopId/:conversa/lida       { ultimaMensagemId }
+//   GET    /api/shopee/devolucoes      devolucoes/reembolsos (?forcar=1)
 //
 // Montado na raiz (app.use(shopeeRoutes)), por isso NAO usa
 // router.use(requireLogin): isso barraria tudo que passa por este router,
@@ -20,6 +28,9 @@ const crypto = require("crypto");
 const express = require("express");
 const { requireLogin } = require("../authMiddleware");
 const shopee = require("../shopee/api");
+const pedidos = require("../shopee/pedidos");
+const chat = require("../shopee/chat");
+const devolucoes = require("../shopee/devolucoes");
 
 const router = express.Router();
 
@@ -65,6 +76,7 @@ router.get("/shopee/callback", requireLogin, async (req, res) => {
         console.warn(`[shopee] get_shop_info da loja ${id} falhou depois de conectar:`, err.message);
       }
     }
+    pedidos.coletar().catch(() => {}); // loja nova ja aparece nos prazos
     res.redirect("/?modulo=shopee");
   } catch (err) {
     console.error("[shopee] falha ao trocar o code:", err.message);
@@ -158,7 +170,7 @@ async function sondarLoja(shopId) {
   const r = {};
   const chamar = async (rotulo, path, opcoes) => {
     const { status, corpo } = await shopee.chamarLojaCru(shopId, path, opcoes);
-    r[rotulo] = { status, ...resumir(corpo) };
+    r[rotulo] = { http: status, ...resumir(corpo) }; // "http" e nao "status": get_shop_info tem um "status" proprio (NORMAL)
     return corpo;
   };
 
@@ -249,5 +261,93 @@ router.get("/api/debug/probe-shopee", requireLogin, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ---------- Prazos, chat e devolucoes ----------
+
+const json = express.json({ limit: "64kb" });
+const erro500 = (res, err) => res.status(500).json({ error: err.message });
+
+router.get("/api/shopee/resumo", requireLogin, async (req, res) => {
+  try {
+    const p = pedidos.snapshot().pedidos;
+    const resumo = {
+      atrasados: p.filter((x) => x.situacao === "atrasado").length,
+      urgentes: p.filter((x) => x.situacao === "risco" || x.situacao === "hoje").length,
+      chatNaoLidas: 0,
+      devolucoesAbertas: 0,
+    };
+    try {
+      const { conversas } = await chat.listarConversas();
+      resumo.chatNaoLidas = conversas.filter((c) => c.naoLidas > 0).length;
+    } catch {}
+    try {
+      resumo.devolucoesAbertas = (await devolucoes.listar()).devolucoes.filter((d) => d.aberta).length;
+    } catch {}
+    res.json(resumo);
+  } catch (err) {
+    erro500(res, err);
+  }
+});
+
+router.get("/api/shopee/prazos", requireLogin, (req, res) => res.json(pedidos.snapshot()));
+
+router.post("/api/shopee/prazos/atualizar", requireLogin, async (req, res) => {
+  try {
+    await pedidos.coletar();
+    res.json(pedidos.snapshot());
+  } catch (err) {
+    erro500(res, err);
+  }
+});
+
+router.get("/api/shopee/chat", requireLogin, async (req, res) => {
+  try {
+    res.json(await chat.listarConversas({ forcar: req.query.forcar === "1" }));
+  } catch (err) {
+    erro500(res, err);
+  }
+});
+
+router.get("/api/shopee/chat/:shopId/:conversa", requireLogin, async (req, res) => {
+  try {
+    res.json({ mensagens: await chat.mensagens(req.params.shopId, req.params.conversa) });
+  } catch (err) {
+    erro500(res, err);
+  }
+});
+
+router.post("/api/shopee/chat/:shopId/:conversa/enviar", requireLogin, json, async (req, res) => {
+  try {
+    const texto = String(req.body?.texto || "").trim();
+    const compradorId = String(req.body?.compradorId || "");
+    if (!texto) return res.status(400).json({ error: "Mensagem vazia." });
+    if (texto.length > 1000) return res.status(400).json({ error: "Mensagem muito longa (máx. 1000 caracteres)." });
+    if (!/^\d+$/.test(compradorId)) return res.status(400).json({ error: "Comprador inválido." });
+    res.json({ ok: true, resposta: await chat.enviar(req.params.shopId, compradorId, texto) });
+  } catch (err) {
+    erro500(res, err);
+  }
+});
+
+router.post("/api/shopee/chat/:shopId/:conversa/lida", requireLogin, json, async (req, res) => {
+  try {
+    await chat.marcarLida(req.params.shopId, req.params.conversa, req.body?.ultimaMensagemId);
+    res.json({ ok: true });
+  } catch (err) {
+    erro500(res, err);
+  }
+});
+
+router.get("/api/shopee/devolucoes", requireLogin, async (req, res) => {
+  try {
+    res.json(await devolucoes.listar({ forcar: req.query.forcar === "1" }));
+  } catch (err) {
+    erro500(res, err);
+  }
+});
+
+// Coletor de prazos sobe junto com o modulo (assim server.js nao precisa
+// de mais nenhuma linha). Sem chaves configuradas, cada ciclo so retorna.
+if (process.env.NODE_ENV !== "test") pedidos.iniciar();
 
 module.exports = router;
