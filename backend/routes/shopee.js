@@ -38,26 +38,32 @@ router.get("/shopee/conectar", requireLogin, (req, res) => {
 });
 
 router.get("/shopee/callback", requireLogin, async (req, res) => {
-  const { code, shop_id: shopId, st } = req.query;
+  const { code, shop_id: shopId, main_account_id: mainAccountId, st } = req.query;
   const nonce = req.session.shopeeNonce;
   req.session.shopeeNonce = null;
   if (!nonce || st !== nonce) {
     return res.status(400).send("Retorno da Shopee invalido ou expirado. Volte ao painel e clique em Conectar de novo.");
   }
-  if (!code || !shopId) {
-    // Conta principal (main_account_id) sem shop_id: nao tratado nesta fase.
+  if (!code || (!shopId && !mainAccountId)) {
     return res
       .status(400)
       .send(`A Shopee nao devolveu code/shop_id. Recebido: ${Object.keys(req.query).join(", ")}`);
   }
   try {
-    await shopee.trocarCodigo(code, shopId);
+    const lojas = shopId
+      ? await shopee.trocarCodigo(code, shopId)
+      : await shopee.trocarCodigoContaPrincipal(code, mainAccountId);
+    if (!lojas.length) {
+      return res.status(400).send("A Shopee autorizou a conta principal, mas nenhuma loja veio junto. Marque as lojas na tela de autorizacao.");
+    }
     // Nome da loja e so conveniencia: se falhar, a loja fica conectada igual.
-    try {
-      const info = await shopee.chamarLoja(shopId, "/api/v2/shop/get_shop_info");
-      if (info.shop_name) await shopee.definirNome(shopId, info.shop_name);
-    } catch (err) {
-      console.warn("[shopee] get_shop_info falhou depois de conectar:", err.message);
+    for (const id of lojas) {
+      try {
+        const info = await shopee.chamarLoja(id, "/api/v2/shop/get_shop_info");
+        if (info.shop_name) await shopee.definirNome(id, info.shop_name);
+      } catch (err) {
+        console.warn(`[shopee] get_shop_info da loja ${id} falhou depois de conectar:`, err.message);
+      }
     }
     res.redirect("/?modulo=shopee");
   } catch (err) {
