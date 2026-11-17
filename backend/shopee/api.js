@@ -146,10 +146,23 @@ async function gravarTokens(shopId, data, nome) {
 }
 
 // Troca o "code" do retorno da autorizacao pelos tokens da loja.
+// Devolve a lista de lojas conectadas (uma so, ou varias no caso abaixo).
 async function trocarCodigo(code, shopId) {
   const data = await postPublico("/api/v2/auth/token/get", { code, shop_id: Number(shopId) });
   await gravarTokens(shopId, data);
-  return data;
+  return [String(shopId)];
+}
+
+// Login de CONTA PRINCIPAL (main account): a Shopee volta com
+// main_account_id em vez de shop_id e autoriza varias lojas de uma vez
+// (shop_id_list). Pela doc, o token serve para todas elas; cada loja e
+// gravada com ele e depois renova sozinha pelo proprio shop_id.
+// NAO confirmado com conta real ainda.
+async function trocarCodigoContaPrincipal(code, mainAccountId) {
+  const data = await postPublico("/api/v2/auth/token/get", { code, main_account_id: Number(mainAccountId) });
+  const lojas = (data.shop_id_list || []).map(String);
+  for (const id of lojas) await gravarTokens(id, data);
+  return lojas;
 }
 
 // Varias abas/coletores podem pedir token ao mesmo tempo: uma renovacao por
@@ -250,6 +263,7 @@ module.exports = {
   ambiente,
   linkAutorizacao,
   trocarCodigo,
+  trocarCodigoContaPrincipal,
   tokenValido,
   chamarLoja,
   chamarLojaCru,
