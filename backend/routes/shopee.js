@@ -74,6 +74,8 @@ router.get("/api/shopee/estado", requireLogin, async (req, res) => {
       configurado: shopee.configurado(),
       ambiente,
       partnerId: partnerId || null,
+      chave: shopee.diagnosticoChave(),
+      horaServidor: Math.floor(Date.now() / 1000),
       contas: contas.map((c) => ({
         shopId: String(c.shop_id),
         nome: c.nome,
