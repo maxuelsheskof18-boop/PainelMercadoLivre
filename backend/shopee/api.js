@@ -21,8 +21,13 @@
 const crypto = require("crypto");
 const db = require("../db");
 
+// Sandbox: apps novos (console "Test Account-Sandbox v2") so funcionam no
+// host novo. O antigo (partner.test-stable.shopeemobile.com) reconhece o
+// partner_id mas recusa a assinatura com "error_sign / Wrong sign" — testado
+// em 17/11/2026 com a chave de teste real. SHOPEE_HOST sobrescreve, se a
+// Shopee mudar de novo.
 const HOSTS = {
-  test: "https://partner.test-stable.shopeemobile.com",
+  test: "https://openplatform.sandbox.test-stable.shopee.sg",
   live: "https://partner.shopeemobile.com",
 };
 
@@ -38,7 +43,8 @@ function config() {
   // HMAC inteiro e a Shopee responde "error_sign / Wrong sign".
   const partnerId = Number(String(process.env.SHOPEE_PARTNER_ID || "").trim() || 0);
   const partnerKey = String(process.env.SHOPEE_PARTNER_KEY || "").trim();
-  return { partnerId, partnerKey, host: HOSTS[ambiente()], ambiente: ambiente() };
+  const host = String(process.env.SHOPEE_HOST || "").trim().replace(/\/$/, "") || HOSTS[ambiente()];
+  return { partnerId, partnerKey, host, ambiente: ambiente() };
 }
 
 // Diagnostico do "Wrong sign" sem expor a chave: so tamanho e formato.
