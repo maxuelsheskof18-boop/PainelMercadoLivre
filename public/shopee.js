@@ -231,12 +231,20 @@
   .shopee-pane .pz-detalhe .sp-barra { gap: 8px; }
 
   /* ---- Pacotes do dia (ML + Shopee) ---- */
-  .pd-faixa { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 18px; align-items: center; border: 1px solid var(--border); border-radius: 16px; padding: 14px 18px; background: linear-gradient(100deg, #fffdf0 0%, #fff 45%, #fff6f2 100%); }
+  .pd-faixa { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 18px; align-items: center; border: 1px solid var(--border); border-radius: 16px; padding: 14px 18px; background: linear-gradient(100deg, #fffdf0 0%, #fff 45%, #fff6f2 100%); }
   .prazos-pane > .pd-faixa { margin: 14px 20px 0; }
   .pd-total { display: flex; align-items: center; gap: 12px; padding-right: 18px; border-right: 1px solid var(--border); }
   .pd-total-num { font-size: 34px; font-weight: 800; letter-spacing: -.03em; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
   .pd-total-rot { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); line-height: 1.35; }
   .pd-total-rot b { display: block; color: var(--text-soft); text-transform: none; letter-spacing: 0; font-size: 12.5px; font-weight: 600; }
+  .pd-acum { display: flex; flex-direction: column; gap: 6px; padding-right: 18px; border-right: 1px solid var(--border); min-width: 170px; }
+  .pd-acum-topo { display: flex; align-items: center; gap: 10px; }
+  .pd-acum-num { font-size: 28px; font-weight: 800; letter-spacing: -.03em; line-height: 1; color: #15803d; font-variant-numeric: tabular-nums; }
+  .pd-acum-rot { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); line-height: 1.3; }
+  .pd-acum-barra { height: 7px; border-radius: 999px; background: var(--bg); overflow: hidden; }
+  .pd-acum-barra span { display: block; height: 100%; background: #22c55e; transition: width .4s; }
+  .pd-acum-det { font-size: 11.5px; color: var(--muted); }
+  .pd-acum-det b { color: #15803d; }
   .pd-dir { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
   .pd-barra { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--bg); }
   .pd-barra span { display: block; height: 100%; transition: width .4s; }
@@ -250,7 +258,7 @@
   .pd-nota { font-size: 11.5px; color: var(--muted); }
   @media (max-width: 700px) {
     .pd-faixa { grid-template-columns: 1fr; gap: 10px; }
-    .pd-total { border-right: none; padding-right: 0; }
+    .pd-total, .pd-acum { border-right: none; padding-right: 0; }
     .prazos-pane > .pd-faixa { margin: 10px 12px 0; }
   }
 
@@ -1316,7 +1324,15 @@
       }
       setTimeout(() => carregarMensagens(), 1500);
     } catch (err) {
-      alert(`Não foi enviado: ${traduzErro(err.message)}`);
+      // A Shopee bloqueia palavras que ela entende como desvio da plataforma
+      // (visto em 18/11 com uma resposta normal de atendimento).
+      if (/message_is_censored|blacklist/i.test(err.message)) {
+        alert(
+          "A Shopee bloqueou esta mensagem: tem alguma palavra proibida no chat.\n\n" +
+            "Costumam ser bloqueados: telefone, WhatsApp, e-mail, links, Pix, nomes de outros sites/lojas e às vezes uma assinatura com o nome da empresa.\n\n" +
+            "Tente tirar a assinatura (\"Equipe ...\") ou trocar palavras e envie de novo. O texto continua na caixa."
+        );
+      } else alert(`Não foi enviado: ${traduzErro(err.message)}`);
     } finally {
       enviando = false;
       btn.disabled = false;
@@ -1441,6 +1457,7 @@
   // anteriores ficam fora da soma (sao pedidos travados que inflariam o
   // numero do dia) e aparecem so como nota. Mostrado no topo dos dois Prazos.
   let mlPrazos = null; // /api/prazos (o mesmo que o prazos.js usa)
+  let mlSaiuHoje = null; // acumulado do dia do ML (ja sairam hoje)
   const paneML = document.getElementById("prazos-pane");
   let faixaML = null;
   if (paneML) {
@@ -1500,11 +1517,25 @@
         ? "sem loja conectada"
         : "carregando...";
     const antigos = (ml?.antigos || 0) + (sp?.antigos || 0);
+    // Acumulado: o que ja saiu hoje + o que ainda falta sair hoje.
+    const saiuML = mlSaiuHoje ? mlSaiuHoje.total : null;
+    const saiuSP = prazos?.saidosHoje ? prazos.saidosHoje.filter((s) => passaLoja(s.shopId)).length : null;
+    const temSaiu = saiuML !== null || saiuSP !== null;
+    const saiu = (saiuML || 0) + (saiuSP || 0);
+    const acumulado = saiu + total;
+    const pctSaiu = acumulado ? Math.round((100 * saiu) / acumulado) : 0;
     const dataHoje = new Date().toLocaleDateString("pt-BR", { timeZone: TZ, weekday: "long", day: "2-digit", month: "2-digit" });
     return `
       <div class="pd-total">
         <div class="pd-total-num">${ml || sp ? total : "–"}</div>
-        <div class="pd-total-rot">Pacotes do dia<b>${esc(dataHoje)}</b></div>
+        <div class="pd-total-rot">Faltam sair hoje<b>${esc(dataHoje)}</b></div>
+      </div>
+      <div class="pd-acum" title="Acumulado do dia = pacotes que já saíram hoje + os que ainda faltam sair">
+        <div class="pd-acum-topo"><span class="pd-acum-num">${temSaiu ? acumulado : "–"}</span><span class="pd-acum-rot">Total do dia<br>(acumulado)</span></div>
+        <div class="pd-acum-barra"><span style="width:${pctSaiu}%"></span></div>
+        <div class="pd-acum-det">${
+          temSaiu ? `<b>${saiu}</b> já saíram (${pctSaiu}%) · ML ${saiuML ?? "–"} · Shopee ${saiuSP ?? "–"}` : "carregando..."
+        }</div>
       </div>
       <div class="pd-dir">
         <div class="pd-barra" title="Mercado Livre x Shopee">
@@ -1532,8 +1563,13 @@
   });
 
   async function carregarPacotesDia() {
-    const [ml, sp] = await Promise.allSettled([api("/api/prazos"), estado?.contas?.length ? api("/api/shopee/prazos") : null]);
+    const [ml, sp, mlSaiu] = await Promise.allSettled([
+      api("/api/prazos"),
+      estado?.contas?.length ? api("/api/shopee/prazos") : null,
+      api("/api/pacotes-dia/ml-saiu-hoje"),
+    ]);
     if (ml.status === "fulfilled") mlPrazos = ml.value;
+    if (mlSaiu.status === "fulfilled") mlSaiuHoje = mlSaiu.value;
     if (sp.status === "fulfilled" && sp.value) {
       prazos = sp.value;
       atualizarContas();
