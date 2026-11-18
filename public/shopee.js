@@ -156,6 +156,34 @@
     .sp-msg { max-width: 85%; }
   }
 
+  .sp-externo { border: 1px dashed #fdba9f; background: var(--shopee-suave); border-radius: var(--radius-md); padding: 14px 16px; }
+  .sp-externo-linha { display: flex; gap: 8px; }
+  .sp-externo-linha input { flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: #fff; }
+
+  /* ---- Pacotes do dia (ML + Shopee) ---- */
+  .pd-faixa { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 18px; align-items: center; border: 1px solid var(--border); border-radius: 16px; padding: 14px 18px; background: linear-gradient(100deg, #fffdf0 0%, #fff 45%, #fff6f2 100%); }
+  .prazos-pane > .pd-faixa { margin: 14px 20px 0; }
+  .pd-total { display: flex; align-items: center; gap: 12px; padding-right: 18px; border-right: 1px solid var(--border); }
+  .pd-total-num { font-size: 34px; font-weight: 800; letter-spacing: -.03em; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
+  .pd-total-rot { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); line-height: 1.35; }
+  .pd-total-rot b { display: block; color: var(--text-soft); text-transform: none; letter-spacing: 0; font-size: 12.5px; font-weight: 600; }
+  .pd-dir { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+  .pd-barra { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--bg); }
+  .pd-barra span { display: block; height: 100%; transition: width .4s; }
+  .pd-mkts { display: flex; gap: 10px 22px; flex-wrap: wrap; }
+  .pd-mkt { border: none; background: none; padding: 0; font: inherit; text-align: left; cursor: pointer; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .pd-mkt:hover .pd-mkt-nome { text-decoration: underline; }
+  .pd-mkt-cor { width: 10px; height: 10px; border-radius: 3px; flex: none; align-self: center; }
+  .pd-mkt-num { font-size: 19px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+  .pd-mkt-nome { font-size: 13px; font-weight: 700; color: var(--text-soft); }
+  .pd-mkt-det { font-size: 12px; color: var(--muted); }
+  .pd-nota { font-size: 11.5px; color: var(--muted); }
+  @media (max-width: 700px) {
+    .pd-faixa { grid-template-columns: 1fr; gap: 10px; }
+    .pd-total { border-right: none; padding-right: 0; }
+    .prazos-pane > .pd-faixa { margin: 10px 12px 0; }
+  }
+
   /* ---- Devolucoes ---- */
   .sp-dev { border: 1px solid var(--border); border-radius: 14px; background: var(--card); padding: 14px 16px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; }
   .sp-dev + .sp-dev { margin-top: 10px; }
@@ -456,6 +484,7 @@
   async function carregarPrazos({ forcar = false } = {}) {
     try {
       prazos = await api(forcar ? "/api/shopee/prazos/atualizar" : "/api/shopee/prazos", { method: forcar ? "POST" : "GET" });
+      if (!mlPrazos) api("/api/prazos").then((r) => ((mlPrazos = r), atualizarFaixas())).catch(() => {});
       if (aba === "prazos" && visivel) render();
       atualizarContas();
     } catch (err) {
@@ -486,7 +515,7 @@
       Object.entries(prazos.lojas || {}).filter(([, l]) => l.erro).map(([id, l]) => [id, l.erro])
     );
 
-    let html = errosDeLoja(errosLojas);
+    let html = `<div class="pd-faixa" data-pd>${htmlPacotesDia()}</div>` + errosDeLoja(errosLojas);
     html += `<div class="sp-cartoes">${cartoes
       .map(
         (c) => `<button type="button" class="sp-cartao ${c.n ? "" : "zero"} ${prazosFiltro === c.id ? "ativo" : ""}" data-filtro="${c.id}" style="--sp-cor:${c.cor}">
@@ -944,6 +973,131 @@
   }
 
   // =====================================================================
+  // PACOTES DO DIA — soma Mercado Livre + Shopee (pedido do usuario, 18/11)
+  // =====================================================================
+  // Conta o que precisa sair HOJE: prazo de hoje (a imprimir/organizar,
+  // impressos aguardando despacho) + atrasados de hoje. Atrasados de dias
+  // anteriores ficam fora da soma (sao pedidos travados que inflariam o
+  // numero do dia) e aparecem so como nota. Mostrado no topo dos dois Prazos.
+  let mlPrazos = null; // /api/prazos (o mesmo que o prazos.js usa)
+  const paneML = document.getElementById("prazos-pane");
+  let faixaML = null;
+  if (paneML) {
+    faixaML = document.createElement("div");
+    faixaML.className = "pd-faixa hidden";
+    faixaML.dataset.pd = "";
+    paneML.querySelector(".history-header")?.after(faixaML);
+  }
+
+  function contarML() {
+    if (!mlPrazos?.envios) return null;
+    const hoje = diaSP(Date.now());
+    const doDia = (e) => e.prazo && diaSP(Date.parse(e.prazo)) === hoje;
+    const r = { imprimir: 0, impressos: 0, atrasadosHoje: 0, antigos: 0 };
+    for (const e of mlPrazos.envios) {
+      if (e.situacao === "proximos") continue;
+      if (e.situacao === "atrasado") {
+        if (doDia(e)) r.atrasadosHoje++;
+        else r.antigos++;
+      } else if (e.situacao === "impresso") r.impressos++;
+      else r.imprimir++;
+    }
+    r.total = r.imprimir + r.impressos + r.atrasadosHoje;
+    return r;
+  }
+
+  function contarShopee() {
+    if (!prazos?.pedidos) return null;
+    const hoje = diaSP(Date.now());
+    const r = { organizar: 0, aguardando: 0, atrasadosHoje: 0, antigos: 0 };
+    for (const p of prazos.pedidos) {
+      const dia = p.prazo ? diaSP(p.prazo) : null;
+      if (p.situacao === "atrasado") {
+        if (dia === hoje) r.atrasadosHoje++;
+        else r.antigos++;
+      } else if (dia === hoje || !p.prazo) {
+        if (p.etapa === "organizar") r.organizar++;
+        else r.aguardando++;
+      }
+    }
+    r.total = r.organizar + r.aguardando + r.atrasadosHoje;
+    return r;
+  }
+
+  function htmlPacotesDia() {
+    const ml = contarML();
+    const sp = contarShopee();
+    const total = (ml?.total || 0) + (sp?.total || 0);
+    const pct = (n) => (total ? (100 * n) / total : 0);
+    const juntar = (partes) => partes.filter(Boolean).join(" · ") || "nada para hoje";
+    const detML = ml
+      ? juntar([ml.imprimir && `${ml.imprimir} a imprimir`, ml.impressos && `${ml.impressos} impressos`, ml.atrasadosHoje && `${ml.atrasadosHoje} atrasados`])
+      : "carregando...";
+    const detSP = sp
+      ? juntar([sp.organizar && `${sp.organizar} a organizar`, sp.aguardando && `${sp.aguardando} aguardando saída`, sp.atrasadosHoje && `${sp.atrasadosHoje} atrasados`])
+      : estado && !estado.contas?.length
+        ? "sem loja conectada"
+        : "carregando...";
+    const antigos = (ml?.antigos || 0) + (sp?.antigos || 0);
+    const dataHoje = new Date().toLocaleDateString("pt-BR", { timeZone: TZ, weekday: "long", day: "2-digit", month: "2-digit" });
+    return `
+      <div class="pd-total">
+        <div class="pd-total-num">${ml || sp ? total : "–"}</div>
+        <div class="pd-total-rot">Pacotes do dia<b>${esc(dataHoje)}</b></div>
+      </div>
+      <div class="pd-dir">
+        <div class="pd-barra" title="Mercado Livre x Shopee">
+          <span style="width:${pct(ml?.total || 0)}%;background:#ffd400"></span><span style="width:${pct(sp?.total || 0)}%;background:var(--shopee-cor)"></span>
+        </div>
+        <div class="pd-mkts">
+          <button type="button" class="pd-mkt" data-pd-ir="ml"><span class="pd-mkt-cor" style="background:#ffd400"></span><span class="pd-mkt-num">${ml ? ml.total : "–"}</span><span><span class="pd-mkt-nome">Mercado Livre</span> <span class="pd-mkt-det">${esc(detML)}</span></span></button>
+          <button type="button" class="pd-mkt" data-pd-ir="shopee"><span class="pd-mkt-cor" style="background:var(--shopee-cor)"></span><span class="pd-mkt-num">${sp ? sp.total : "–"}</span><span><span class="pd-mkt-nome">Shopee</span> <span class="pd-mkt-det">${esc(detSP)}</span></span></button>
+        </div>
+        ${antigos ? `<div class="pd-nota">+ ${antigos} ${antigos === 1 ? "atrasado antigo" : "atrasados antigos"} (de dias anteriores) fora da soma</div>` : ""}
+      </div>`;
+  }
+
+  function atualizarFaixas() {
+    const html = htmlPacotesDia();
+    document.querySelectorAll("[data-pd]").forEach((el) => (el.innerHTML = html));
+  }
+
+  // Clicar no nome do marketplace abre o Prazos dele.
+  document.addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-pd-ir]");
+    if (!b) return;
+    if (b.dataset.pdIr === "ml") document.querySelector('.module-nav-item[data-module="prazos"]')?.click();
+    else irPara("prazos");
+  });
+
+  async function carregarPacotesDia() {
+    const [ml, sp] = await Promise.allSettled([api("/api/prazos"), estado?.contas?.length ? api("/api/shopee/prazos") : null]);
+    if (ml.status === "fulfilled") mlPrazos = ml.value;
+    if (sp.status === "fulfilled" && sp.value) {
+      prazos = sp.value;
+      atualizarContas();
+    }
+    atualizarFaixas();
+  }
+
+  // Na tela de Prazos do ML a faixa aparece ao abrir e se atualiza a cada 60s.
+  let mlVisivel = false;
+  document.querySelectorAll(".module-nav-item:not([data-sp-extra])").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      mlVisivel = btn.dataset.module === "prazos";
+      faixaML?.classList.toggle("hidden", !mlVisivel);
+      if (mlVisivel) {
+        atualizarFaixas();
+        (estado ? Promise.resolve() : carregarEstado()).then(carregarPacotesDia);
+      }
+    });
+  });
+  setInterval(() => {
+    if (document.hidden) return;
+    if (mlVisivel || (visivel && aba === "prazos")) carregarPacotesDia();
+  }, 60_000);
+
+  // =====================================================================
   // LOJAS (conexao + sonda)
   // =====================================================================
   function renderLojas() {
@@ -1006,6 +1160,16 @@
         <div class="shopee-lojas" id="shopee-lojas">${cartoes}</div>
         ${estado.contas.length > 0 && estado.contas.length < 3 ? `<p class="muted small" style="margin:10px 0 0">Para conectar outra loja: clique em Conectar de novo e, na tela da Shopee, saia da loja atual antes de entrar na próxima.</p>` : ""}
       </section>
+      ${estado.configurado ? `
+      <section class="sp-externo">
+        <h3 class="shopee-titulo">Conectar loja de outra empresa (outro CNPJ)</h3>
+        <p class="muted small" style="margin:0 0 10px;line-height:1.55">Mande este link para o responsável pela loja. Ele abre, entra com a <b>conta de vendedor da loja</b> (Central do Vendedor — não a da Open Platform) e confirma. A loja aparece aqui sozinha.</p>
+        <div class="sp-externo-linha"><input id="sp-link-externo" class="sp-busca" readonly value="carregando..."><button type="button" class="btn btn-sm sp-btn-shopee" data-copiar="sp-link-externo">Copiar link</button></div>
+        <details style="margin-top:10px"><summary class="muted small" style="cursor:pointer">Prefere usar o botão Authorize do console da Shopee?</summary>
+          <p class="muted small" style="margin:8px 0;line-height:1.55">No console: App List › Painel Vesco › <b>Authorize</b>. No campo Redirect URL, cole o endereço abaixo e mande o link que o console gerar.</p>
+          <div class="sp-externo-linha"><input id="sp-redirect-externo" class="sp-busca" readonly value=""><button type="button" class="btn btn-ghost btn-sm" data-copiar="sp-redirect-externo">Copiar</button></div>
+        </details>
+      </section>` : ""}
       <section id="shopee-sonda" class="shopee-sonda hidden">
         <div class="shopee-sonda-topo">
           <h3 class="shopee-titulo" style="margin:0">Resultado da sonda</h3>
@@ -1015,6 +1179,28 @@
       </section>`;
 
     $("shopee-lojas").addEventListener("click", acaoLoja);
+    if (estado.configurado) {
+      api("/api/shopee/link-externo")
+        .then((r) => {
+          if ($("sp-link-externo")) $("sp-link-externo").value = r.link;
+          if ($("sp-redirect-externo")) $("sp-redirect-externo").value = r.redirect;
+        })
+        .catch(() => {});
+      corpo.querySelectorAll("[data-copiar]").forEach((b) =>
+        b.addEventListener("click", async () => {
+          const campo = $(b.dataset.copiar);
+          try {
+            await navigator.clipboard.writeText(campo.value);
+          } catch {
+            campo.select();
+            document.execCommand("copy");
+          }
+          const antes = b.textContent;
+          b.textContent = "Copiado ✓";
+          setTimeout(() => (b.textContent = antes), 1500);
+        })
+      );
+    }
     $("shopee-copiar").addEventListener("click", async () => {
       try {
         await navigator.clipboard.writeText($("shopee-sonda-saida").textContent);
