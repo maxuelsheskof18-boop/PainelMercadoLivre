@@ -1053,7 +1053,10 @@
   async function carregarContexto() {
     const alvo = conversaAberta;
     if (!alvo) return;
-    const chave = JSON.stringify([msgsAbertas.flatMap((m) => m.produtos || []), msgsAbertas.map((m) => m.pedido).filter(Boolean)]);
+    const chave = JSON.stringify([
+      msgsAbertas.flatMap((m) => [...(m.produtos || []), m.produtoRef].filter(Boolean)),
+      msgsAbertas.flatMap((m) => [m.pedido, m.pedidoRef]).filter(Boolean),
+    ]);
     if (chave === ctxChave && ctxAberto) return;
     ctxChave = chave;
     try {
@@ -1132,7 +1135,7 @@
     box.innerHTML = `
       <section><h4>Produto${prods.length > 1 ? "s" : ""} da conversa</h4>
         <div class="sp-ctx-lista">${prods.length ? prods.map((p) => cartaoProduto(p)).join("") : '<div class="sp-ctx-vazio">O comprador não enviou nenhum anúncio nesta conversa.</div>'}</div></section>
-      <section><h4>Pedido${peds.length > 1 ? "s" : ""} citado${peds.length > 1 ? "s" : ""}</h4>
+      <section><h4>Pedido${peds.length > 1 ? "s" : ""} da conversa</h4>
         <div class="sp-ctx-lista">${peds.length ? peds.map(cartaoPedido).join("") : '<div class="sp-ctx-vazio">Nenhum pedido citado nesta conversa.</div>'}</div></section>
       ${pedsProd.length ? `<section><h4>Anúncios dos pedidos</h4><div class="sp-ctx-lista">${pedsProd.map((p) => cartaoProduto(p)).join("")}</div></section>` : ""}
       ${(ctxAberto.erros || []).length ? `<div class="shopee-aviso erro" style="font-size:12px">${esc(traduzErro(ctxAberto.erros[0]))}</div>` : ""}
