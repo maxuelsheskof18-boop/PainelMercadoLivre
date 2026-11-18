@@ -34,10 +34,102 @@ const devolucoes = require("../shopee/devolucoes");
 
 const router = express.Router();
 
-function urlRetorno(req, nonce) {
-  const base = process.env.SHOPEE_REDIRECT_BASE || `${req.protocol}://${req.get("host")}`;
-  return `${base.replace(/\/$/, "")}/shopee/callback?st=${nonce}`;
+function baseUrl(req) {
+  return (process.env.SHOPEE_REDIRECT_BASE || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
 }
+
+function urlRetorno(req, nonce) {
+  return `${baseUrl(req)}/shopee/callback?st=${nonce}`;
+}
+
+// ---------- Link para lojas de OUTRO CNPJ ----------
+// O app Seller In House autoriza lojas proprias de CNPJs diferentes, mas
+// quem autoriza e o responsavel de cada loja, entrando com a conta de
+// VENDEDOR dela (resposta do suporte da Shopee, 18/11). Essa pessoa nao tem
+// login no painel, entao o retorno normal (/shopee/callback, que exige
+// login + nonce da sessao) nao serve. Este link leva uma chave fixa,
+// derivada do SESSION_SECRET (nao precisa de variavel nova): so quem
+// recebeu o link consegue usar o retorno sem login.
+function chaveExterna() {
+  return crypto
+    .createHmac("sha256", process.env.SESSION_SECRET || "troque-este-segredo")
+    .update("shopee-autorizar-loja-externa")
+    .digest("hex")
+    .slice(0, 24);
+}
+
+function chaveConfere(k) {
+  const certa = Buffer.from(chaveExterna());
+  const recebida = Buffer.from(String(k || ""));
+  return recebida.length === certa.length && crypto.timingSafeEqual(recebida, certa);
+}
+
+const urlRetornoExterno = (req) => `${baseUrl(req)}/shopee/retorno-loja?k=${chaveExterna()}`;
+const urlLinkExterno = (req) => `${baseUrl(req)}/shopee/autorizar-loja?k=${chaveExterna()}`;
+
+// Troca o code e grava a(s) loja(s). Usado pelos dois retornos.
+async function conectarComCodigo(code, shopId, mainAccountId) {
+  const lojas = shopId
+    ? await shopee.trocarCodigo(code, shopId)
+    : await shopee.trocarCodigoContaPrincipal(code, mainAccountId);
+  const nomes = [];
+  // Nome da loja e so conveniencia: se falhar, a loja fica conectada igual.
+  for (const id of lojas) {
+    try {
+      const info = await shopee.chamarLoja(id, "/api/v2/shop/get_shop_info");
+      if (info.shop_name) await shopee.definirNome(id, info.shop_name);
+      nomes.push(info.shop_name || `Loja ${id}`);
+    } catch (err) {
+      console.warn(`[shopee] get_shop_info da loja ${id} falhou depois de conectar:`, err.message);
+      nomes.push(`Loja ${id}`);
+    }
+  }
+  if (lojas.length) pedidos.coletar().catch(() => {}); // loja nova ja aparece nos prazos
+  return nomes;
+}
+
+function paginaSimples(res, status, titulo, texto) {
+  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  res.status(status).send(`<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(titulo)}</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fff6f2;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1f2937;padding:16px}
+.c{max-width:440px;background:#fff;border-radius:18px;padding:32px 28px;box-shadow:0 12px 32px rgba(238,77,45,.15);text-align:center;border-top:6px solid #ee4d2d}
+h1{font-size:21px;margin:12px 0 8px}p{color:#4b5563;line-height:1.55;margin:0}.i{font-size:44px}</style></head>
+<body><div class="c"><div class="i">${status < 300 ? "✅" : "⚠️"}</div><h1>${esc(titulo)}</h1><p>${esc(texto)}</p></div></body></html>`);
+}
+
+// Link que voce manda para o responsavel da outra loja (sem login no painel).
+// Gera na hora o link assinado da Shopee (a assinatura leva o horario, por
+// isso nao da para mandar o link da Shopee pronto — ele venceria).
+router.get("/shopee/autorizar-loja", (req, res) => {
+  if (!chaveConfere(req.query.k)) return paginaSimples(res, 403, "Link inválido", "Peça um link novo a quem enviou.");
+  if (!shopee.configurado()) return paginaSimples(res, 500, "Integração indisponível", "A Shopee ainda não está configurada no painel.");
+  res.redirect(shopee.linkAutorizacao(urlRetornoExterno(req)));
+});
+
+router.get("/shopee/retorno-loja", async (req, res) => {
+  const { code, shop_id: shopId, main_account_id: mainAccountId, k } = req.query;
+  if (!chaveConfere(k)) return paginaSimples(res, 403, "Link inválido", "Peça um link novo a quem enviou.");
+  if (!code || (!shopId && !mainAccountId)) {
+    return paginaSimples(res, 400, "Autorização não concluída", "A Shopee não confirmou a autorização. Abra o link de novo e conclua com a conta de vendedor da loja.");
+  }
+  try {
+    const nomes = await conectarComCodigo(code, shopId, mainAccountId);
+    if (!nomes.length) {
+      return paginaSimples(res, 400, "Nenhuma loja autorizada", "Abra o link de novo e marque a loja na tela da Shopee.");
+    }
+    console.log(`[shopee] loja(s) conectada(s) pelo link externo: ${nomes.join(", ")}`);
+    paginaSimples(res, 200, "Loja conectada!", `${nomes.join(", ")} já aparece no painel. Pode fechar esta página.`);
+  } catch (err) {
+    console.error("[shopee] falha no retorno externo:", err.message);
+    paginaSimples(res, 502, "Não deu certo", `A Shopee recusou a autorização (${err.message}). Abra o link de novo; se continuar, avise quem enviou.`);
+  }
+});
+
+// Para a tela Lojas: o link para compartilhar e a Redirect URL (caso use o
+// botao Authorize do console da Shopee).
+router.get("/api/shopee/link-externo", requireLogin, (req, res) => {
+  res.json({ link: urlLinkExterno(req), redirect: urlRetornoExterno(req) });
+});
 
 router.get("/shopee/conectar", requireLogin, (req, res) => {
   if (!shopee.configurado()) {
@@ -61,22 +153,10 @@ router.get("/shopee/callback", requireLogin, async (req, res) => {
       .send(`A Shopee nao devolveu code/shop_id. Recebido: ${Object.keys(req.query).join(", ")}`);
   }
   try {
-    const lojas = shopId
-      ? await shopee.trocarCodigo(code, shopId)
-      : await shopee.trocarCodigoContaPrincipal(code, mainAccountId);
-    if (!lojas.length) {
+    const nomes = await conectarComCodigo(code, shopId, mainAccountId);
+    if (!nomes.length) {
       return res.status(400).send("A Shopee autorizou a conta principal, mas nenhuma loja veio junto. Marque as lojas na tela de autorizacao.");
     }
-    // Nome da loja e so conveniencia: se falhar, a loja fica conectada igual.
-    for (const id of lojas) {
-      try {
-        const info = await shopee.chamarLoja(id, "/api/v2/shop/get_shop_info");
-        if (info.shop_name) await shopee.definirNome(id, info.shop_name);
-      } catch (err) {
-        console.warn(`[shopee] get_shop_info da loja ${id} falhou depois de conectar:`, err.message);
-      }
-    }
-    pedidos.coletar().catch(() => {}); // loja nova ja aparece nos prazos
     res.redirect("/?modulo=shopee");
   } catch (err) {
     console.error("[shopee] falha ao trocar o code:", err.message);
