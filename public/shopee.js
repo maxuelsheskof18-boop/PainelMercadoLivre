@@ -50,7 +50,7 @@
   .mkt-selo.ml { background: var(--ml-cor); color: var(--ml-texto); }
 
   /* Cabecalho laranja com as abas do modulo. */
-  .shopee-pane .shopee-banner { background: linear-gradient(120deg, var(--shopee-cor) 0%, #ff7337 100%); color: #fff; border-bottom: none; position: relative; overflow: hidden; padding-bottom: 0; row-gap: 10px; }
+  .shopee-pane .shopee-banner { background: linear-gradient(120deg, var(--shopee-cor) 0%, #ff7337 100%); color: #fff; border-bottom: none; position: relative; overflow: hidden; row-gap: 10px; }
   .shopee-banner::after { content: ""; position: absolute; right: -40px; top: -60px; width: 220px; height: 220px; border-radius: 50%; background: rgba(255,255,255,.08); pointer-events: none; }
   .shopee-banner-marca { display: flex; align-items: center; gap: 12px; position: relative; z-index: 1; }
   .shopee-banner-icone { width: 40px; height: 40px; border-radius: 12px; background: rgba(255,255,255,.18); display: grid; place-items: center; flex: none; }
@@ -63,14 +63,6 @@
   .shopee-banner .sp-btn-claro:hover { background: var(--shopee-suave); }
   .shopee-banner .sp-btn-vidro { background: rgba(255,255,255,.16); color: #fff; border-color: rgba(255,255,255,.3); }
   .shopee-banner .sp-btn-vidro:hover { background: rgba(255,255,255,.26); }
-  .sp-abas { flex-basis: 100%; display: flex; gap: 4px; position: relative; z-index: 1; overflow-x: auto; scrollbar-width: none; }
-  .sp-abas::-webkit-scrollbar { display: none; }
-  .sp-aba { border: none; background: transparent; color: rgba(255,255,255,.85); font: inherit; font-size: 13.5px; font-weight: 600; padding: 9px 14px 11px; border-radius: 10px 10px 0 0; cursor: pointer; display: flex; align-items: center; gap: 7px; white-space: nowrap; }
-  .sp-aba:hover { background: rgba(255,255,255,.12); color: #fff; }
-  .sp-aba.ativa { background: var(--card); color: var(--shopee-escuro); }
-  .sp-aba .sp-conta { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: rgba(255,255,255,.25); color: #fff; font-size: 11px; display: inline-grid; place-items: center; }
-  .sp-aba.ativa .sp-conta { background: var(--shopee-cor); }
-  .sp-aba .sp-conta:empty { display: none; }
   .shopee-loja { border-left: 3px solid var(--shopee-cor); }
   .shopee-titulo { color: var(--shopee-escuro); }
 
@@ -179,11 +171,9 @@
   @media (max-width: 900px) {
     /* No celular o .history-header vira coluna (style.css): flex-basis 100%
        viraria ALTURA 100% e espremia as abas num canto. */
-    .shopee-pane .shopee-banner { flex-direction: row; flex-wrap: wrap; align-items: center; padding: 12px 14px 0; }
+    .shopee-pane .shopee-banner { flex-direction: row; flex-wrap: wrap; align-items: center; padding: 12px 14px; }
     .shopee-banner .history-actions { flex: 1 1 100%; }
     .shopee-banner .history-actions .sp-select { flex: 1; min-width: 0; }
-    .sp-abas { flex: 1 1 100%; }
-    .sp-aba { padding: 8px 12px 10px; }
     .mkt-grupo { display: none; }
     .module-nav-item[data-mkt="shopee"] { margin-left: 6px; }
   }
@@ -208,12 +198,58 @@
     navItens.prepend(grupo("ml", "Mercado Livre"));
     navShopee?.before(grupo("shopee", "Shopee"));
   }
-  let badgeNav = document.getElementById("module-badge-shopee");
-  if (navShopee && !badgeNav) {
-    badgeNav = document.createElement("span");
-    badgeNav.id = "module-badge-shopee";
-    badgeNav.className = "tab-count module-badge hidden";
-    navShopee.appendChild(badgeNav);
+  // Cada categoria da Shopee e um item proprio no menu, igual ao Mercado
+  // Livre (pedido do usuario, 18/11). O botao "shopee" do index.html vira
+  // "Prazos"; Chat, Devolucoes e Lojas sao criados aqui. Os criados nao
+  // passam pelo app.js (que so conhece os botoes do index.html): eles
+  // "clicam" no botao original e depois trocam a categoria.
+  const ABAS = [
+    { id: "prazos", nome: "Prazos", titulo: "Prazos de despacho" },
+    { id: "chat", nome: "Chat", titulo: "Chat com compradores" },
+    { id: "devolucoes", nome: "Devoluções", titulo: "Devoluções e reembolsos" },
+    { id: "lojas", nome: "Lojas", titulo: "Lojas conectadas" },
+  ];
+  const svg = (d) =>
+    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+  const ICONES = {
+    prazos: svg('<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/>'),
+    chat: svg('<path d="M21 12a8 8 0 0 1-11.5 7.2L4 21l1.8-5.5A8 8 0 1 1 21 12z"/>'),
+    devolucoes: svg('<polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/>'),
+    lojas: svg('<path d="M3 9l1.5-5h15L21 9"/><path d="M4 9v11h16V9"/><path d="M9 20v-6h6v6"/>'),
+  };
+  const navAbas = {};
+  let abaPedida = null;
+  const irPara = (id) => {
+    abaPedida = id;
+    navShopee?.click();
+  };
+  if (navShopee && !navShopee.dataset.spAba) {
+    navShopee.dataset.spAba = "prazos";
+    navShopee.title = "Shopee · Prazos de despacho";
+    navShopee.querySelector(".module-nav-icon").innerHTML = ICONES.prazos;
+    navShopee.querySelector(".module-nav-label").textContent = "Prazos";
+    navAbas.prazos = navShopee;
+    let anterior = navShopee;
+    for (const a of ABAS.slice(1)) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "module-nav-item";
+      b.dataset.mkt = "shopee";
+      b.dataset.spAba = a.id;
+      b.dataset.spExtra = "1";
+      b.title = `Shopee · ${a.titulo}`;
+      b.innerHTML = `<span class="module-nav-icon">${ICONES[a.id]}</span><span class="module-nav-label">${a.nome}</span>`;
+      b.addEventListener("click", () => irPara(a.id));
+      anterior.after(b);
+      anterior = b;
+      navAbas[a.id] = b;
+    }
+    for (const a of ABAS) {
+      const badge = document.createElement("span");
+      badge.id = `sp-conta-${a.id}`;
+      badge.className = "tab-count module-badge hidden";
+      navAbas[a.id].appendChild(badge);
+    }
   }
   // Selo amarelo nas telas de largura inteira que sao so do Mercado Livre.
   for (const id of ["prazos-pane", "history-pane"]) {
@@ -223,13 +259,6 @@
     }
   }
 
-  const ABAS = [
-    { id: "prazos", nome: "Prazos" },
-    { id: "chat", nome: "Chat" },
-    { id: "devolucoes", nome: "Devoluções" },
-    { id: "lojas", nome: "Lojas" },
-  ];
-
   pane.innerHTML = `
     <div class="history-header shopee-banner">
       <div class="shopee-banner-marca">
@@ -237,7 +266,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1 13H6z"/><path d="M9 7a3 3 0 0 1 6 0"/></svg>
         </div>
         <div>
-          <h2>Shopee</h2>
+          <h2>Shopee · <span id="sp-titulo">Prazos de despacho</span></h2>
           <div id="shopee-status" class="small">Carregando...</div>
         </div>
       </div>
@@ -245,9 +274,6 @@
         <select id="sp-loja-filtro" class="sp-select sp-btn-vidro" title="Filtrar por loja"></select>
         <button type="button" id="sp-atualizar" class="btn btn-sm sp-btn-vidro" title="Buscar agora na Shopee">⟳ Atualizar</button>
       </div>
-      <nav class="sp-abas">${ABAS.map(
-        (a) => `<button type="button" class="sp-aba" data-aba="${a.id}">${a.nome}<span class="sp-conta" id="sp-conta-${a.id}"></span></button>`
-      ).join("")}</nav>
     </div>
     <div id="sp-corpo" class="shopee-corpo"></div>`;
 
@@ -309,7 +335,7 @@
   };
 
   let visivel = false;
-  let aba = lerPref("aba", "prazos");
+  let aba = "prazos";
   let lojaFiltro = "";
   let estado = null; // /api/shopee/estado
   const passaLoja = (shopId) => !lojaFiltro || String(shopId) === lojaFiltro;
@@ -323,22 +349,25 @@
   }
 
   // ---------- Mostrar/esconder ----------
-  document.querySelectorAll(".module-nav-item").forEach((btn) => {
+  // So os botoes do index.html (os criados aqui ja chamam irPara).
+  document.querySelectorAll(".module-nav-item:not([data-sp-extra])").forEach((btn) => {
     btn.addEventListener("click", () => {
       visivel = btn.dataset.module === "shopee";
       pane.classList.toggle("hidden", !visivel);
-      if (visivel) abrir();
+      if (visivel) {
+        aba = abaPedida || "prazos";
+        abaPedida = null;
+      }
+      // O app.js marca como ativo so os botoes que ele conhece.
+      for (const [id, b] of Object.entries(navAbas)) b.classList.toggle("active", visivel && id === aba);
+      if (visivel) {
+        // Troca titulo e corpo na hora (o resto chega depois do fetch).
+        $("sp-titulo").textContent = ABAS.find((a) => a.id === aba)?.titulo || "";
+        if (estado) render();
+        abrir();
+      }
     });
   });
-
-  pane.querySelectorAll(".sp-aba").forEach((b) =>
-    b.addEventListener("click", () => {
-      aba = b.dataset.aba;
-      salvarPref("aba", aba);
-      render();
-      carregarAba();
-    })
-  );
   lojaSel.addEventListener("change", () => {
     lojaFiltro = lojaSel.value;
     render();
@@ -380,7 +409,7 @@
   }
 
   function render() {
-    pane.querySelectorAll(".sp-aba").forEach((b) => b.classList.toggle("ativa", b.dataset.aba === aba));
+    $("sp-titulo").textContent = ABAS.find((a) => a.id === aba)?.titulo || "";
     $("sp-atualizar").classList.toggle("hidden", aba === "lojas");
     corpo.classList.toggle("sp-sem-rolagem", aba === "chat");
     if (!estado) return;
@@ -1049,16 +1078,13 @@
     const devAbertas = devs ? devs.devolucoes.filter((d) => d.aberta).length : resumo?.devolucoesAbertas || 0;
     const set = (id, n) => {
       const el = $(`sp-conta-${id}`);
-      if (el) el.textContent = n ? String(n) : "";
+      if (!el) return;
+      el.textContent = n > 99 ? "99+" : String(n);
+      el.classList.toggle("hidden", !n);
     };
     set("prazos", urg);
     set("chat", naoLidas);
     set("devolucoes", devAbertas);
-    const total = urg + naoLidas + devAbertas;
-    if (badgeNav) {
-      badgeNav.textContent = total > 99 ? "99+" : String(total);
-      badgeNav.classList.toggle("hidden", !total);
-    }
   }
 
   async function atualizarResumo() {
@@ -1106,7 +1132,6 @@
   // Voltando da autorizacao da Shopee (/?modulo=shopee): abre na aba Lojas.
   if (new URLSearchParams(location.search).get("modulo") === "shopee") {
     history.replaceState(null, "", "/");
-    aba = "lojas";
-    navShopee?.click();
+    irPara("lojas");
   }
 })();
