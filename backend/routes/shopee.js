@@ -142,6 +142,10 @@ const CAMPOS_PESSOAIS = new Set([
   "to_avatar",
   "phone",
   "full_address",
+  "user",
+  "username",
+  "email",
+  "portrait",
 ]);
 
 // Mostra so o formato: listas cortadas em 3 itens, textos longos cortados,
@@ -226,15 +230,26 @@ async function sondarLoja(shopId) {
   await chamar("canaisLogisticos", "/api/v2/logistics/get_channel_list");
 
   // Devolucoes (vira "Reclamacoes" do painel).
-  await chamar("devolucoes", "/api/v2/returns/get_return_list", {
-    query: { page_no: 0, page_size: 10 },
+  // Sem filtro a Shopee devolveu as de 2022 primeiro (18/11). Esta confere
+  // se o filtro por data de criacao (ultimos 15 dias) funciona.
+  await chamar("devolucoes15dias", "/api/v2/returns/get_return_list", {
+    query: { page_no: 0, page_size: 10, create_time_from: fim - 15 * DIA + 60, create_time_to: fim },
   });
 
   // Chat: costuma exigir permissao a parte. 403/"error_permission" aqui =
   // pedir liberacao do SellerChat no console.
-  await chamar("chatConversas", "/api/v2/sellerchat/get_conversation_list", {
+  const conversas = await chamar("chatConversas", "/api/v2/sellerchat/get_conversation_list", {
     query: { direction: "older", type: "all", page_size: 5 },
   });
+  const primeira = conversas.response?.conversations?.[0];
+  if (primeira) {
+    // Formato das mensagens (quem e "da loja": from_id x from_shop_id).
+    const msgs = await chamar("chatMensagens", "/api/v2/sellerchat/get_message", {
+      query: { conversation_id: primeira.conversation_id, page_size: 6 },
+    });
+    r.chatMensagens.compradorId = primeira.to_id;
+    void msgs;
+  }
 
   return r;
 }
@@ -310,7 +325,7 @@ router.get("/api/shopee/chat", requireLogin, async (req, res) => {
 
 router.get("/api/shopee/chat/:shopId/:conversa", requireLogin, async (req, res) => {
   try {
-    res.json({ mensagens: await chat.mensagens(req.params.shopId, req.params.conversa) });
+    res.json({ mensagens: await chat.mensagens(req.params.shopId, req.params.conversa, req.query.comprador) });
   } catch (err) {
     erro500(res, err);
   }
