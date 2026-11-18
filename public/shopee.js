@@ -12,6 +12,9 @@
   .shopee-pane .history-header { border-bottom: 1px solid var(--border); }
   .shopee-corpo { overflow: auto; padding: 20px 24px 32px; display: flex; flex-direction: column; gap: 20px; flex: 1; min-height: 0; }
   .shopee-corpo.sp-sem-rolagem { overflow: hidden; padding: 0; }
+  /* Coluna com altura fixa: sem isto, blocos com overflow:hidden (ex.
+     .pz-detalhe) eram espremidos ate sumir em vez de a coluna rolar. */
+  .shopee-corpo > * { flex-shrink: 0; }
   .shopee-aviso { border: 1px solid #fde68a; background: #fffbeb; color: #78350f; border-radius: var(--radius-md); padding: 14px 16px; font-size: 13.5px; line-height: 1.5; }
   .shopee-aviso code { background: #fef3c7; padding: 1px 5px; border-radius: 4px; }
   .shopee-aviso.erro { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
@@ -139,6 +142,52 @@
   .sp-msg.dele { align-self: flex-start; background: var(--card); border-bottom-left-radius: 4px; }
   .sp-msg.nossa { align-self: flex-end; background: #ffe3d9; border-bottom-right-radius: 4px; }
   .sp-msg img { max-width: 220px; border-radius: 8px; display: block; }
+  .sp-msg.anexo { padding: 4px; background: var(--card); }
+  .sp-msg.anexo.nossa { background: #ffe3d9; }
+  .sp-anexo { position: relative; display: block; border-radius: 10px; overflow: hidden; cursor: zoom-in; }
+  .sp-anexo img { max-width: 240px; max-height: 260px; object-fit: cover; }
+  .sp-anexo.video { cursor: pointer; }
+  .sp-anexo.video::after { content: "▶"; position: absolute; inset: 0; display: grid; place-items: center; font-size: 30px; color: #fff; background: rgba(0,0,0,.28); text-shadow: 0 2px 8px rgba(0,0,0,.4); }
+  .sp-anexo-dur { position: absolute; right: 6px; bottom: 6px; z-index: 1; font-size: 11px; color: #fff; background: rgba(0,0,0,.55); padding: 1px 6px; border-radius: 999px; }
+  .sp-msg-hora { padding: 0 4px; }
+  /* Cartoes de produto/pedido dentro da conversa e no painel lateral */
+  .sp-prod { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; align-items: center; text-decoration: none; color: inherit; border: 1px solid var(--border); border-radius: 12px; padding: 8px; background: var(--card); white-space: normal; }
+  .sp-prod img, .sp-prod .sp-prod-sem { width: 56px; height: 56px; border-radius: 8px; object-fit: cover; background: var(--bg); display: grid; place-items: center; font-size: 22px; }
+  .sp-prod-nome { font-size: 12.5px; font-weight: 650; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.35; }
+  .sp-prod-preco { font-size: 13.5px; font-weight: 800; color: var(--shopee-escuro); margin-top: 3px; }
+  .sp-prod-preco s { font-size: 11px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+  .sp-prod-info { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .sp-msg .sp-prod { min-width: 240px; max-width: 300px; }
+  .sp-thread-meio { flex: 1; min-height: 0; display: flex; }
+  .sp-thread-meio .sp-msgs { flex: 1; min-width: 0; }
+  .sp-ctx { width: 300px; flex: none; border-left: 1px solid var(--border); background: var(--card); overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+  .sp-ctx h4 { margin: 0 0 8px; font-size: 11px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+  .sp-ctx-lista { display: flex; flex-direction: column; gap: 8px; }
+  .sp-ctx-vazio { font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+  .sp-ped-card { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .sp-ped-card-topo { padding: 10px 12px; background: var(--shopee-suave); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .sp-ped-card-topo .sp-sn { font-size: 12px; }
+  .sp-ped-st { font-size: 11px; font-weight: 700; color: var(--shopee-escuro); }
+  .sp-ped-itens { padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--border); }
+  .sp-ped-item { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 12px; }
+  .sp-ped-item img, .sp-ped-item .sp-prod-sem { width: 34px; height: 34px; border-radius: 6px; object-fit: cover; background: var(--bg); }
+  .sp-ped-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sp-ped-dados { padding: 8px 12px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; font-size: 12px; }
+  .sp-ped-dados dt { color: var(--muted); }
+  .sp-ped-dados dd { margin: 0; color: var(--text); font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+  .sp-ped-msg { padding: 8px 12px; font-size: 12px; color: var(--text-soft); background: #fffbeb; border-top: 1px solid var(--border); white-space: pre-wrap; }
+  .sp-mini-copiar { border: none; background: none; cursor: pointer; color: var(--muted); padding: 0 0 0 4px; font: inherit; }
+  .sp-mini-copiar:hover { color: var(--shopee-escuro); }
+  .sp-ctx-btn { display: none; margin-left: auto; }
+  .sp-zoom { position: fixed; inset: 0; z-index: 1000; background: rgba(15,23,42,.82); display: grid; place-items: center; padding: 24px; cursor: zoom-out; }
+  .sp-zoom img, .sp-zoom video { max-width: 100%; max-height: 100%; border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.4); cursor: default; }
+  @media (max-width: 1280px) {
+    .sp-ctx-btn { display: inline-flex; }
+    .sp-thread-meio { position: relative; }
+    .sp-ctx { position: absolute; right: 0; top: 0; bottom: 0; z-index: 5; box-shadow: var(--shadow-lg); display: none; }
+    .sp-thread.ctx-aberto .sp-ctx { display: flex; }
+  }
+  @media (max-width: 900px) { .sp-ctx { width: 100%; } }
   .sp-msg-hora { font-size: 10.5px; color: var(--muted); text-align: right; margin-top: 2px; }
   .sp-composer { border-top: 1px solid var(--border); background: var(--card); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
   .sp-rapidas { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
@@ -159,6 +208,26 @@
   .sp-externo { border: 1px dashed #fdba9f; background: var(--shopee-suave); border-radius: var(--radius-md); padding: 14px 16px; }
   .sp-externo-linha { display: flex; gap: 8px; }
   .sp-externo-linha input { flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: #fff; }
+
+  .shopee-pane {
+    --accent: var(--shopee-cor); --accent-dark: var(--shopee-escuro); --accent-soft: var(--shopee-suave);
+    --sit-atrasado: #7f1d1d; --sit-atrasado-soft: #fde8e8; --sit-estourou: var(--danger); --sit-estourou-soft: var(--danger-soft);
+    --sit-risco: #d97706; --sit-risco-soft: #fef3c7; --sit-ok: var(--success); --sit-ok-soft: #dcfce7;
+  }
+  .shopee-pane .sp-select option { color: var(--text); background: #fff; }
+  .shopee-pane .pz-cards { margin-top: 0; }
+  .shopee-pane .prazos-abas { margin-top: 14px; border-bottom: 1px solid var(--border); }
+  .sp-atualizado { font-size: 11.5px; color: var(--muted); margin-top: 8px; }
+  .sp-ponto-loja { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 7px; vertical-align: 1px; }
+  .sp-organizar-txt { color: #9a3412; font-weight: 600; }
+  .sp-atraso-txt { color: var(--sit-atrasado); font-weight: 600; }
+  .sp-transp { display: block; font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+  .shopee-pane .pz-tabela td[data-label="Etapa"] { white-space: normal; }
+  /* O style.css esconde a penultima coluna (comprador, no ML) abaixo de
+     1200px; aqui a penultima e "Etapa", que precisa aparecer. */
+  .shopee-pane .pz-tabela th:nth-last-child(2) { display: table-cell; }
+  .shopee-pane .pz-copiar.ok { color: var(--success); }
+  .shopee-pane .pz-detalhe .sp-barra { gap: 8px; }
 
   /* ---- Pacotes do dia (ML + Shopee) ---- */
   .pd-faixa { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 18px; align-items: center; border: 1px solid var(--border); border-radius: 16px; padding: 14px 18px; background: linear-gradient(100deg, #fffdf0 0%, #fff 45%, #fff6f2 100%); }
@@ -470,16 +539,15 @@
   // =====================================================================
   // PRAZOS
   // =====================================================================
-  const SIT = {
-    atrasado: { nome: "Atrasados", cor: "#dc2626" },
-    risco: { nome: "Em risco", cor: "#ea580c" },
-    hoje: { nome: "Vencem hoje", cor: "#d97706" },
-    no_prazo: { nome: "No prazo", cor: "#16a34a" },
-    sem_prazo: { nome: "Sem prazo", cor: "#6b7280" },
-  };
+  // Mesmo visual do Prazos do Mercado Livre (reaproveita as classes
+  // prazos-*/pz-* do style.css), com conceitos da Shopee: um cartao por LOJA
+  // (no ML e por modalidade), anel = quanto ja tem etiqueta gerada, relogio
+  // ate o prazo da Shopee (ship_by_date) e barras por transportadora.
   let prazos = null;
-  let prazosFiltro = lerPref("prazosFiltro", "");
-  let prazosModo = lerPref("prazosModo", "pedido");
+  let spVisao = lerPref("prazosVisao", "hoje");
+  let spLojaSel = null; // cartao escolhido na visao "Para hoje"
+  let spModo = lerPref("prazosModo2", "produtos");
+  const spAbertos = new Set(); // produtos abertos no detalhe (sobrevive ao re-render)
 
   async function carregarPrazos({ forcar = false } = {}) {
     try {
@@ -492,129 +560,349 @@
     }
   }
 
+  const durMin = (min) => (min < 60 ? `${min} min` : `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}`);
+  const falta = (ms) => {
+    const min = Math.round((ms - Date.now()) / 60000);
+    return min < 0 ? `há ${durMin(-min)}` : `faltam ${durMin(min)}`;
+  };
+  const diasAtras = (ms) => Math.round((Date.parse(diaSP(Date.now())) - Date.parse(diaSP(ms))) / 864e5);
+
+  function gruposPrazos() {
+    const hoje = diaSP(Date.now());
+    const todos = prazos.pedidos.filter((p) => passaLoja(p.shopId));
+    return {
+      hoje: todos.filter((p) => p.situacao !== "atrasado" && (!p.prazo || diaSP(p.prazo) === hoje)),
+      atrasados: todos.filter((p) => p.situacao === "atrasado"),
+      proximos: todos.filter((p) => p.situacao !== "atrasado" && p.prazo && diaSP(p.prazo) > hoje),
+    };
+  }
+
   function renderPrazos() {
     if (!prazos) {
-      corpo.innerHTML = `<div class="shopee-vazio">Carregando pedidos...</div>`;
+      corpo.innerHTML = `<p class="prazos-vazio grande">Carregando pedidos da Shopee...</p>`;
       return;
     }
-    const agora = Date.now();
-    const todos = prazos.pedidos.filter((p) => passaLoja(p.shopId));
-    const conta = (f) => todos.filter(f).length;
-    const cartoes = [
-      { id: "atrasado", nome: "Atrasados", cor: SIT.atrasado.cor, n: conta((p) => p.situacao === "atrasado"), sub: "prazo da Shopee já passou" },
-      { id: "risco", nome: "Em risco", cor: SIT.risco.cor, n: conta((p) => p.situacao === "risco"), sub: `vencem em menos de ${prazos.margemRiscoHoras}h` },
-      { id: "hoje", nome: "Vencem hoje", cor: SIT.hoje.cor, n: conta((p) => p.situacao === "hoje"), sub: "ainda dá tempo" },
-      { id: "organizar", nome: "A organizar", cor: "#9a3412", n: conta((p) => p.etapa === "organizar"), sub: "falta gerar a etiqueta" },
-      { id: "aguardando", nome: "Aguardando saída", cor: "#1e40af", n: conta((p) => p.etapa === "aguardando"), sub: "coleta ou postagem" },
-    ];
-    const filtrados = todos.filter((p) =>
-      !prazosFiltro ? true : prazosFiltro === "organizar" || prazosFiltro === "aguardando" ? p.etapa === prazosFiltro : p.situacao === prazosFiltro
-    );
-    const atualizado = prazos.atualizadoEm ? `atualizado às ${hora(prazos.atualizadoEm)}` : "primeira busca em andamento...";
+    const g = gruposPrazos();
     const errosLojas = Object.fromEntries(
       Object.entries(prazos.lojas || {}).filter(([, l]) => l.erro).map(([id, l]) => [id, l.erro])
     );
+    const corpoVisao = {
+      hoje: () => visaoHoje(g),
+      atrasados: () => visaoAtrasados(g.atrasados),
+      proximos: () => visaoProximos(g.proximos),
+    }[spVisao] || (() => visaoHoje(g));
+    corpo.innerHTML = `
+      <div class="pd-faixa" data-pd>${htmlPacotesDia()}</div>
+      ${errosDeLoja(errosLojas)}
+      <div>
+        ${resumoPrazos(g)}
+        ${abasPrazos(g)}
+        <div class="sp-atualizado">${prazos.atualizadoEm ? `Atualizado às ${hora(prazos.atualizadoEm)} · busca automática a cada 3 min` : "Buscando na Shopee..."}</div>
+      </div>
+      ${corpoVisao()}`;
+  }
 
-    let html = `<div class="pd-faixa" data-pd>${htmlPacotesDia()}</div>` + errosDeLoja(errosLojas);
-    html += `<div class="sp-cartoes">${cartoes
+  function resumoPrazos(g) {
+    const organizar = g.hoje.filter((p) => p.etapa === "organizar").length;
+    const risco = g.hoje.filter((p) => p.situacao === "risco").length;
+    const proxPrazo = g.hoje.map((p) => p.prazo).filter(Boolean).sort((a, b) => a - b)[0];
+    const atrasHoje = g.atrasados.filter((p) => p.prazo && diasAtras(p.prazo) === 0).length;
+    const cartoes = [
+      {
+        visao: "hoje", cls: "imprimir", n: g.hoje.length, rotulo: "Para enviar hoje",
+        sub: proxPrazo ? `prazo ${hora(proxPrazo)} · ${falta(proxPrazo)}` : "nada com prazo hoje",
+      },
+      { visao: "hoje", cls: "risco", n: organizar, rotulo: "A organizar", sub: "falta gerar a etiqueta" },
+      { visao: "hoje", cls: "estourou", n: risco, rotulo: "Em risco", sub: `menos de ${prazos.margemRiscoHoras}h para o prazo` },
+      { visao: "atrasados", cls: "atrasado", n: g.atrasados.length, rotulo: "Atrasados", sub: `${atrasHoje} de hoje · ${g.atrasados.length - atrasHoje} antigos` },
+      { visao: "proximos", cls: "impresso", n: g.proximos.length, rotulo: "Próximos dias", sub: "prazo amanhã ou depois" },
+    ];
+    return `<div class="prazos-resumo">${cartoes
       .map(
-        (c) => `<button type="button" class="sp-cartao ${c.n ? "" : "zero"} ${prazosFiltro === c.id ? "ativo" : ""}" data-filtro="${c.id}" style="--sp-cor:${c.cor}">
-          <div class="sp-cartao-num">${c.n}</div><div class="sp-cartao-rot">${c.nome}</div><div class="sp-cartao-sub">${c.sub}</div>
+        (c) => `<button type="button" class="prazos-kpi kpi-${c.cls}${c.n ? "" : " zerado"}" data-sp-visao="${c.visao}">
+          <span class="kpi-n">${c.n}</span><span class="kpi-rotulo">${c.rotulo}</span><span class="kpi-sub">${esc(c.sub)}</span>
         </button>`
       )
       .join("")}</div>`;
-    html += `<div class="sp-barra">
-      <div class="sp-seg"><button type="button" data-modo="pedido" class="${prazosModo === "pedido" ? "ativo" : ""}">Por pedido</button><button type="button" data-modo="produto" class="${prazosModo === "produto" ? "ativo" : ""}">O que separar</button></div>
-      ${prazosFiltro ? `<button type="button" class="btn btn-ghost btn-sm" data-filtro="">✕ ${esc(cartoes.find((c) => c.id === prazosFiltro)?.nome || "")}</button>` : ""}
-      <span class="sp-esp"></span><span class="muted small">${filtrados.length} pedido${filtrados.length === 1 ? "" : "s"} · ${atualizado}</span>
-    </div>`;
+  }
 
-    if (!todos.length) {
-      html += `<div class="shopee-vazio">${prazos.atualizadoEm ? "🎉 Nenhum pedido esperando envio." : "Buscando os pedidos na Shopee..."}</div>`;
-    } else if (!filtrados.length) {
-      html += `<div class="shopee-vazio">Nada neste filtro.</div>`;
-    } else if (prazosModo === "produto") {
-      html += tabelaProdutos(filtrados);
-    } else {
-      const grupos = [
-        { nome: "Atrasados", cor: SIT.atrasado.cor, f: (p) => p.situacao === "atrasado" },
-        { nome: "Hoje", cor: SIT.hoje.cor, f: (p) => p.prazo && p.situacao !== "atrasado" && diaSP(p.prazo) === diaSP(agora) },
-        { nome: "Amanhã", cor: "#2563eb", f: (p) => p.prazo && diaSP(p.prazo) === diaSP(agora + 864e5) },
-        { nome: "Próximos dias", cor: SIT.no_prazo.cor, f: (p) => p.prazo && p.prazo > agora && diaSP(p.prazo) > diaSP(agora + 864e5) },
-        { nome: "Sem prazo informado", cor: SIT.sem_prazo.cor, f: (p) => !p.prazo },
-      ];
-      for (const g of grupos) {
-        const lista = filtrados.filter(g.f);
-        if (!lista.length) continue;
-        html += `<section><div class="sp-grupo-tit" style="--sp-cor:${g.cor}"><span class="sp-bolinha"></span>${g.nome}<span class="sp-qtd">${lista.length}</span></div>
-          <div class="sp-lista">${lista.map(linhaPedido).join("")}</div></section>`;
+  function abasPrazos(g) {
+    const abas = [
+      { id: "hoje", nome: "Para hoje", n: g.hoje.length },
+      { id: "atrasados", nome: "Atrasados", n: g.atrasados.length },
+      { id: "proximos", nome: "Próximos dias", n: g.proximos.length },
+    ];
+    return `<div class="prazos-abas" role="tablist">${abas
+      .map(
+        (a) => `<button type="button" role="tab" class="prazos-aba aba-${a.id}${a.id === spVisao ? " ativa" : ""}" data-sp-visao="${a.id}">
+          ${a.nome}${a.n ? `<span class="prazos-aba-n">${a.n}</span>` : ""}</button>`
+      )
+      .join("")}</div>`;
+  }
+
+  // ---------- Para hoje: um cartao por loja ----------
+  const ROTULO_NIVEL_SP = {
+    atrasado: "Com atraso",
+    risco: "Em risco",
+    no_prazo: "No prazo",
+    concluido: "Tudo com etiqueta",
+    vazio: "Sem pedidos hoje",
+  };
+
+  function visaoHoje(g) {
+    const lojas = (estado?.contas || [])
+      .filter((c) => passaLoja(c.shopId))
+      .map((c) => {
+        const itens = g.hoje.filter((p) => p.shopId === c.shopId);
+        const atrasHoje = g.atrasados.filter((p) => p.shopId === c.shopId && p.prazo && diasAtras(p.prazo) === 0).length;
+        const nivel = atrasHoje
+          ? "atrasado"
+          : itens.some((p) => p.situacao === "risco")
+            ? "risco"
+            : itens.some((p) => p.etapa === "organizar")
+              ? "no_prazo"
+              : itens.length
+                ? "concluido"
+                : "vazio";
+        return { id: c.shopId, nome: c.nome || `Loja ${c.shopId}`, itens, atrasHoje, nivel };
+      });
+    if (!lojas.some((l) => l.itens.length)) {
+      return `<p class="prazos-vazio grande">${prazos.atualizadoEm ? "Nenhum pedido Shopee para enviar hoje. ✓" : "Buscando os pedidos na Shopee..."}</p>`;
+    }
+    const peso = { atrasado: 0, risco: 1, no_prazo: 2, concluido: 3, vazio: 4 };
+    if (spLojaSel !== "todas" && !lojas.some((l) => l.id === spLojaSel && l.itens.length)) {
+      spLojaSel = [...lojas].filter((l) => l.itens.length).sort((a, b) => peso[a.nivel] - peso[b.nivel] || b.itens.length - a.itens.length)[0].id;
+    }
+    const sel =
+      spLojaSel === "todas"
+        ? { nome: "Todas as lojas", itens: g.hoje }
+        : lojas.find((l) => l.id === spLojaSel);
+    return `
+      <div class="pz-cards">${lojas.map(cartaoLoja).join("")}</div>
+      ${detalhePrazos({
+        nome: sel.nome,
+        itens: sel.itens,
+        sub: "para enviar hoje",
+        extra: lojas.filter((l) => l.itens.length).length > 1
+          ? `<button type="button" class="btn btn-ghost btn-sm" data-sp-loja="${spLojaSel === "todas" ? lojas[0].id : "todas"}">${spLojaSel === "todas" ? "Ver por loja" : "Ver todas as lojas juntas"}</button>`
+          : "",
+      })}`;
+  }
+
+  function cartaoLoja(l) {
+    const total = l.itens.length;
+    const prontos = l.itens.filter((p) => p.etapa === "aguardando").length;
+    const organizar = total - prontos;
+    const pct = total ? Math.round((prontos / total) * 100) : 0;
+    const prox = l.itens.map((p) => p.prazo).filter(Boolean).sort((a, b) => a - b)[0];
+    const min = prox ? Math.round((prox - Date.now()) / 60000) : null;
+    let relogio;
+    if (min == null) relogio = `<div class="pz-relogio"><b>${total ? "—" : "✓"}</b><span>${total ? "sem prazo informado" : "nada para hoje"}</span></div>`;
+    else if (min < 0) relogio = `<div class="pz-relogio passou"><b>+${durMin(-min)}</b><span>passou do prazo das ${hora(prox)}</span></div>`;
+    else relogio = `<div class="pz-relogio"><b>${durMin(min)}</b><span>para enviar até ${hora(prox)}</span></div>`;
+
+    const porTransp = new Map();
+    for (const p of l.itens) {
+      const t = p.transportadora || "Sem transportadora";
+      porTransp.set(t, (porTransp.get(t) || 0) + 1);
+    }
+    const transps = [...porTransp.entries()].sort((a, b) => b[1] - a[1]);
+    const maxT = Math.max(1, ...transps.map((t) => t[1]));
+    return `
+      <button type="button" class="pz-card nivel-${l.nivel}${l.id === spLojaSel ? " sel" : ""}" data-sp-loja="${esc(l.id)}" ${l.itens.length ? "" : "disabled"}>
+        <div class="pz-card-topo">
+          <span class="pz-card-nome"><i class="sp-ponto-loja" style="background:${corLoja(l.id)}"></i>${esc(l.nome)}</span>
+          <span class="pz-status nivel-${l.nivel}">${ROTULO_NIVEL_SP[l.nivel]}</span>
+        </div>
+        <div class="pz-card-meio">
+          <div class="pz-anel" style="--p:${pct}" role="img" aria-label="${pct}% com etiqueta">
+            <div><b>${total}</b><span>para hoje</span></div>
+          </div>
+          ${relogio}
+        </div>
+        <div class="pz-progresso-txt">${prontos} de ${total} com etiqueta gerada · ${pct}%${
+          organizar ? `<br><span class="sp-organizar-txt">${organizar} ainda a organizar (gerar etiqueta)</span>` : ""
+        }${l.atrasHoje ? `<br><span class="sp-atraso-txt">+ ${l.atrasHoje} atrasado${l.atrasHoje > 1 ? "s" : ""} de hoje</span>` : ""}</div>
+        <div class="pz-contas">${
+          transps.length
+            ? transps
+                .map(
+                  ([nome, n]) => `<div class="pz-conta"><span class="pz-conta-nome">${esc(nome)}</span>
+                    <span class="pz-conta-barra"><i style="width:${(n / maxT) * 100}%"></i></span><b>${n}</b></div>`
+                )
+                .join("")
+            : '<div class="pz-conta-vazio">Nenhum pedido para hoje</div>'
+        }</div>
+      </button>`;
+  }
+
+  // ---------- Detalhe: por produto (o que separar) ou por pedido ----------
+  function detalhePrazos({ nome, itens, sub, extra = "", vazio, colPrazo, chave = nome }) {
+    const modos = `<div class="pz-seg" role="group" aria-label="Agrupar">
+      <button type="button" data-sp-modo="produtos" class="${spModo === "produtos" ? "on" : ""}">Por produto</button>
+      <button type="button" data-sp-modo="pedidos" class="${spModo === "pedidos" ? "on" : ""}">Por pedido</button>
+    </div>`;
+    const conteudo = !itens.length
+      ? `<p class="prazos-vazio grande">${vazio || "Nada aqui. ✓"}</p>`
+      : spModo === "produtos"
+        ? tabelaProdutosSP(itens, chave, colPrazo)
+        : tabelaPedidosSP(itens, colPrazo);
+    return `
+      <section class="pz-detalhe">
+        <div class="pz-detalhe-topo">
+          <div><span class="pz-titulo">${esc(nome)}</span> <span class="pz-sub">${itens.length} ${itens.length === 1 ? "pedido" : "pedidos"} ${sub}</span></div>
+          <div class="sp-barra">${extra}${modos}</div>
+        </div>
+        ${conteudo}
+      </section>`;
+  }
+
+  const SIT_ORDEM = { atrasado: 0, risco: 1, hoje: 2, no_prazo: 3, sem_prazo: 4 };
+  const sitClasse = (s) => (s === "atrasado" ? "atrasado" : s === "risco" ? "risco" : "");
+
+  const prazoPadrao = {
+    titulo: "Enviar até",
+    valor: (p) =>
+      p.prazo
+        ? `<b>${diaSP(p.prazo) === diaSP(Date.now()) ? hora(p.prazo) : dataHora(p.prazo)}</b><small>${falta(p.prazo)}</small>`
+        : "<b>—</b>",
+  };
+
+  function tabelaProdutosSP(itens, ctx, colPrazo) {
+    const grupos = new Map();
+    for (const p of itens) {
+      for (const it of p.itens) {
+        const chave = `${it.nome}|${it.variacao}`;
+        const gr = grupos.get(chave) || { nome: it.nome, variacao: it.variacao, sku: it.sku, un: 0, pedidos: new Map(), lojas: new Set(), prazo: null, pior: 9 };
+        gr.un += it.qtd || 0;
+        gr.pedidos.set(p.orderSn, p);
+        gr.lojas.add(p.loja);
+        if (p.prazo && (!gr.prazo || p.prazo < gr.prazo)) gr.prazo = p.prazo;
+        gr.pior = Math.min(gr.pior, SIT_ORDEM[p.situacao] ?? 9);
+        grupos.set(chave, gr);
       }
     }
-    corpo.innerHTML = html;
-    corpo.querySelectorAll("[data-filtro]").forEach((b) =>
-      b.addEventListener("click", () => {
-        prazosFiltro = prazosFiltro === b.dataset.filtro ? "" : b.dataset.filtro;
-        salvarPref("prazosFiltro", prazosFiltro);
-        renderPrazos();
+    const lista = [...grupos.values()].sort((a, b) => a.pior - b.pior || b.un - a.un);
+    const sitPorOrdem = Object.fromEntries(Object.entries(SIT_ORDEM).map(([k, v]) => [v, k]));
+    return `<div class="pz-produtos">${lista
+      .map((gr) => {
+        const sit = sitClasse(sitPorOrdem[gr.pior]);
+        const pedidos = [...gr.pedidos.values()];
+        const chave = `${ctx}|${gr.nome}|${gr.variacao}`;
+        return `<details class="pz-produto ${sit ? `sit-${sit === "atrasado" ? "estourou" : sit}` : ""}" data-sp-chave="${esc(chave)}"${spAbertos.has(chave) ? " open" : ""}>
+          <summary>
+            <span class="pz-produto-qtd"><b>${gr.un}</b><small>${gr.un === 1 ? "unid." : "unids."}</small></span>
+            <span class="pz-produto-nome">${esc(gr.nome)}<small>${esc([gr.variacao, gr.sku && `SKU ${gr.sku}`, [...gr.lojas].join(" · ")].filter(Boolean).join(" · "))}</small></span>
+            <span class="pz-produto-un"><b>${pedidos.length}</b><small>${pedidos.length === 1 ? "pedido" : "pedidos"}</small></span>
+            <span class="pz-produto-limite"><b>${gr.prazo ? (diaSP(gr.prazo) === diaSP(Date.now()) ? hora(gr.prazo) : dataHora(gr.prazo)) : "—"}</b><small>${gr.prazo ? falta(gr.prazo) : ""}</small></span>
+          </summary>
+          ${tabelaPedidosSP(pedidos, colPrazo, true)}
+        </details>`;
       })
-    );
-    corpo.querySelectorAll("[data-modo]").forEach((b) =>
-      b.addEventListener("click", () => {
-        prazosModo = b.dataset.modo;
-        salvarPref("prazosModo", prazosModo);
-        renderPrazos();
-      })
-    );
+      .join("")}</div>`;
   }
 
-  function linhaPedido(p) {
-    const cor = SIT[p.situacao]?.cor || "#6b7280";
-    const falta = p.prazo ? p.prazo - Date.now() : null;
-    const prazoHtml = p.prazo
-      ? `<b>${falta < 0 ? duracao(falta) : duracao(falta)}</b><span>${falta < 0 ? "atrasado" : "até " + (diaSP(p.prazo) === diaSP(Date.now()) ? hora(p.prazo) : dataHora(p.prazo))}</span>`
-      : `<b>—</b><span>sem prazo</span>`;
-    const itens = p.itens.map((i) => `${i.qtd}× ${i.nome}${i.variacao ? ` (${i.variacao})` : ""}`).join(" · ") || "—";
-    const etapa =
-      p.etapa === "organizar"
-        ? `<span class="sp-chip organizar">Organizar envio</span>`
-        : `<span class="sp-chip aguardando">${p.modalidade === "agencia" ? "Aguardando postagem" : p.modalidade === "coleta" ? "Aguardando coleta" : "Aguardando saída"}</span>`;
-    const modalidade = p.modalidade === "coleta" ? "🚚 Coleta" : p.modalidade === "agencia" ? "🏪 Agência" : "";
-    return `<div class="sp-ped">
-      <div class="sp-prazo" style="--sp-cor:${cor}">${prazoHtml}</div>
-      <div class="sp-ped-meio">
-        <div class="sp-ped-topo"><span class="sp-sn">${esc(p.orderSn)}</span>${chipLoja(p.shopId, p.loja)}${etapa}</div>
-        <div class="sp-itens" title="${esc(itens)}">${esc(itens)}</div>
-      </div>
-      <div class="sp-ped-dir">${modalidade ? `<span>${modalidade}</span>` : ""}${p.transportadora ? `<span>${esc(p.transportadora)}</span>` : ""}${
-        p.coletaTexto ? `<span>coleta: ${esc(p.coletaTexto)}</span>` : ""
-      }</div>
-    </div>`;
+  function tabelaPedidosSP(lista, colPrazo = prazoPadrao, compacta = false) {
+    const ordenada = [...lista].sort((a, b) => (SIT_ORDEM[a.situacao] ?? 9) - (SIT_ORDEM[b.situacao] ?? 9) || (a.prazo || Infinity) - (b.prazo || Infinity));
+    return `<table class="pz-tabela${compacta ? " compacta" : ""}">
+      <thead><tr><th>Pedido</th><th>Loja</th><th>Produto</th><th class="num">Qtd</th><th>Etapa</th><th class="dir">${colPrazo.titulo}</th></tr></thead>
+      <tbody>${ordenada
+        .map((p) => {
+          const qtd = p.itens.reduce((s, i) => s + (i.qtd || 0), 0);
+          const produto = p.itens.map((i) => `${i.nome}${i.variacao ? ` (${i.variacao})` : ""}`).join(" · ");
+          const etapa =
+            p.etapa === "organizar"
+              ? '<span class="sp-chip organizar">Organizar envio</span>'
+              : `<span class="sp-chip aguardando">${p.modalidade === "agencia" ? "Levar na agência" : p.modalidade === "coleta" ? "Aguardando coleta" : "Etiqueta gerada"}</span>`;
+          const s = sitClasse(p.situacao);
+          return `<tr class="${s ? `sit-${s}` : ""}">
+            <td data-label="Pedido"><span class="pz-venda"><span class="sp-sn">${esc(p.orderSn)}</span><button type="button" class="pz-copiar" data-sp-copiar="${esc(p.orderSn)}" title="Copiar número do pedido" aria-label="Copiar pedido ${esc(p.orderSn)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></span></td>
+            <td data-label="Loja"><i class="sp-ponto-loja" style="background:${corLoja(p.shopId)}"></i>${esc(p.loja)}</td>
+            <td data-label="Produto" class="pz-td-produto" title="${esc(produto)}">${esc(produto)}</td>
+            <td data-label="Qtd" class="num">${qtd}</td>
+            <td data-label="Etapa">${etapa}${p.transportadora ? `<small class="sp-transp">${esc(p.transportadora)}</small>` : ""}</td>
+            <td data-label="${colPrazo.titulo}" class="dir pz-td-prazo">${colPrazo.valor(p)}</td>
+          </tr>`;
+        })
+        .join("")}</tbody>
+    </table>`;
   }
 
-  // "O que separar": soma os itens dos pedidos filtrados por produto.
-  function tabelaProdutos(lista) {
-    const mapa = new Map();
+  // ---------- Atrasados: por idade ----------
+  function visaoAtrasados(lista) {
+    if (!lista.length) return '<p class="prazos-vazio grande">Nenhum pedido Shopee atrasado. ✓</p>';
+    const faixas = [
+      { nome: "Venceu hoje", f: (d) => d === 0, nota: "ainda dá para despachar hoje" },
+      { nome: "Venceu ontem", f: (d) => d === 1 },
+      { nome: "2 a 7 dias", f: (d) => d >= 2 && d <= 7 },
+      { nome: "Mais de 7 dias", f: (d) => d > 7, nota: "provavelmente travados: conferir na Central do Vendedor" },
+    ];
+    const colAtraso = {
+      titulo: "Venceu",
+      valor: (p) => (p.prazo ? `<b>${dataHora(p.prazo)}</b><small>${falta(p.prazo)}</small>` : "<b>—</b>"),
+    };
+    return faixas
+      .map((f) => {
+        const itens = lista.filter((p) => f.f(p.prazo ? diasAtras(p.prazo) : 99));
+        if (!itens.length) return "";
+        return detalhePrazos({ nome: f.nome, itens, sub: f.nota ? `· ${f.nota}` : "atrasados", colPrazo: colAtraso, chave: `atr-${f.nome}` });
+      })
+      .join("");
+  }
+
+  // ---------- Proximos dias: por dia ----------
+  function visaoProximos(lista) {
+    if (!lista.length) return '<p class="prazos-vazio grande">Nenhum pedido com prazo nos próximos dias.</p>';
+    const porDia = new Map();
     for (const p of lista) {
-      for (const i of p.itens) {
-        const chave = `${i.nome}|${i.variacao}|${i.sku}`;
-        const atual = mapa.get(chave) || { ...i, qtd: 0, pedidos: 0, prazo: Infinity };
-        atual.qtd += i.qtd;
-        atual.pedidos += 1;
-        if (p.prazo && p.prazo < atual.prazo) atual.prazo = p.prazo;
-        mapa.set(chave, atual);
-      }
+      const d = diaSP(p.prazo);
+      if (!porDia.has(d)) porDia.set(d, []);
+      porDia.get(d).push(p);
     }
-    const linhas = [...mapa.values()].sort((a, b) => a.prazo - b.prazo || b.qtd - a.qtd);
-    return `<div class="sp-lista"><table class="sp-tabela">
-      <thead><tr><th>Produto</th><th>SKU</th><th>Qtd</th><th>Pedidos</th><th>Primeiro prazo</th></tr></thead>
-      <tbody>${linhas
-        .map(
-          (l) => `<tr><td>${esc(l.nome)}${l.variacao ? `<div class="muted small">${esc(l.variacao)}</div>` : ""}</td>
-          <td class="muted">${esc(l.sku || "—")}</td><td class="num">${l.qtd}</td><td>${l.pedidos}</td>
-          <td>${Number.isFinite(l.prazo) ? (l.prazo < Date.now() ? `<b style="color:${SIT.atrasado.cor}">atrasado</b>` : dataHora(l.prazo)) : "—"}</td></tr>`
-        )
-        .join("")}</tbody></table></div>`;
+    return [...porDia.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([d, itens]) => detalhePrazos({ nome: diaRotulo(itens[0].prazo), itens, sub: "com prazo neste dia", chave: `prox-${d}` }))
+      .join("");
   }
+
+  // Cliques da tela de prazos (delegado: o corpo e recriado a cada render).
+  corpo.addEventListener("click", async (ev) => {
+    if (aba !== "prazos") return;
+    const copiar = ev.target.closest("[data-sp-copiar]");
+    if (copiar) {
+      ev.preventDefault();
+      try {
+        await navigator.clipboard.writeText(copiar.dataset.spCopiar);
+        copiar.classList.add("ok");
+        setTimeout(() => copiar.classList.remove("ok"), 1200);
+      } catch {}
+      return;
+    }
+    const alvo = ev.target.closest("[data-sp-visao],[data-sp-loja],[data-sp-modo]");
+    if (!alvo) return;
+    const d = alvo.dataset;
+    if (d.spVisao) {
+      spVisao = d.spVisao;
+      salvarPref("prazosVisao", spVisao);
+    }
+    if (d.spLoja) spLojaSel = d.spLoja;
+    if (d.spModo) {
+      spModo = d.spModo;
+      salvarPref("prazosModo2", spModo);
+    }
+    renderPrazos();
+  });
+  // Lembra quais produtos estavam abertos (o re-render a cada 30s fecharia).
+  corpo.addEventListener(
+    "toggle",
+    (ev) => {
+      const el = ev.target.closest?.("[data-sp-chave]");
+      if (!el) return;
+      if (el.open) spAbertos.add(el.dataset.spChave);
+      else spAbertos.delete(el.dataset.spChave);
+    },
+    true
+  );
 
   // =====================================================================
   // CHAT
@@ -622,6 +910,8 @@
   let chat = null; // { conversas, erros }
   let conversaAberta = null; // { shopId, id, compradorId, comprador, loja, ultimaMensagemId }
   let msgsAbertas = [];
+  let ctxAberto = null; // { produtos, produtosDosPedidos, pedidos } da conversa aberta
+  let ctxChave = ""; // produtos/pedidos citados: so busca de novo se mudar
   let chatFiltro = lerPref("chatFiltro", "todas");
   let chatBusca = "";
   let enviando = false;
@@ -721,6 +1011,8 @@
   async function abrirConversa(c) {
     conversaAberta = { ...c };
     msgsAbertas = [];
+    ctxAberto = null;
+    ctxChave = "";
     corpo.querySelector(".sp-chat")?.classList.add("com-conversa");
     renderListaConversas();
     renderThread();
@@ -749,10 +1041,116 @@
       const mudou = r.mensagens.length !== msgsAbertas.length || r.mensagens.at(-1)?.id !== msgsAbertas.at(-1)?.id;
       msgsAbertas = r.mensagens;
       if (mudou || rolar) renderMensagens(true);
+      carregarContexto();
     } catch (err) {
       const box = $("sp-msgs");
       if (box) box.innerHTML = `<div class="sp-thread-vazio">Não deu para abrir a conversa: ${esc(traduzErro(err.message))}</div>`;
     }
+  }
+
+  // Produtos e pedidos citados na conversa -> cartoes (no balao e na lateral).
+  async function carregarContexto() {
+    const alvo = conversaAberta;
+    if (!alvo) return;
+    const chave = JSON.stringify([msgsAbertas.flatMap((m) => m.produtos || []), msgsAbertas.map((m) => m.pedido).filter(Boolean)]);
+    if (chave === ctxChave && ctxAberto) return;
+    ctxChave = chave;
+    try {
+      const r = await api(
+        `/api/shopee/chat/${encodeURIComponent(alvo.shopId)}/${encodeURIComponent(alvo.id)}/contexto?comprador=${encodeURIComponent(alvo.compradorId)}`
+      );
+      if (conversaAberta !== alvo) return;
+      ctxAberto = r;
+    } catch (err) {
+      if (conversaAberta !== alvo) return;
+      ctxAberto = { produtos: [], produtosDosPedidos: [], pedidos: [], erros: [err.message] };
+    }
+    renderContexto();
+    renderMensagens(false);
+  }
+
+  const acharProduto = (id) =>
+    [...(ctxAberto?.produtos || []), ...(ctxAberto?.produtosDosPedidos || [])].find((p) => p.itemId === String(id));
+
+  function cartaoProduto(p, { id } = {}) {
+    if (!p) {
+      return `<div class="sp-prod"><span class="sp-prod-sem">🛍️</span><div><div class="sp-prod-nome">Produto ${esc(id || "")}</div><div class="sp-prod-info">${ctxAberto ? "não foi possível carregar o anúncio" : "carregando anúncio..."}</div></div></div>`;
+    }
+    const preco = p.preco != null ? brl(p.preco) : p.temVariacao ? "preço por variação" : "";
+    const info = [
+      p.sku && `SKU ${p.sku}`,
+      p.estoque != null && `estoque ${p.estoque}`,
+      p.avaliacao && `★ ${Number(p.avaliacao).toFixed(1)}`,
+      p.status && p.status !== "NORMAL" && `⚠ ${p.status === "UNLIST" ? "pausado" : p.status.toLowerCase()}`,
+    ].filter(Boolean);
+    return `<a class="sp-prod" href="${esc(p.link)}" target="_blank" rel="noopener" title="Abrir o anúncio na Shopee">
+      ${p.imagem ? `<img src="${esc(p.imagem)}" alt="" loading="lazy">` : '<span class="sp-prod-sem">🛍️</span>'}
+      <div style="min-width:0"><div class="sp-prod-nome">${esc(p.nome)}</div>
+        ${preco ? `<div class="sp-prod-preco">${preco}${p.precoOriginal && p.precoOriginal > p.preco ? `<s>${brl(p.precoOriginal)}</s>` : ""}</div>` : ""}
+        <div class="sp-prod-info">${esc(info.join(" · "))} · ver anúncio ↗</div></div>
+    </a>`;
+  }
+
+  function cartaoPedido(o) {
+    const linha = (rot, val) => (val ? `<dt>${rot}</dt><dd>${val}</dd>` : "");
+    return `<div class="sp-ped-card">
+      <div class="sp-ped-card-topo"><span><span class="sp-sn">${esc(o.orderSn)}</span><button type="button" class="sp-mini-copiar" data-sp-copiar-chat="${esc(o.orderSn)}" title="Copiar número do pedido">⧉</button></span><span class="sp-ped-st">${esc(o.statusTexto)}</span></div>
+      <div class="sp-ped-itens">${o.itens
+        .map(
+          (i) => `<div class="sp-ped-item">${i.imagem ? `<img src="${esc(i.imagem)}" alt="" loading="lazy">` : '<span class="sp-prod-sem"></span>'}
+            <span title="${esc(i.nome)}${i.variacao ? ` (${esc(i.variacao)})` : ""}">${esc(i.nome)}${i.variacao ? ` <span class="muted">· ${esc(i.variacao)}</span>` : ""}</span><b>${i.qtd}×</b></div>`
+        )
+        .join("")}</div>
+      <dl class="sp-ped-dados">
+        ${linha("Total", o.total != null ? brl(o.total) : "")}
+        ${linha("Pago em", o.pagoEm ? dataHora(o.pagoEm) : "")}
+        ${linha("Enviar até", o.enviarAte && !o.saiuEm ? dataHora(o.enviarAte) : "")}
+        ${linha("Saiu em", o.saiuEm ? dataHora(o.saiuEm) : "")}
+        ${linha("Entrega prevista", o.entregaPrevista ? new Date(o.entregaPrevista).toLocaleDateString("pt-BR", { timeZone: TZ }) : "")}
+        ${linha("Transportadora", esc(o.transportadora))}
+        ${linha("Rastreio", o.rastreio ? `${esc(o.rastreio)}<button type="button" class="sp-mini-copiar" data-sp-copiar-chat="${esc(o.rastreio)}" title="Copiar rastreio">⧉</button>` : "")}
+        ${linha("Pagamento", esc(o.pagamento || ""))}
+        ${linha("Cancelamento", esc(o.cancelamento || ""))}
+      </dl>
+      ${o.mensagemComprador ? `<div class="sp-ped-msg">💬 ${esc(o.mensagemComprador)}</div>` : ""}
+    </div>`;
+  }
+
+  function renderContexto() {
+    const box = $("sp-ctx");
+    if (!box) return;
+    if (!ctxAberto) {
+      box.innerHTML = `<div class="sp-ctx-vazio">Buscando produtos e pedidos citados...</div>`;
+      return;
+    }
+    const prods = ctxAberto.produtos || [];
+    const pedsProd = (ctxAberto.produtosDosPedidos || []).filter((p) => !prods.some((x) => x.itemId === p.itemId));
+    const peds = ctxAberto.pedidos || [];
+    const btn = $("sp-ctx-btn");
+    if (btn) btn.textContent = `ℹ ${prods.length + peds.length ? `${peds.length ? `${peds.length} pedido${peds.length > 1 ? "s" : ""}` : ""}${peds.length && prods.length ? " · " : ""}${prods.length ? `${prods.length} produto${prods.length > 1 ? "s" : ""}` : ""}` : "Detalhes"}`;
+    box.innerHTML = `
+      <section><h4>Produto${prods.length > 1 ? "s" : ""} da conversa</h4>
+        <div class="sp-ctx-lista">${prods.length ? prods.map((p) => cartaoProduto(p)).join("") : '<div class="sp-ctx-vazio">O comprador não enviou nenhum anúncio nesta conversa.</div>'}</div></section>
+      <section><h4>Pedido${peds.length > 1 ? "s" : ""} citado${peds.length > 1 ? "s" : ""}</h4>
+        <div class="sp-ctx-lista">${peds.length ? peds.map(cartaoPedido).join("") : '<div class="sp-ctx-vazio">Nenhum pedido citado nesta conversa.</div>'}</div></section>
+      ${pedsProd.length ? `<section><h4>Anúncios dos pedidos</h4><div class="sp-ctx-lista">${pedsProd.map((p) => cartaoProduto(p)).join("")}</div></section>` : ""}
+      ${(ctxAberto.erros || []).length ? `<div class="shopee-aviso erro" style="font-size:12px">${esc(traduzErro(ctxAberto.erros[0]))}</div>` : ""}`;
+  }
+
+  function abrirZoom(url, video) {
+    const div = document.createElement("div");
+    div.className = "sp-zoom";
+    div.innerHTML = video ? `<video src="${esc(url)}" controls autoplay></video>` : `<img src="${esc(url)}" alt="">`;
+    div.addEventListener("click", (e) => {
+      if (e.target === div) div.remove();
+    });
+    document.addEventListener("keydown", function fechar(e) {
+      if (e.key === "Escape") {
+        div.remove();
+        document.removeEventListener("keydown", fechar);
+      }
+    });
+    document.body.appendChild(div);
   }
 
   function renderThread() {
@@ -768,8 +1166,12 @@
         <button type="button" class="btn btn-ghost btn-sm sp-voltar" id="sp-voltar">←</button>
         <div class="sp-avatar" style="--sp-loja:${corLoja(c.shopId)};width:34px;height:34px;font-size:13px">${esc(c.comprador.charAt(0).toUpperCase())}</div>
         <div style="min-width:0"><div style="font-weight:700">${esc(c.comprador)}</div><div style="margin-top:2px">${chipLoja(c.shopId, c.loja)}</div></div>
+        <button type="button" class="btn btn-ghost btn-sm sp-ctx-btn" id="sp-ctx-btn">ℹ Detalhes</button>
       </div>
-      <div class="sp-msgs" id="sp-msgs"><div class="sp-thread-vazio">Carregando mensagens...</div></div>
+      <div class="sp-thread-meio">
+        <div class="sp-msgs" id="sp-msgs"><div class="sp-thread-vazio">Carregando mensagens...</div></div>
+        <aside class="sp-ctx" id="sp-ctx"></aside>
+      </div>
       <div class="sp-composer">
         <div class="sp-rapidas">${RAPIDAS.map((r, i) => `<button type="button" data-rapida="${i}" title="${esc(r)}">${esc(r.split(/[!.?]/)[0].slice(0, 32))}</button>`).join("")}</div>
         <div class="sp-composer-linha">
@@ -802,12 +1204,37 @@
       })
     );
     $("sp-enviar").addEventListener("click", enviar);
+    $("sp-ctx-btn").addEventListener("click", () => t.classList.toggle("ctx-aberto"));
+    // Anexos (zoom), copiar pedido/rastreio. #sp-thread so e recriado junto
+    // com a tela do chat: registra uma vez por elemento.
+    if (!t.dataset.ouvindo) {
+      t.dataset.ouvindo = "1";
+      t.addEventListener("click", async (e) => {
+      const anexo = e.target.closest("[data-sp-zoom]");
+      if (anexo) {
+        e.preventDefault();
+        abrirZoom(anexo.dataset.spZoom, anexo.dataset.spVideo === "1");
+        return;
+      }
+      const cp = e.target.closest("[data-sp-copiar-chat]");
+      if (cp) {
+        try {
+          await navigator.clipboard.writeText(cp.dataset.spCopiarChat);
+          cp.textContent = "✓";
+          setTimeout(() => (cp.textContent = "⧉"), 1200);
+        } catch {}
+      }
+    });
+    }
+    renderContexto();
     if (msgsAbertas.length) renderMensagens(true);
   }
 
   function renderMensagens(rolar) {
     const box = $("sp-msgs");
     if (!box) return;
+    const noFim = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    const topoAntes = box.scrollTop;
     if (!msgsAbertas.length) {
       box.innerHTML = `<div class="sp-thread-vazio">Nenhuma mensagem nesta conversa.</div>`;
       return;
@@ -820,11 +1247,29 @@
           ultimoDia = diaSP(m.em);
           sep = `<div class="sp-dia">${diaRotulo(m.em)}</div>`;
         }
-        const corpoMsg = m.imagem ? `<img src="${esc(m.imagem)}" alt="imagem" loading="lazy">` : esc(m.texto);
-        return `${sep}<div class="sp-msg ${m.daLoja ? "nossa" : "dele"}">${corpoMsg}<div class="sp-msg-hora">${m.em ? hora(m.em) : ""}</div></div>`;
+        let corpoMsg;
+        let anexo = false;
+        if (m.tipo === "image" && (m.imagem || m.miniatura)) {
+          anexo = true;
+          corpoMsg = `<a class="sp-anexo" href="${esc(m.imagem || m.miniatura)}" target="_blank" rel="noopener" data-sp-zoom="${esc(m.imagem || m.miniatura)}" title="Ampliar"><img src="${esc(m.miniatura || m.imagem)}" alt="Foto enviada" loading="lazy"></a>`;
+        } else if (m.tipo === "video" && m.video) {
+          anexo = true;
+          const dur = m.duracao ? `${Math.floor(m.duracao / 60)}:${String(m.duracao % 60).padStart(2, "0")}` : "";
+          corpoMsg = `<a class="sp-anexo video" href="${esc(m.video)}" target="_blank" rel="noopener" data-sp-zoom="${esc(m.video)}" data-sp-video="1" title="Assistir">${
+            m.miniatura ? `<img src="${esc(m.miniatura)}" alt="Vídeo enviado" loading="lazy">` : '<div style="width:220px;height:140px;background:#111"></div>'
+          }${dur ? `<span class="sp-anexo-dur">${dur}</span>` : ""}</a>`;
+        } else if (m.produtos?.length) {
+          anexo = true;
+          corpoMsg = `<div style="display:flex;flex-direction:column;gap:6px">${m.produtos.map((id) => cartaoProduto(acharProduto(id), { id })).join("")}</div>`;
+        } else if (m.pedido) {
+          const o = ctxAberto?.pedidos?.find((x) => x.orderSn === m.pedido);
+          corpoMsg = `🧾 Pedido <b>${esc(m.pedido)}</b>${o ? `<br><span class="small">${esc(o.statusTexto)}${o.total != null ? ` · ${brl(o.total)}` : ""}</span>` : ""}`;
+        } else corpoMsg = esc(m.texto);
+        return `${sep}<div class="sp-msg ${m.daLoja ? "nossa" : "dele"}${anexo ? " anexo" : ""}">${corpoMsg}<div class="sp-msg-hora">${m.em ? hora(m.em) : ""}</div></div>`;
       })
       .join("");
-    if (rolar) box.scrollTop = box.scrollHeight;
+    if (rolar || noFim) box.scrollTop = box.scrollHeight;
+    else box.scrollTop = topoAntes;
   }
 
   async function enviar() {
