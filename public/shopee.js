@@ -237,6 +237,38 @@
   .pd-total-num { font-size: 34px; font-weight: 800; letter-spacing: -.03em; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
   .pd-total-rot { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); line-height: 1.35; }
   .pd-total-rot b { display: block; color: var(--text-soft); text-transform: none; letter-spacing: 0; font-size: 12.5px; font-weight: 600; }
+  .pd-equipes { display: flex; flex-direction: column; gap: 14px; }
+  .mkt-grupo.op::before { background: linear-gradient(135deg, #2563eb, #7c3aed); }
+  .mkt-grupo.op { margin-top: 10px; border-top: 1px solid rgba(255,255,255,.07); padding-top: 14px; }
+  .module-nav.collapsed .mkt-grupo.op { padding-top: 12px; }
+  .shopee-pane.sp-modo-eq .shopee-banner { background: linear-gradient(120deg, #1d4ed8 0%, #6d28d9 100%); }
+  .shopee-pane.sp-modo-eq #sp-loja-filtro { display: none; }
+  .sp-equipes .pd-eq { padding: 16px 18px; gap: 10px; }
+  .sp-equipes .pd-eq-topo b { font-size: 17px; }
+  .sp-equipes .pd-eq-n { font-size: 32px; }
+  .sp-equipes .pd-eq-nums { gap: 30px; }
+  .sp-equipes .pd-eq-det { font-size: 13px; }
+  .sp-eq-nota { margin-top: 14px; line-height: 1.5; }
+  .pd-eq-sel { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .pd-eq-sel button { border: 1px solid var(--border); background: var(--surface, #fff); border-radius: 999px; padding: 3px 11px; font: inherit; font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--text-soft); cursor: pointer; }
+  .pd-eq-sel button.ativo { background: var(--text); color: #fff; border-color: var(--text); }
+  .pd-eq-grade { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .pd-eq-grade.uma { grid-template-columns: 1fr; }
+  .pd-eq { border: 1px solid var(--border); border-left: 4px solid var(--eq); border-radius: 12px; padding: 10px 14px; background: color-mix(in srgb, var(--eq) 4%, #fff); display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+  .pd-eq-topo { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .pd-eq-topo b { color: var(--eq); font-size: 14px; }
+  .pd-eq-topo span { font-size: 11.5px; color: var(--muted); }
+  .pd-eq-nums { display: flex; gap: 22px; flex-wrap: wrap; }
+  .pd-eq-nums > div { display: flex; flex-direction: column; }
+  .pd-eq-n { font-size: 24px; font-weight: 800; line-height: 1.05; color: var(--text); font-variant-numeric: tabular-nums; }
+  .pd-eq-n.ok { color: #15803d; }
+  .pd-eq-nums small { font-size: 11px; color: var(--muted); }
+  .pd-eq-tempo .pd-eq-n { color: var(--eq); }
+  .pd-eq-tempo.estoura .pd-eq-n { color: #dc2626; }
+  .pd-eq-det { font-size: 12px; color: var(--muted); }
+  .pd-eq-alerta { color: #b91c1c; font-weight: 600; }
+  .pd-eq-cfg { font-size: 11.5px; color: var(--muted); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .pd-eq-cfg input { width: 54px; padding: 2px 5px; border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 12px; }
   .pd-acum { display: flex; flex-direction: column; gap: 6px; padding-right: 18px; border-right: 1px solid var(--border); min-width: 170px; }
   .pd-acum-topo { display: flex; align-items: center; gap: 10px; }
   .pd-acum-num { font-size: 28px; font-weight: 800; letter-spacing: -.03em; line-height: 1; color: #15803d; font-variant-numeric: tabular-nums; }
@@ -259,6 +291,7 @@
   @media (max-width: 700px) {
     .pd-faixa { grid-template-columns: 1fr; gap: 10px; }
     .pd-total, .pd-acum { border-right: none; padding-right: 0; }
+    .pd-eq-grade { grid-template-columns: 1fr; }
     .prazos-pane > .pd-faixa { margin: 10px 12px 0; }
   }
 
@@ -350,6 +383,23 @@
       anterior = b;
       navAbas[a.id] = b;
     }
+    // Equipes: item proprio, num grupo "Operacao" (junta ML + Shopee, nao e
+    // de um marketplace so). Pedido do usuario em 18/11: "campo separado".
+    const gOp = document.createElement("div");
+    gOp.className = "mkt-grupo op";
+    gOp.textContent = "Operação";
+    anterior.after(gOp);
+    const bEq = document.createElement("button");
+    bEq.type = "button";
+    bEq.className = "module-nav-item";
+    bEq.dataset.mkt = "op";
+    bEq.dataset.spAba = "equipes";
+    bEq.dataset.spExtra = "1";
+    bEq.title = "Operação · Equipes do dia";
+    bEq.innerHTML = `<span class="module-nav-icon">${svg('<circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M15 20a4.5 4.5 0 0 1 7-3.7"/>')}</span><span class="module-nav-label">Equipes</span>`;
+    bEq.addEventListener("click", () => irPara("equipes"));
+    gOp.after(bEq);
+    navAbas.equipes = bEq;
     for (const a of ABAS) {
       const badge = document.createElement("span");
       badge.id = `sp-conta-${a.id}`;
@@ -372,7 +422,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14l-1 13H6z"/><path d="M9 7a3 3 0 0 1 6 0"/></svg>
         </div>
         <div>
-          <h2>Shopee · <span id="sp-titulo">Prazos de despacho</span></h2>
+          <h2><span id="sp-marca">Shopee</span> · <span id="sp-titulo">Prazos de despacho</span></h2>
           <div id="shopee-status" class="small">Carregando...</div>
         </div>
       </div>
@@ -468,7 +518,7 @@
       for (const [id, b] of Object.entries(navAbas)) b.classList.toggle("active", visivel && id === aba);
       if (visivel) {
         // Troca titulo e corpo na hora (o resto chega depois do fetch).
-        $("sp-titulo").textContent = ABAS.find((a) => a.id === aba)?.titulo || "";
+        $("sp-titulo").textContent = tituloAba();
         if (estado) render();
         abrir();
       }
@@ -508,16 +558,25 @@
   }
 
   function carregarAba(opcoes = {}) {
+    if (aba === "equipes") return carregarPacotesDia().then(render);
     if (aba === "prazos") return carregarPrazos(opcoes);
     if (aba === "chat") return carregarChat(opcoes);
     if (aba === "devolucoes") return carregarDevolucoes(opcoes);
     return carregarEstado().then(render);
   }
 
+  function tituloAba() {
+    return aba === "equipes" ? "Equipes do dia" : ABAS.find((a) => a.id === aba)?.titulo || "";
+  }
+
   function render() {
-    $("sp-titulo").textContent = ABAS.find((a) => a.id === aba)?.titulo || "";
+    $("sp-titulo").textContent = tituloAba();
+    const eq = aba === "equipes";
+    pane.classList.toggle("sp-modo-eq", eq);
+    $("sp-marca").textContent = eq ? "Operação" : "Shopee";
     $("sp-atualizar").classList.toggle("hidden", aba === "lojas");
     corpo.classList.toggle("sp-sem-rolagem", aba === "chat");
+    if (eq) return renderEquipes();
     if (!estado) return;
     // Sem loja conectada, as abas de dados so explicam o que falta.
     if (aba !== "lojas" && (!estado.configurado || !estado.contas.length)) {
@@ -1502,6 +1561,124 @@
     return r;
   }
 
+  // ---- EQUIPES (pedido de 18/11, mesmo esquema do app de separacao) ----
+  // Bahia: SPX, Flex e Shopee. Mathias: ML coleta, ML agencia e TikTok.
+  // TikTok ainda nao esta ligado ao painel (entra quando tiver a API).
+  const EQUIPES = [
+    { id: "bahia", nome: "Equipe Bahia", cor: "#2563eb", canais: "SPX · Flex · Shopee", mlModalidades: ["flex"], shopee: true },
+    { id: "mathias", nome: "Equipe Mathias", cor: "#7c3aed", canais: "ML coleta · ML agência · TikTok", mlModalidades: ["coleta", "agencia"], shopee: false },
+  ];
+  const NOME_MOD = { flex: "Flex", coleta: "ML coleta", agencia: "ML agência" };
+  let verEquipe = lerPref("verEquipe", "todas");
+  function cfgEquipe(id) {
+    let c = {};
+    try {
+      c = JSON.parse(lerPref(`equipe_${id}`, "{}")) || {};
+    } catch {}
+    return { minPorPacote: Number(c.minPorPacote) > 0 ? Number(c.minPorPacote) : 2, pessoas: Number(c.pessoas) > 0 ? Number(c.pessoas) : 1 };
+  }
+
+  // O que falta hoje para uma equipe (mesmas regras do "Faltam sair hoje":
+  // prazo de hoje + atrasados de hoje; atrasados antigos ficam como nota).
+  function contarEquipe(eq) {
+    const hoje = diaSP(Date.now());
+    const r = { falta: 0, partes: {}, antigos: 0, primeiroLimite: null, saiu: 0, carregando: false };
+    const somarLimite = (ms) => {
+      // So limites que ainda vao vencer (o que ja venceu aparece como atrasado).
+      if (ms && ms > Date.now() && (!r.primeiroLimite || ms < r.primeiroLimite)) r.primeiroLimite = ms;
+    };
+    if (mlPrazos?.envios) {
+      for (const e of mlPrazos.envios) {
+        if (!eq.mlModalidades.includes(e.modalidade) || e.situacao === "proximos") continue;
+        const doDia = e.prazo && diaSP(Date.parse(e.prazo)) === hoje;
+        if (e.situacao === "atrasado" && !doDia) {
+          r.antigos++;
+          continue;
+        }
+        r.falta++;
+        const nome = NOME_MOD[e.modalidade] || e.modalidade;
+        r.partes[nome] = (r.partes[nome] || 0) + 1;
+        if (e.situacao !== "impresso") somarLimite(Date.parse(e.limiteImpressao || e.prazo));
+      }
+      for (const m of eq.mlModalidades) r.saiu += mlSaiuHoje?.porModalidade?.[m] || 0;
+    } else r.carregando = true;
+    if (eq.shopee) {
+      if (prazos?.pedidos) {
+        for (const p of prazos.pedidos) {
+          if (!passaLoja(p.shopId)) continue;
+          const dia = p.prazo ? diaSP(p.prazo) : null;
+          if (p.situacao === "atrasado" && dia !== hoje) {
+            r.antigos++;
+            continue;
+          }
+          if (dia !== hoje && p.prazo && p.situacao !== "atrasado") continue;
+          r.falta++;
+          // SPX = Shopee Xpress (transportadora); o resto e "Shopee".
+          const nome = /xpress|spx/i.test(p.transportadora || "") ? "SPX" : "Shopee";
+          r.partes[nome] = (r.partes[nome] || 0) + 1;
+          somarLimite(p.prazo);
+        }
+        r.saiu += (prazos.saidosHoje || []).filter((s) => passaLoja(s.shopId)).length;
+      } else if (estado?.contas?.length) r.carregando = true;
+    }
+    return r;
+  }
+
+  const hhmm = (ms) => new Date(ms).toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
+  function htmlEquipes() {
+    const agora = Date.now();
+    const lista = verEquipe === "todas" ? EQUIPES : EQUIPES.filter((e) => e.id === verEquipe);
+    const seletor = `<div class="pd-eq-sel">Minha equipe:
+      ${[["todas", "Ambas"], ...EQUIPES.map((e) => [e.id, e.nome.replace("Equipe ", "")])]
+        .map(([id, n]) => `<button type="button" class="${verEquipe === id ? "ativo" : ""}" data-pd-eq="${id}">${esc(n)}</button>`)
+        .join("")}</div>`;
+    const cards = lista
+      .map((eq) => {
+        const c = contarEquipe(eq);
+        const cfg = cfgEquipe(eq.id);
+        const minutos = Math.ceil((c.falta * cfg.minPorPacote) / cfg.pessoas);
+        const termina = agora + minutos * 60e3;
+        const total = c.falta + c.saiu;
+        const pct = total ? Math.round((100 * c.saiu) / total) : 0;
+        const estoura = c.primeiroLimite && c.falta && termina > c.primeiroLimite;
+        const partes = Object.entries(c.partes).map(([n, q]) => `${q} ${n}`).join(" · ") || "nada pendente para hoje";
+        const tempo = !c.falta ? "Tudo em dia ✓" : minutos < 60 ? `${minutos} min` : `${Math.floor(minutos / 60)}h${String(minutos % 60).padStart(2, "0")}`;
+        return `<div class="pd-eq" style="--eq:${eq.cor}">
+          <div class="pd-eq-topo"><b>${esc(eq.nome)}</b><span>${esc(eq.canais)}</span></div>
+          <div class="pd-eq-nums">
+            <div><span class="pd-eq-n">${c.carregando ? "–" : c.falta}</span><small>faltam</small></div>
+            <div><span class="pd-eq-n ok">${c.saiu}</span><small>já saíram</small></div>
+            <div class="pd-eq-tempo ${estoura ? "estoura" : ""}"><span class="pd-eq-n">${c.carregando ? "–" : tempo}</span><small>${
+              c.falta ? `para terminar · fica pronto ~${hhmm(termina)}` : "para terminar"
+            }</small></div>
+          </div>
+          <div class="pd-acum-barra"><span style="width:${pct}%;background:var(--eq)"></span></div>
+          <div class="pd-eq-det">${esc(partes)}${c.antigos ? ` · +${c.antigos} atrasado(s) antigo(s)` : ""}</div>
+          ${
+            c.primeiroLimite && c.falta
+              ? `<div class="pd-eq-det ${estoura ? "pd-eq-alerta" : ""}">Primeiro limite: <b>${hhmm(c.primeiroLimite)}</b>${
+                  estoura ? " — no ritmo informado não dá tempo, reforce a equipe" : ""
+                }</div>`
+              : ""
+          }
+          <div class="pd-eq-cfg">Ritmo:
+            <label><input type="number" min="0.2" step="0.1" value="${cfg.minPorPacote}" data-eq-cfg="${eq.id}" data-campo="minPorPacote"> min por pacote</label>
+            <label><input type="number" min="1" step="1" value="${cfg.pessoas}" data-eq-cfg="${eq.id}" data-campo="pessoas"> pessoa(s)</label>
+          </div>
+        </div>`;
+      })
+      .join("");
+    return `<div class="pd-equipes">${seletor}<div class="pd-eq-grade ${lista.length === 1 ? "uma" : ""}">${cards}</div></div>`;
+  }
+
+  function renderEquipes() {
+    corpo.innerHTML = `
+      <div class="sp-equipes" data-eq>${htmlEquipes()}</div>
+      <div class="muted small sp-eq-nota">Pacotes que precisam sair hoje (Mercado Livre + Shopee), divididos pelas equipes do app de separação.
+        "Tempo para terminar" = pacotes que faltam × minutos por pacote ÷ pessoas — ajuste o ritmo de cada equipe (fica salvo neste navegador).
+        TikTok entra na equipe Mathias quando estiver ligado ao painel.</div>`;
+  }
+
   function htmlPacotesDia() {
     const ml = contarML();
     const sp = contarShopee();
@@ -1552,7 +1729,29 @@
   function atualizarFaixas() {
     const html = htmlPacotesDia();
     document.querySelectorAll("[data-pd]").forEach((el) => (el.innerHTML = html));
+    if (document.querySelector("[data-eq]")) {
+      const h = htmlEquipes();
+      document.querySelectorAll("[data-eq]").forEach((el) => (el.innerHTML = h));
+    }
   }
+
+  // Equipes: escolher "minha equipe" e ajustar o ritmo (fica salvo neste navegador).
+  document.addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-pd-eq]");
+    if (!b) return;
+    verEquipe = b.dataset.pdEq;
+    salvarPref("verEquipe", verEquipe);
+    atualizarFaixas();
+  });
+  document.addEventListener("change", (ev) => {
+    const i = ev.target.closest("[data-eq-cfg]");
+    if (!i) return;
+    const cfg = cfgEquipe(i.dataset.eqCfg);
+    const v = Number(String(i.value).replace(",", "."));
+    if (v > 0) cfg[i.dataset.campo] = v;
+    salvarPref(`equipe_${i.dataset.eqCfg}`, JSON.stringify(cfg));
+    atualizarFaixas();
+  });
 
   // Clicar no nome do marketplace abre o Prazos dele.
   document.addEventListener("click", (ev) => {
@@ -1591,7 +1790,7 @@
   });
   setInterval(() => {
     if (document.hidden) return;
-    if (mlVisivel || (visivel && aba === "prazos")) carregarPacotesDia();
+    if (mlVisivel || (visivel && (aba === "prazos" || aba === "equipes"))) carregarPacotesDia();
   }, 60_000);
 
   // =====================================================================
