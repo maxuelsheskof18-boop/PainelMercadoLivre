@@ -285,13 +285,21 @@ async function sondarLoja(shopId) {
   if (amostra.length) {
     // ship_by_date / days_to_ship: o prazo de despacho (o que mais importa
     // para o modulo de Prazos). Confirmar se vem por padrao.
-    await chamar("detalhePedidos", "/api/v2/order/get_order_detail", {
+    const det = await chamar("detalhePedidos", "/api/v2/order/get_order_detail", {
       query: {
         order_sn_list: amostra.join(","),
         response_optional_fields:
           "pay_time,package_list,shipping_carrier,checkout_shipping_carrier,fulfillment_flag,pickup_done_time,item_list,edt",
       },
     });
+    // Cartao do anuncio no chat: confere se a API de produto esta liberada
+    // e quais campos vem (foto, preco, estoque).
+    const itemId = det.response?.order_list?.[0]?.item_list?.[0]?.item_id;
+    if (itemId) {
+      await chamar("produto", "/api/v2/product/get_item_base_info", {
+        query: { item_id_list: itemId, need_tax_info: false, need_complaint_policy: false },
+      });
+    }
   } else {
     r.detalhePedidos = { pulado: "nenhum pedido READY_TO_SHIP/PROCESSED nos ultimos 15 dias" };
   }
@@ -406,6 +414,15 @@ router.get("/api/shopee/chat", requireLogin, async (req, res) => {
 router.get("/api/shopee/chat/:shopId/:conversa", requireLogin, async (req, res) => {
   try {
     res.json({ mensagens: await chat.mensagens(req.params.shopId, req.params.conversa, req.query.comprador) });
+  } catch (err) {
+    erro500(res, err);
+  }
+});
+
+// Produtos e pedidos citados na conversa (cartoes do painel lateral).
+router.get("/api/shopee/chat/:shopId/:conversa/contexto", requireLogin, async (req, res) => {
+  try {
+    res.json(await chat.contexto(req.params.shopId, req.params.conversa, req.query.comprador));
   } catch (err) {
     erro500(res, err);
   }
