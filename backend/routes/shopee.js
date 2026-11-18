@@ -28,6 +28,7 @@ const crypto = require("crypto");
 const express = require("express");
 const { requireLogin } = require("../authMiddleware");
 const shopee = require("../shopee/api");
+const db = require("../db");
 const pedidos = require("../shopee/pedidos");
 const chat = require("../shopee/chat");
 const devolucoes = require("../shopee/devolucoes");
@@ -404,6 +405,28 @@ router.get("/api/shopee/resumo", requireLogin, async (req, res) => {
 });
 
 router.get("/api/shopee/prazos", requireLogin, (req, res) => res.json(pedidos.snapshot()));
+
+// Acumulado do dia do MERCADO LIVRE (faixa "Pacotes do dia"). Fica aqui e nao
+// em routes/prazos.js para nao mexer no modulo do ML: le o historico que o
+// Prazos do ML ja grava (prazos_envios). Conta os envios que sairam da lista
+// de pendentes hoje (horario de SP), menos cancelados. saiu_em = ciclo em que
+// o painel percebeu a saida (~3 min de precisao).
+router.get("/api/pacotes-dia/ml-saiu-hoje", requireLogin, async (req, res) => {
+  try {
+    const { rows: tem } = await db.query("SELECT to_regclass('prazos_envios') AS t");
+    if (!tem[0]?.t) return res.json({ total: 0, porConta: [], semHistorico: true });
+    const { rows } = await db.query(
+      `SELECT conta, count(*)::int AS total
+         FROM prazos_envios
+        WHERE saiu_em >= (date_trunc('day', now() AT TIME ZONE 'America/Sao_Paulo') AT TIME ZONE 'America/Sao_Paulo')
+          AND status_final IS DISTINCT FROM 'cancelled'
+        GROUP BY conta`
+    );
+    res.json({ total: rows.reduce((s, r) => s + r.total, 0), porConta: rows });
+  } catch (err) {
+    erro500(res, err);
+  }
+});
 
 router.post("/api/shopee/prazos/atualizar", requireLogin, async (req, res) => {
   try {
