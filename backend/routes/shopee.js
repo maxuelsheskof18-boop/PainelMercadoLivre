@@ -342,6 +342,17 @@ async function sondarLoja(shopId) {
   return r;
 }
 
+// Mensagens cruas de UMA conversa (formato de tipos desconhecidos).
+// Uso: /api/debug/shopee-conversa?shopId=...&conversa=...  (o painel mostra o link)
+router.get("/api/debug/shopee-conversa", requireLogin, async (req, res) => {
+  try {
+    const msgs = await chat.mensagensCruas(req.query.shopId, req.query.conversa);
+    res.json({ total: msgs.length, mensagens: msgs.map((m) => resumir(m)) });
+  } catch (err) {
+    erro500(res, err);
+  }
+});
+
 router.get("/api/debug/probe-shopee", requireLogin, async (req, res) => {
   if (!shopee.configurado()) {
     return res.status(500).json({ error: "Faltam SHOPEE_PARTNER_ID / SHOPEE_PARTNER_KEY." });
