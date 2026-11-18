@@ -243,7 +243,36 @@
   .module-nav.collapsed .mkt-grupo.op { padding-top: 12px; }
   .shopee-pane.sp-modo-eq .shopee-banner { background: linear-gradient(120deg, #1d4ed8 0%, #6d28d9 100%); }
   .shopee-pane.sp-modo-eq #sp-loja-filtro { display: none; }
-  .sp-equipes .pd-eq { padding: 16px 18px; gap: 10px; }
+  .sp-equipes .pd-eq { padding: 18px 20px; gap: 14px; border-left-width: 6px; }
+  .eq-heroi { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+  .eq-relogio { position: relative; width: 230px; height: 230px; flex: none; }
+  .eq-anel { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .eq-anel circle { fill: none; stroke-width: 14; }
+  .eq-anel-fundo { stroke: color-mix(in srgb, var(--eq) 12%, #fff); }
+  .eq-anel-arco { stroke-linecap: round; transition: stroke-dasharray .6s; }
+  .eq-relogio-centro { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+  .eq-relogio-n { font-size: 44px; font-weight: 800; letter-spacing: -.03em; line-height: 1; color: var(--st); font-variant-numeric: tabular-nums; }
+  .eq-relogio-rot { margin-top: 6px; font-size: 12px; color: var(--muted); line-height: 1.35; }
+  .eq-relogio-rot b { color: var(--text); font-size: 15px; }
+  .eq-st-estoura .eq-relogio-n, .eq-st-passou .eq-relogio-n { animation: eq-pisca 1.2s ease-in-out infinite; }
+  @keyframes eq-pisca { 50% { opacity: .45; } }
+  .eq-heroi-dir { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 10px; }
+  .eq-veredito { align-self: flex-start; font-size: 19px; font-weight: 800; color: #fff; background: var(--st); border-radius: 12px; padding: 9px 16px; box-shadow: 0 6px 18px color-mix(in srgb, var(--st) 30%, transparent); }
+  .eq-precisa { font-size: 14px; color: var(--text-soft); }
+  .eq-mini { display: flex; gap: 26px; }
+  .eq-mini > div { display: flex; flex-direction: column; }
+  .eq-mini-n { font-size: 28px; font-weight: 800; line-height: 1.05; color: var(--text); font-variant-numeric: tabular-nums; }
+  .eq-mini-n.ok { color: #15803d; }
+  .eq-mini small { font-size: 11.5px; color: var(--muted); }
+  .pd-eq-cfg input[type="time"] { width: auto; }
+  .pd-eq-grade.uma .eq-relogio { width: 300px; height: 300px; }
+  .pd-eq-grade.uma .eq-relogio-n { font-size: 60px; }
+  .pd-eq-grade.uma .eq-veredito { font-size: 24px; }
+  @media (max-width: 700px) {
+    .eq-relogio { width: 190px; height: 190px; margin: 0 auto; }
+    .eq-relogio-n { font-size: 36px; }
+    .eq-heroi { justify-content: center; }
+  }
   .sp-equipes .pd-eq-topo b { font-size: 17px; }
   .sp-equipes .pd-eq-n { font-size: 32px; }
   .sp-equipes .pd-eq-nums { gap: 30px; }
@@ -266,6 +295,13 @@
   .pd-eq-tempo .pd-eq-n { color: var(--eq); }
   .pd-eq-tempo.estoura .pd-eq-n { color: #dc2626; }
   .pd-eq-det { font-size: 12px; color: var(--muted); }
+  .pd-eq-canais { display: grid; grid-template-columns: minmax(90px, max-content) 80px 80px; gap: 3px 14px; align-items: baseline; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .pd-eq-canais .cab { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .pd-eq-canais .nome { font-weight: 600; color: var(--text-soft); }
+  .pd-eq-canais span:not(.nome):not(.cab) { font-weight: 700; color: var(--text); }
+  .pd-eq-canais .ok { color: #15803d !important; }
+  .pd-eq-canais .zero { color: var(--muted) !important; font-weight: 500 !important; }
+  .pd-eq-canais .embreve { font-size: 11.5px; font-weight: 500 !important; color: var(--muted) !important; font-style: italic; }
   .pd-eq-alerta { color: #b91c1c; font-weight: 600; }
   .pd-eq-cfg { font-size: 11.5px; color: var(--muted); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .pd-eq-cfg input { width: 54px; padding: 2px 5px; border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 12px; }
@@ -1565,8 +1601,8 @@
   // Bahia: SPX, Flex e Shopee. Mathias: ML coleta, ML agencia e TikTok.
   // TikTok ainda nao esta ligado ao painel (entra quando tiver a API).
   const EQUIPES = [
-    { id: "bahia", nome: "Equipe Bahia", cor: "#2563eb", canais: "SPX · Flex · Shopee", mlModalidades: ["flex"], shopee: true },
-    { id: "mathias", nome: "Equipe Mathias", cor: "#7c3aed", canais: "ML coleta · ML agência · TikTok", mlModalidades: ["coleta", "agencia"], shopee: false },
+    { id: "bahia", nome: "Equipe Bahia", cor: "#2563eb", canais: "SPX · Flex · Shopee", ordem: ["SPX", "Flex", "Shopee"], mlModalidades: ["flex"], shopee: true },
+    { id: "mathias", nome: "Equipe Mathias", cor: "#7c3aed", canais: "ML coleta · ML agência · TikTok", ordem: ["ML coleta", "ML agência", "TikTok"], mlModalidades: ["coleta", "agencia"], shopee: false },
   ];
   const NOME_MOD = { flex: "Flex", coleta: "ML coleta", agencia: "ML agência" };
   let verEquipe = lerPref("verEquipe", "todas");
@@ -1575,14 +1611,39 @@
     try {
       c = JSON.parse(lerPref(`equipe_${id}`, "{}")) || {};
     } catch {}
-    return { minPorPacote: Number(c.minPorPacote) > 0 ? Number(c.minPorPacote) : 2, pessoas: Number(c.pessoas) > 0 ? Number(c.pessoas) : 1 };
+    return {
+      minPorPacote: Number(c.minPorPacote) > 0 ? Number(c.minPorPacote) : 2,
+      pessoas: Number(c.pessoas) > 0 ? Number(c.pessoas) : 1,
+      meta: /^\d{2}:\d{2}$/.test(c.meta || "") ? c.meta : "",
+    };
   }
+  // "17:30" -> horario de hoje em SP (ms). Brasil sem horario de verao: -03:00.
+  function metaHoje(meta) {
+    if (!meta) return null;
+    const ms = Date.parse(`${diaSP(Date.now())}T${meta}:00-03:00`);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  function contagem(ms) {
+    const neg = ms < 0;
+    const s = Math.floor(Math.abs(ms) / 1000);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const txt = `${h}:${String(m).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    return neg ? `-${txt}` : txt;
+  }
+  // Relogio vivo: atualiza os segundos sem redesenhar a tela.
+  setInterval(() => {
+    document.querySelectorAll("[data-contagem]").forEach((el) => {
+      el.textContent = contagem(Number(el.dataset.contagem) - Date.now());
+    });
+  }, 1000);
 
   // O que falta hoje para uma equipe (mesmas regras do "Faltam sair hoje":
   // prazo de hoje + atrasados de hoje; atrasados antigos ficam como nota).
   function contarEquipe(eq) {
     const hoje = diaSP(Date.now());
-    const r = { falta: 0, partes: {}, antigos: 0, primeiroLimite: null, saiu: 0, carregando: false };
+    const r = { falta: 0, partes: {}, antigos: 0, primeiroLimite: null, saiu: 0, carregando: false, saiuPor: {} };
+    const canalShopee = (transp) => (/xpress|spx/i.test(transp || "") ? "SPX" : "Shopee");
     const somarLimite = (ms) => {
       // So limites que ainda vao vencer (o que ja venceu aparece como atrasado).
       if (ms && ms > Date.now() && (!r.primeiroLimite || ms < r.primeiroLimite)) r.primeiroLimite = ms;
@@ -1600,7 +1661,11 @@
         r.partes[nome] = (r.partes[nome] || 0) + 1;
         if (e.situacao !== "impresso") somarLimite(Date.parse(e.limiteImpressao || e.prazo));
       }
-      for (const m of eq.mlModalidades) r.saiu += mlSaiuHoje?.porModalidade?.[m] || 0;
+      for (const m of eq.mlModalidades) {
+        const q = mlSaiuHoje?.porModalidade?.[m] || 0;
+        r.saiu += q;
+        r.saiuPor[NOME_MOD[m]] = (r.saiuPor[NOME_MOD[m]] || 0) + q;
+      }
     } else r.carregando = true;
     if (eq.shopee) {
       if (prazos?.pedidos) {
@@ -1614,11 +1679,16 @@
           if (dia !== hoje && p.prazo && p.situacao !== "atrasado") continue;
           r.falta++;
           // SPX = Shopee Xpress (transportadora); o resto e "Shopee".
-          const nome = /xpress|spx/i.test(p.transportadora || "") ? "SPX" : "Shopee";
+          const nome = canalShopee(p.transportadora);
           r.partes[nome] = (r.partes[nome] || 0) + 1;
           somarLimite(p.prazo);
         }
-        r.saiu += (prazos.saidosHoje || []).filter((s) => passaLoja(s.shopId)).length;
+        for (const s of prazos.saidosHoje || []) {
+          if (!passaLoja(s.shopId)) continue;
+          r.saiu++;
+          const nome = canalShopee(s.transportadora);
+          r.saiuPor[nome] = (r.saiuPor[nome] || 0) + 1;
+        }
       } else if (estado?.contas?.length) r.carregando = true;
     }
     return r;
@@ -1640,28 +1710,78 @@
         const termina = agora + minutos * 60e3;
         const total = c.falta + c.saiu;
         const pct = total ? Math.round((100 * c.saiu) / total) : 0;
-        const estoura = c.primeiroLimite && c.falta && termina > c.primeiroLimite;
-        const partes = Object.entries(c.partes).map(([n, q]) => `${q} ${n}`).join(" · ") || "nada pendente para hoje";
-        const tempo = !c.falta ? "Tudo em dia ✓" : minutos < 60 ? `${minutos} min` : `${Math.floor(minutos / 60)}h${String(minutos % 60).padStart(2, "0")}`;
-        return `<div class="pd-eq" style="--eq:${eq.cor}">
+        // Por plataforma: quanto falta e quanto ja saiu de cada uma.
+        const canais = [...new Set([...eq.ordem, ...Object.keys(c.partes), ...Object.keys(c.saiuPor)])];
+        const tabelaCanais = `<div class="pd-eq-canais">
+          <span></span><span class="cab">Faltam</span><span class="cab">Já saíram</span>
+          ${canais
+            .map((n) =>
+              n === "TikTok"
+                ? `<span class="nome">${n}</span><span class="embreve">em breve</span><span></span>`
+                : `<span class="nome">${esc(n)}</span><span class="${c.partes[n] ? "" : "zero"}">${c.carregando ? "–" : c.partes[n] || 0}</span><span class="ok ${c.saiuPor[n] ? "" : "zero"}">${c.saiuPor[n] || 0}</span>`
+            )
+            .join("")}
+        </div>`;
+        // ---- RELOGIO: quanto tempo a equipe TEM para finalizar tudo ----
+        // Alvo = "Terminar ate" que o lider definiu; sem isso, o primeiro
+        // limite que ainda vai vencer. Precisa = faltam x ritmo.
+        const alvo = metaHoje(cfg.meta) || c.primeiroLimite || null;
+        const tem = alvo ? alvo - agora : null;
+        const precisa = minutos * 60e3;
+        const folga = tem !== null ? tem - precisa : null;
+        const st = !c.falta ? "fim" : tem === null ? "sem" : tem <= 0 ? "passou" : folga < 0 ? "estoura" : folga < 15 * 60e3 ? "apertado" : "ok";
+        const COR_ST = { fim: "#16a34a", sem: eq.cor, passou: "#dc2626", estoura: "#dc2626", apertado: "#f59e0b", ok: "#16a34a" };
+        const corSt = COR_ST[st];
+        const fmtDur = (ms) => {
+          const m = Math.max(0, Math.round(ms / 60e3));
+          return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
+        };
+        const veredito = {
+          fim: "🎉 Tudo finalizado por hoje",
+          sem: `Precisa de ${fmtDur(precisa)} · defina "Terminar até"`,
+          passou: "⏰ O horário-alvo já passou",
+          estoura: `⚠ Faltam ${fmtDur(-folga)} — reforce a equipe`,
+          apertado: `⚡ Apertado: sobra só ${fmtDur(folga)}`,
+          ok: `✓ Dá tempo — sobra ${fmtDur(folga)}`,
+        }[st];
+        // Anel: quanto do tempo disponivel o trabalho vai consumir.
+        const R = 84;
+        const CIRC = 2 * Math.PI * R;
+        const uso = st === "fim" ? 1 : tem > 0 ? Math.min(1, precisa / tem) : 1;
+        const anel = `<svg class="eq-anel" viewBox="0 0 200 200" aria-hidden="true">
+            <circle cx="100" cy="100" r="${R}" class="eq-anel-fundo"/>
+            <circle cx="100" cy="100" r="${R}" class="eq-anel-arco" style="stroke:${corSt};stroke-dasharray:${(uso * CIRC).toFixed(1)} ${CIRC.toFixed(1)}"/>
+          </svg>`;
+        const centro =
+          st === "fim"
+            ? `<div class="eq-relogio-n">✓</div><div class="eq-relogio-rot">tudo pronto</div>`
+            : alvo
+              ? `<div class="eq-relogio-n" data-contagem="${alvo}">${contagem(alvo - agora)}</div><div class="eq-relogio-rot">para finalizar tudo<br>até <b>${hhmm(alvo)}</b></div>`
+              : `<div class="eq-relogio-n">${fmtDur(precisa)}</div><div class="eq-relogio-rot">de trabalho<br>no ritmo atual</div>`;
+        return `<div class="pd-eq eq-st-${st}" style="--eq:${eq.cor};--st:${corSt}">
           <div class="pd-eq-topo"><b>${esc(eq.nome)}</b><span>${esc(eq.canais)}</span></div>
-          <div class="pd-eq-nums">
-            <div><span class="pd-eq-n">${c.carregando ? "–" : c.falta}</span><small>faltam</small></div>
-            <div><span class="pd-eq-n ok">${c.saiu}</span><small>já saíram</small></div>
-            <div class="pd-eq-tempo ${estoura ? "estoura" : ""}"><span class="pd-eq-n">${c.carregando ? "–" : tempo}</span><small>${
-              c.falta ? `para terminar · fica pronto ~${hhmm(termina)}` : "para terminar"
-            }</small></div>
+          <div class="eq-heroi">
+            <div class="eq-relogio">${anel}<div class="eq-relogio-centro">${c.carregando ? `<div class="eq-relogio-n">–</div>` : centro}</div></div>
+            <div class="eq-heroi-dir">
+              <div class="eq-veredito">${c.carregando ? "Carregando..." : esc(veredito)}</div>
+              ${
+                c.falta && !c.carregando
+                  ? `<div class="eq-precisa">Precisa de <b>${fmtDur(precisa)}</b> no ritmo atual · fica pronto ~<b>${hhmm(termina)}</b></div>`
+                  : ""
+              }
+              <div class="eq-mini">
+                <div><span class="eq-mini-n">${c.carregando ? "–" : c.falta}</span><small>faltam</small></div>
+                <div><span class="eq-mini-n ok">${c.saiu}</span><small>já saíram</small></div>
+                <div><span class="eq-mini-n">${pct}%</span><small>do dia feito</small></div>
+              </div>
+              <div class="pd-acum-barra"><span style="width:${pct}%;background:var(--eq)"></span></div>
+            </div>
           </div>
-          <div class="pd-acum-barra"><span style="width:${pct}%;background:var(--eq)"></span></div>
-          <div class="pd-eq-det">${esc(partes)}${c.antigos ? ` · +${c.antigos} atrasado(s) antigo(s)` : ""}</div>
-          ${
-            c.primeiroLimite && c.falta
-              ? `<div class="pd-eq-det ${estoura ? "pd-eq-alerta" : ""}">Primeiro limite: <b>${hhmm(c.primeiroLimite)}</b>${
-                  estoura ? " — no ritmo informado não dá tempo, reforce a equipe" : ""
-                }</div>`
-              : ""
-          }
-          <div class="pd-eq-cfg">Ritmo:
+          ${tabelaCanais}
+          ${c.antigos ? `<div class="pd-eq-det">+${c.antigos} atrasado(s) de dias anteriores fora da conta</div>` : ""}
+          ${c.primeiroLimite && c.falta && cfg.meta ? `<div class="pd-eq-det">Próximo limite da plataforma: <b>${hhmm(c.primeiroLimite)}</b></div>` : ""}
+          <div class="pd-eq-cfg">
+            <label>Terminar até <input type="time" value="${esc(cfg.meta || "")}" data-eq-cfg="${eq.id}" data-campo="meta" title="Vazio = usa o próximo limite da plataforma"></label>
             <label><input type="number" min="0.2" step="0.1" value="${cfg.minPorPacote}" data-eq-cfg="${eq.id}" data-campo="minPorPacote"> min por pacote</label>
             <label><input type="number" min="1" step="1" value="${cfg.pessoas}" data-eq-cfg="${eq.id}" data-campo="pessoas"> pessoa(s)</label>
           </div>
@@ -1675,7 +1795,7 @@
     corpo.innerHTML = `
       <div class="sp-equipes" data-eq>${htmlEquipes()}</div>
       <div class="muted small sp-eq-nota">Pacotes que precisam sair hoje (Mercado Livre + Shopee), divididos pelas equipes do app de separação.
-        "Tempo para terminar" = pacotes que faltam × minutos por pacote ÷ pessoas — ajuste o ritmo de cada equipe (fica salvo neste navegador).
+        O relógio conta o tempo até o horário "Terminar até" (vazio = próximo limite da plataforma). "Precisa" = pacotes que faltam × minutos por pacote ÷ pessoas — ajuste em cada equipe (fica salvo neste navegador).
         TikTok entra na equipe Mathias quando estiver ligado ao painel.</div>`;
   }
 
@@ -1747,8 +1867,11 @@
     const i = ev.target.closest("[data-eq-cfg]");
     if (!i) return;
     const cfg = cfgEquipe(i.dataset.eqCfg);
-    const v = Number(String(i.value).replace(",", "."));
-    if (v > 0) cfg[i.dataset.campo] = v;
+    if (i.dataset.campo === "meta") cfg.meta = i.value || "";
+    else {
+      const v = Number(String(i.value).replace(",", "."));
+      if (v > 0) cfg[i.dataset.campo] = v;
+    }
     salvarPref(`equipe_${i.dataset.eqCfg}`, JSON.stringify(cfg));
     atualizarFaixas();
   });
