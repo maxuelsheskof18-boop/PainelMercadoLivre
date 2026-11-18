@@ -142,11 +142,42 @@ async function listarConversas({ forcar = false } = {}) {
   return { conversas, erros };
 }
 
+// Todas as paginas de get_message. Na loja real (18/11) o painel mostrava 2
+// mensagens de uma conversa que tinha varias: a Shopee pagina por
+// "offset" (page_result.next_offset). Para por seguranca em 10 paginas.
+async function buscarMensagens(shopId, conversationId, { maxPaginas = 10 } = {}) {
+  const todas = [];
+  const paginas = [];
+  let offset;
+  for (let i = 0; i < maxPaginas; i++) {
+    const r = await shopee.chamarLoja(shopId, "/api/v2/sellerchat/get_message", {
+      query: { conversation_id: conversationId, page_size: 25, offset },
+    });
+    const resp = r.response || {};
+    const msgs = resp.messages || [];
+    todas.push(...msgs);
+    paginas.push({ qtd: msgs.length, page_result: resp.page_result || null });
+    const prox = resp.page_result?.next_offset;
+    if (!msgs.length || !prox || prox === "0" || prox === offset) break;
+    offset = prox;
+  }
+  // Sem repetidas (paginas podem se sobrepor).
+  const vistos = new Set();
+  return {
+    mensagens: todas.filter((m) => !vistos.has(String(m.message_id)) && vistos.add(String(m.message_id))),
+    paginas,
+  };
+}
+
+// Pedido/produto de ORIGEM da conversa: o comprador abriu o chat pela pagina
+// do pedido ou do anuncio ("O cliente esta perguntando sobre este pedido",
+// no chat da Shopee). Pela doc vem em source_content de cada mensagem.
+const refPedido = (m) => m.source_content?.order_sn || m.content?.source_content?.order_sn || null;
+const refProduto = (m) => m.source_content?.item_id || m.content?.source_content?.item_id || null;
+
 async function mensagens(shopId, conversationId, compradorId) {
-  const r = await shopee.chamarLoja(shopId, "/api/v2/sellerchat/get_message", {
-    query: { conversation_id: conversationId, page_size: 60 },
-  });
-  const lista = (r.response?.messages || []).map((m) => {
+  const { mensagens: brutas } = await buscarMensagens(shopId, conversationId);
+  const lista = brutas.map((m) => {
     const c = m.content || {};
     return {
       id: String(m.message_id),
@@ -162,7 +193,9 @@ async function mensagens(shopId, conversationId, compradorId) {
       video: m.message_type === "video" ? c.video_url || c.url || null : null,
       duracao: c.duration_seconds || null,
       produtos: idsDeProduto(m.message_type, c),
-      pedido: c.order_sn || null,
+      pedido: m.message_type === "order" ? c.order_sn || null : null,
+      pedidoRef: refPedido(m) || (m.message_type !== "order" ? c.order_sn || null : null),
+      produtoRef: refProduto(m) ? String(refProduto(m)) : null,
       em: nanoParaMs(m.created_timestamp),
     };
   });
@@ -295,8 +328,20 @@ async function pedidos(shopId, sns) {
 async function contexto(shopId, conversationId, compradorId) {
   const msgs = await mensagens(shopId, conversationId, compradorId);
   // Mais recentes primeiro: o que o comprador falou por ultimo e o mais relevante.
-  const idsProd = [...new Set(msgs.slice().reverse().flatMap((m) => m.produtos))].slice(0, 10);
-  const sns = [...new Set(msgs.slice().reverse().map((m) => m.pedido).filter(Boolean))].slice(0, 5);
+  const rev = msgs.slice().reverse();
+  const idsProd = [...new Set(rev.flatMap((m) => [...m.produtos, m.produtoRef].filter(Boolean)))].slice(0, 10);
+  const sns = [...new Set(rev.flatMap((m) => [m.pedido, m.pedidoRef]).filter(Boolean))];
+  // Reserva: pedidos em aberto deste comprador que o coletor de prazos ja
+  // conhece (precisa de buyer_user_id no pedido — pode vir 0 sem a
+  // permissao de dados pessoais).
+  const doComprador = compradorId
+    ? require("./pedidos")
+        .snapshot()
+        .pedidos.filter((p) => p.shopId === String(shopId) && p.compradorId && p.compradorId === String(compradorId))
+        .map((p) => p.orderSn)
+    : [];
+  for (const sn of doComprador) if (!sns.includes(sn)) sns.push(sn);
+  sns.splice(6);
   const [prod, ped] = await Promise.allSettled([produtos(shopId, idsProd), pedidos(shopId, sns)]);
   // Produtos dos pedidos tambem viram cartao (foto/estoque/link do anuncio).
   const pedidosOk = ped.status === "fulfilled" ? ped.value : [];
@@ -335,10 +380,7 @@ async function marcarLida(shopId, conversationId, ultimaMensagemId) {
 
 // Mensagens cruas (para descobrir o formato de tipos novos, ex. bundle_message).
 async function mensagensCruas(shopId, conversationId) {
-  const r = await shopee.chamarLoja(shopId, "/api/v2/sellerchat/get_message", {
-    query: { conversation_id: conversationId, page_size: 20 },
-  });
-  return r.response?.messages || [];
+  return buscarMensagens(shopId, conversationId, { maxPaginas: 4 });
 }
 
 module.exports = { listarConversas, mensagens, mensagensCruas, contexto, enviar, marcarLida };

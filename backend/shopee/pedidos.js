@@ -63,7 +63,7 @@ async function detalhar(shopId, sns) {
     const r = await shopee.chamarLoja(shopId, "/api/v2/order/get_order_detail", {
       query: {
         order_sn_list: sns.slice(i, i + 50).join(","),
-        response_optional_fields: "item_list,package_list,shipping_carrier,pay_time,pickup_done_time,fulfillment_flag",
+        response_optional_fields: "buyer_user_id,item_list,package_list,shipping_carrier,pay_time,pickup_done_time,fulfillment_flag",
       },
     });
     out.push(...(r.response?.order_list || []));
@@ -108,6 +108,8 @@ function montarPedido(shopId, nomeLoja, o) {
     shopId: String(shopId),
     loja: nomeLoja,
     orderSn: o.order_sn,
+    // Para ligar o chat ao pedido (comprador da conversa = to_id).
+    compradorId: o.buyer_user_id ? String(o.buyer_user_id) : null,
     status: o.order_status,
     etapa: o.order_status === "READY_TO_SHIP" ? "organizar" : "aguardando",
     prazo: o.ship_by_date ? Number(o.ship_by_date) * 1000 : null,
