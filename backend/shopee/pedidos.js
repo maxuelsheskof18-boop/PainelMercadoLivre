@@ -25,6 +25,7 @@ const estado = {
   atualizadoEm: null,
   rodando: false,
   pedidos: [], // pedidos pendentes de todas as lojas
+  saidos: [], // pacotes que JA SAIRAM hoje (coletados/postados) - acumulado do dia
   lojas: {}, // shopId -> { nome, erro, total, atualizadoEm }
 };
 const cacheModalidade = new Map(); // order_sn -> { modalidade, coletaTexto }
@@ -53,6 +54,31 @@ async function listarPorStatus(shopId, status) {
       if (!resp.more || !resp.next_cursor) break;
       cursor = resp.next_cursor;
     }
+  }
+  return sns;
+}
+
+// Pedidos que mudaram de situacao desde "desde" (segundos). Usado para achar
+// o que ja foi enviado hoje: depois da coleta o pedido vira SHIPPED e some
+// da lista de pendentes.
+async function listarAtualizados(shopId, status, desde) {
+  const sns = [];
+  let cursor = "";
+  for (let pagina = 0; pagina < 20; pagina++) {
+    const r = await shopee.chamarLoja(shopId, "/api/v2/order/get_order_list", {
+      query: {
+        time_range_field: "update_time",
+        time_from: desde,
+        time_to: Math.floor(Date.now() / 1000),
+        page_size: 100,
+        cursor,
+        order_status: status,
+      },
+    });
+    const resp = r.response || {};
+    for (const o of resp.order_list || []) sns.push(o.order_sn);
+    if (!resp.more || !resp.next_cursor) break;
+    cursor = resp.next_cursor;
   }
   return sns;
 }
@@ -129,8 +155,15 @@ async function coletarLoja(conta) {
   const aguardando = await listarPorStatus(shopId, "PROCESSED");
   const detalhes = await detalhar(shopId, [...new Set([...aOrganizar, ...aguardando])]);
   const pedidos = [];
+  const saidos = new Map(); // order_sn -> saiuEm (ms)
+  const hoje = diaSP(Date.now());
+  const saiuHoje = (o) => Number(o.pickup_done_time) > 0 && diaSP(Number(o.pickup_done_time) * 1000) === hoje;
   for (const o of detalhes) {
-    if (Number(o.pickup_done_time) > 0) continue; // ja saiu
+    if (Number(o.pickup_done_time) > 0) {
+      // ja saiu
+      if (saiuHoje(o)) saidos.set(o.order_sn, Number(o.pickup_done_time) * 1000);
+      continue;
+    }
     const p = montarPedido(shopId, nome, o);
     // get_shipping_parameter so responde antes de organizar o envio. Na loja
     // real (18/11) quase tudo ja chega PROCESSED — sem isso seriam dezenas de
@@ -141,7 +174,24 @@ async function coletarLoja(conta) {
     p.coletaTexto = m.coletaTexto || null;
     pedidos.push(p);
   }
-  return pedidos;
+  // Ja enviados: o que mudou nas ultimas ~30h e esta SHIPPED (ou ja entregue,
+  // no caso de entrega rapida). Conta so os coletados/postados HOJE.
+  // Falha aqui nao derruba os pendentes (acumulado e informativo).
+  try {
+    const desde = Math.floor(Date.now() / 1000) - 30 * 3600;
+    const enviados = [];
+    for (const st of ["SHIPPED", "TO_CONFIRM_RECEIVE"]) enviados.push(...(await listarAtualizados(shopId, st, desde)));
+    const faltam = [...new Set(enviados)].filter((sn) => !saidos.has(sn));
+    for (const o of await detalhar(shopId, faltam)) {
+      if (saiuHoje(o)) saidos.set(o.order_sn, Number(o.pickup_done_time) * 1000);
+    }
+  } catch (err) {
+    console.error(`[shopee-prazos] enviados hoje ${shopId}:`, err.message);
+  }
+  return {
+    pedidos,
+    saidos: [...saidos].map(([orderSn, saiuEm]) => ({ shopId, loja: nome, orderSn, saiuEm })),
+  };
 }
 
 async function coletar() {
@@ -150,21 +200,25 @@ async function coletar() {
   try {
     const contas = (await shopee.listarContas()).filter((c) => c.ambiente === shopee.ambiente());
     const todos = [];
+    const saidos = [];
     const lojas = {};
     for (const c of contas) {
       const shopId = String(c.shop_id);
       try {
-        const pedidos = await coletarLoja(c);
+        const { pedidos, saidos: sairam } = await coletarLoja(c);
         todos.push(...pedidos);
+        saidos.push(...sairam);
         lojas[shopId] = { nome: c.nome || `Loja ${shopId}`, erro: null, total: pedidos.length, atualizadoEm: Date.now() };
       } catch (err) {
         // Mantem os pedidos da coleta anterior dessa loja: queda momentanea
         // nao pode zerar a tela.
         todos.push(...estado.pedidos.filter((p) => p.shopId === shopId));
+        saidos.push(...estado.saidos.filter((p) => p.shopId === shopId));
         lojas[shopId] = { nome: c.nome || `Loja ${shopId}`, erro: err.message, total: null, atualizadoEm: Date.now() };
       }
     }
     estado.pedidos = todos;
+    estado.saidos = saidos;
     estado.lojas = lojas;
     estado.atualizadoEm = Date.now();
     // Cache de modalidade so dos pedidos que ainda existem.
@@ -195,6 +249,8 @@ function snapshot() {
     atualizadoEm: estado.atualizadoEm,
     margemRiscoHoras: MARGEM_RISCO_H,
     lojas: estado.lojas,
+    // Acumulado do dia: pacotes ja coletados/postados hoje.
+    saidosHoje: estado.saidos.filter((s) => diaSP(s.saiuEm) === diaSP(agora)),
     pedidos: estado.pedidos
       .map((p) => ({ ...p, situacao: situacao(p, agora) }))
       .sort((a, b) => (a.prazo || Infinity) - (b.prazo || Infinity)),
