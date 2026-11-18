@@ -278,6 +278,28 @@
   .sp-equipes .pd-eq-nums { gap: 30px; }
   .sp-equipes .pd-eq-det { font-size: 13px; }
   .sp-eq-nota { margin-top: 14px; line-height: 1.5; }
+  .rm-grade { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .rm-card { border: 1px solid var(--border); border-top: 5px solid var(--rm); border-radius: 14px; padding: 16px 18px; background: color-mix(in srgb, var(--rm) 3%, #fff); display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .rm-topo { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .rm-topo b { font-size: 18px; color: var(--rm); }
+  .rm-totaldia { font-size: 13px; font-weight: 700; color: var(--text-soft); }
+  .rm-linha { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; min-width: 0; grid-template-areas: "nome total ok falta" "st st st st"; gap: 6px 12px; align-items: center; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: #fff; }
+  .rm-nome { grid-area: nome; display: flex; flex-direction: column; }
+  .rm-nome b { font-size: 15px; }
+  .rm-nome small, .rm-linha small { font-size: 11px; color: var(--muted); }
+  .rm-total { grid-area: total; display: flex; flex-direction: column; }
+  .rm-total span { font-size: 34px; font-weight: 800; line-height: 1; color: var(--rm); font-variant-numeric: tabular-nums; }
+  .rm-num { display: flex; flex-direction: column; }
+  .rm-num span { font-size: 20px; font-weight: 800; line-height: 1.1; color: var(--text); font-variant-numeric: tabular-nums; }
+  .rm-num.ok span { color: #15803d; }
+  .rm-st { grid-area: st; display: flex; flex-direction: column; gap: 6px; }
+  .rm-chip { align-self: flex-start; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: var(--bg); color: var(--muted); }
+  .rm-chip.aberta { background: color-mix(in srgb, var(--rm) 12%, #fff); color: var(--rm); }
+  .rm-chip.pend { background: #fff7ed; color: #c2410c; }
+  .rm-chip.ok { background: #f0fdf4; color: #15803d; }
+  .rm-rodape { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-soft); }
+  .rm-alerta { color: #b91c1c; }
+  @media (max-width: 900px) { .rm-grade { grid-template-columns: 1fr; } }
   .pd-eq-sel { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
   .pd-eq-sel button { border: 1px solid var(--border); background: var(--surface, #fff); border-radius: 999px; padding: 3px 11px; font: inherit; font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--text-soft); cursor: pointer; }
   .pd-eq-sel button.ativo { background: var(--text); color: #fff; border-color: var(--text); }
@@ -436,6 +458,17 @@
     bEq.addEventListener("click", () => irPara("equipes"));
     gOp.after(bEq);
     navAbas.equipes = bEq;
+    const bRem = document.createElement("button");
+    bRem.type = "button";
+    bRem.className = "module-nav-item";
+    bRem.dataset.mkt = "op";
+    bRem.dataset.spAba = "remessas";
+    bRem.dataset.spExtra = "1";
+    bRem.title = "Operação · Remessas do dia (por horário de venda)";
+    bRem.innerHTML = `<span class="module-nav-icon">${svg('<rect x="3" y="4" width="18" height="5" rx="1"/><rect x="3" y="11" width="18" height="5" rx="1"/><path d="M7 20h10"/>')}</span><span class="module-nav-label">Remessas</span>`;
+    bRem.addEventListener("click", () => irPara("remessas"));
+    bEq.after(bRem);
+    navAbas.remessas = bRem;
     for (const a of ABAS) {
       const badge = document.createElement("span");
       badge.id = `sp-conta-${a.id}`;
@@ -594,7 +627,7 @@
   }
 
   function carregarAba(opcoes = {}) {
-    if (aba === "equipes") return carregarPacotesDia().then(render);
+    if (aba === "equipes" || aba === "remessas") return carregarPacotesDia().then(render);
     if (aba === "prazos") return carregarPrazos(opcoes);
     if (aba === "chat") return carregarChat(opcoes);
     if (aba === "devolucoes") return carregarDevolucoes(opcoes);
@@ -602,16 +635,19 @@
   }
 
   function tituloAba() {
-    return aba === "equipes" ? "Equipes do dia" : ABAS.find((a) => a.id === aba)?.titulo || "";
+    if (aba === "equipes") return "Equipes do dia";
+    if (aba === "remessas") return "Remessas do dia";
+    return ABAS.find((a) => a.id === aba)?.titulo || "";
   }
 
   function render() {
     $("sp-titulo").textContent = tituloAba();
-    const eq = aba === "equipes";
+    const eq = aba === "equipes" || aba === "remessas";
     pane.classList.toggle("sp-modo-eq", eq);
     $("sp-marca").textContent = eq ? "Operação" : "Shopee";
     $("sp-atualizar").classList.toggle("hidden", aba === "lojas");
     corpo.classList.toggle("sp-sem-rolagem", aba === "chat");
+    if (aba === "remessas") return renderRemessas();
     if (eq) return renderEquipes();
     if (!estado) return;
     // Sem loja conectada, as abas de dados so explicam o que falta.
@@ -1643,7 +1679,7 @@
   function contarEquipe(eq) {
     const hoje = diaSP(Date.now());
     const r = { falta: 0, partes: {}, antigos: 0, primeiroLimite: null, saiu: 0, carregando: false, saiuPor: {} };
-    const canalShopee = (transp) => (/xpress|spx/i.test(transp || "") ? "SPX" : "Shopee");
+    const canalShopee = (transp) => (categoriaShopee(transp) === "spx" ? "SPX" : "Shopee");
     const somarLimite = (ms) => {
       // So limites que ainda vao vencer (o que ja venceu aparece como atrasado).
       if (ms && ms > Date.now() && (!r.primeiroLimite || ms < r.primeiroLimite)) r.primeiroLimite = ms;
@@ -1791,6 +1827,145 @@
     return `<div class="pd-equipes">${seletor}<div class="pd-eq-grade ${lista.length === 1 ? "uma" : ""}">${cards}</div></div>`;
   }
 
+  // =====================================================================
+  // REMESSAS (pedido de 18/11): pacotes por remessa, pelo HORARIO DA VENDA.
+  //   SPX (Entrega Rapida): ate 07:00 = 1a remessa; 07:00-11:00 = 2a.
+  //   Shopee Xpress:        ate 07:00 = 1a remessa; 07:00-13:00 = 2a.
+  // Venda depois do ultimo corte entra na 1a remessa do dia seguinte.
+  // Horarios editaveis na tela (salvos no navegador).
+  // =====================================================================
+  // Nome da transportadora -> categoria. Os textos exatos da Shopee ainda nao
+  // foram confirmados com loja real: a tela lista os nomes vistos.
+  function categoriaShopee(transp) {
+    const t = transp || "";
+    if (/r[aá]pida|same.?day|instant|express\s*delivery/i.test(t)) return "spx";
+    if (/xpress|spx/i.test(t)) return "xpress";
+    return "outras";
+  }
+  const CATEGORIAS_REM = [
+    { id: "spx", nome: "SPX Entrega Rápida", cor: "#ee4d2d", cortes: ["07:00", "11:00"] },
+    { id: "xpress", nome: "Shopee Xpress", cor: "#2563eb", cortes: ["07:00", "13:00"] },
+  ];
+  function cortesDe(cat) {
+    try {
+      const salvo = JSON.parse(lerPref(`cortes_${cat.id}`, "null"));
+      if (Array.isArray(salvo) && salvo.length && salvo.every((h) => /^\d{2}:\d{2}$/.test(h))) return salvo;
+    } catch {}
+    return cat.cortes;
+  }
+  const minutosSP = (ms) => {
+    const [h, m] = new Date(ms).toLocaleTimeString("en-GB", { timeZone: TZ, hour12: false }).split(":").map(Number);
+    return (h % 24) * 60 + m;
+  };
+  const minDe = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+  const somaDia = (dia, n) => diaSP(Date.parse(`${dia}T12:00:00-03:00`) + n * 864e5);
+  // Venda -> { dia, n } (n = numero da remessa daquele dia).
+  function remessaDe(vendaMs, cortes) {
+    const dia = diaSP(vendaMs);
+    const m = minutosSP(vendaMs);
+    for (let i = 0; i < cortes.length; i++) if (m < minDe(cortes[i])) return { dia, n: i + 1 };
+    return { dia: somaDia(dia, 1), n: 1 };
+  }
+  const nomeRem = (n) => `${n}ª remessa`;
+
+  function renderRemessas() {
+    if (!prazos?.pedidos) {
+      corpo.innerHTML = `<div class="shopee-vazio">Carregando pedidos da Shopee...</div>`;
+      return;
+    }
+    const agora = Date.now();
+    const hoje = diaSP(agora);
+    const amanha = somaDia(hoje, 1);
+    const itens = [
+      ...prazos.pedidos.filter((p) => passaLoja(p.shopId)).map((p) => ({ venda: p.criadoEm || p.pagoEm, transp: p.transportadora, saiu: false })),
+      ...(prazos.saidosHoje || []).filter((s) => passaLoja(s.shopId)).map((s) => ({ venda: s.criadoEm, transp: s.transportadora, saiu: true })),
+    ];
+    const vistas = {};
+    for (const i of itens) vistas[i.transp || "(sem transportadora)"] = (vistas[i.transp || "(sem transportadora)"] || 0) + 1;
+
+    const cards = CATEGORIAS_REM.map((cat) => {
+      const cortes = cortesDe(cat);
+      const meus = itens.filter((i) => categoriaShopee(i.transp) === cat.id);
+      const rem = cortes.map(() => ({ total: 0, saiu: 0, falta: 0 }));
+      let paraAmanha = 0;
+      let anteriores = 0;
+      let semHora = 0;
+      for (const i of meus) {
+        if (!i.venda) {
+          semHora++;
+          continue;
+        }
+        const r = remessaDe(i.venda, cortes);
+        if (r.dia === hoje) {
+          const x = rem[r.n - 1];
+          x.total++;
+          i.saiu ? x.saiu++ : x.falta++;
+        } else if (r.dia === amanha) paraAmanha++;
+        else if (r.dia < hoje && !i.saiu) anteriores++;
+      }
+      const agoraMin = minutosSP(agora);
+      const linhas = rem
+        .map((x, k) => {
+          const ini = k === 0 ? `${cortes[cortes.length - 1]} de ontem` : cortes[k - 1];
+          const fim = cortes[k];
+          const fecha = Date.parse(`${hoje}T${fim}:00-03:00`);
+          const aberta = agoraMin < minDe(fim);
+          const pct = x.total ? Math.round((100 * x.saiu) / x.total) : 0;
+          const chip = aberta
+            ? `<span class="rm-chip aberta">recebendo vendas · fecha às ${fim} (<span data-contagem="${fecha}">${contagem(fecha - agora)}</span>)</span>`
+            : x.falta
+              ? `<span class="rm-chip pend">fechada · ${x.falta} para despachar</span>`
+              : x.total
+                ? `<span class="rm-chip ok">fechada · tudo despachado ✓</span>`
+                : `<span class="rm-chip">fechada</span>`;
+          return `<div class="rm-linha">
+            <div class="rm-nome"><b>${nomeRem(k + 1)}</b><small>vendas de ${ini} até ${fim}</small></div>
+            <div class="rm-total"><span>${x.total}</span><small>pacotes</small></div>
+            <div class="rm-num ok"><span>${x.saiu}</span><small>já saíram</small></div>
+            <div class="rm-num"><span>${x.falta}</span><small>faltam</small></div>
+            <div class="rm-st">${chip}<div class="pd-acum-barra"><span style="width:${pct}%;background:var(--rm)"></span></div></div>
+          </div>`;
+        })
+        .join("");
+      const totalDia = rem.reduce((s, x) => s + x.total, 0);
+      return `<div class="rm-card" style="--rm:${cat.cor}">
+        <div class="rm-topo"><b>${esc(cat.nome)}</b><span class="rm-totaldia">${totalDia} pacote${totalDia === 1 ? "" : "s"} hoje</span></div>
+        ${linhas}
+        <div class="rm-rodape">
+          ${paraAmanha ? `<span>➜ <b>${paraAmanha}</b> vendido${paraAmanha === 1 ? "" : "s"} depois das ${cortes[cortes.length - 1]} — já ${paraAmanha === 1 ? "entra" : "entram"} na 1ª remessa de amanhã</span>` : ""}
+          ${anteriores ? `<span class="rm-alerta">⚠ <b>${anteriores}</b> de remessas de dias anteriores ainda não ${anteriores === 1 ? "saiu" : "saíram"}</span>` : ""}
+          ${semHora ? `<span>${semHora} sem horário de venda</span>` : ""}
+        </div>
+        <div class="pd-eq-cfg">Cortes:
+          ${cortes
+            .map((h, k) => `<label>${nomeRem(k + 1)} até <input type="time" value="${h}" data-rm-corte="${cat.id}" data-k="${k}"></label>`)
+            .join("")}
+        </div>
+      </div>`;
+    }).join("");
+
+    const outras = itens.filter((i) => categoriaShopee(i.transp) === "outras").length;
+    corpo.innerHTML = `
+      <div class="rm-grade">${cards}</div>
+      <div class="muted small sp-eq-nota">
+        Pacotes da Shopee contados pelo <b>horário da venda</b>: "já saíram" = coletados/postados hoje; "faltam" = ainda não saíram.
+        ${outras ? `${outras} pacote(s) de outras transportadoras ficam fora das remessas.` : ""}
+        <br>Transportadoras vistas: ${Object.entries(vistas).map(([n, q]) => `${esc(n)} (${q})`).join(" · ") || "nenhuma"}
+      </div>`;
+  }
+
+  // Editar cortes de uma categoria.
+  document.addEventListener("change", (ev) => {
+    const i = ev.target.closest("[data-rm-corte]");
+    if (!i || !/^\d{2}:\d{2}$/.test(i.value)) return;
+    const cat = CATEGORIAS_REM.find((c) => c.id === i.dataset.rmCorte);
+    const cortes = [...cortesDe(cat)];
+    cortes[Number(i.dataset.k)] = i.value;
+    cortes.sort();
+    salvarPref(`cortes_${cat.id}`, JSON.stringify(cortes));
+    renderRemessas();
+  });
+
   function renderEquipes() {
     corpo.innerHTML = `
       <div class="sp-equipes" data-eq>${htmlEquipes()}</div>
@@ -1849,6 +2024,7 @@
   function atualizarFaixas() {
     const html = htmlPacotesDia();
     document.querySelectorAll("[data-pd]").forEach((el) => (el.innerHTML = html));
+    if (visivel && aba === "remessas") renderRemessas();
     if (document.querySelector("[data-eq]")) {
       const h = htmlEquipes();
       document.querySelectorAll("[data-eq]").forEach((el) => (el.innerHTML = h));
@@ -1913,7 +2089,7 @@
   });
   setInterval(() => {
     if (document.hidden) return;
-    if (mlVisivel || (visivel && (aba === "prazos" || aba === "equipes"))) carregarPacotesDia();
+    if (mlVisivel || (visivel && ["prazos", "equipes", "remessas"].includes(aba))) carregarPacotesDia();
   }, 60_000);
 
   // =====================================================================
