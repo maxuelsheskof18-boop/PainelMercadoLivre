@@ -178,7 +178,8 @@
   .sp-ped-msg { padding: 8px 12px; font-size: 12px; color: var(--text-soft); background: #fffbeb; border-top: 1px solid var(--border); white-space: pre-wrap; }
   .sp-mini-copiar { border: none; background: none; cursor: pointer; color: var(--muted); padding: 0 0 0 4px; font: inherit; }
   .sp-mini-copiar:hover { color: var(--shopee-escuro); }
-  .sp-ctx-btn { display: none; margin-left: auto; }
+  .sp-thread-acoes { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+  .sp-ctx-btn { display: none; }
   .sp-zoom { position: fixed; inset: 0; z-index: 1000; background: rgba(15,23,42,.82); display: grid; place-items: center; padding: 24px; cursor: zoom-out; }
   .sp-zoom img, .sp-zoom video { max-width: 100%; max-height: 100%; border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.4); cursor: default; }
   @media (max-width: 1280px) {
@@ -1134,7 +1135,8 @@
       <section><h4>Pedido${peds.length > 1 ? "s" : ""} citado${peds.length > 1 ? "s" : ""}</h4>
         <div class="sp-ctx-lista">${peds.length ? peds.map(cartaoPedido).join("") : '<div class="sp-ctx-vazio">Nenhum pedido citado nesta conversa.</div>'}</div></section>
       ${pedsProd.length ? `<section><h4>Anúncios dos pedidos</h4><div class="sp-ctx-lista">${pedsProd.map((p) => cartaoProduto(p)).join("")}</div></section>` : ""}
-      ${(ctxAberto.erros || []).length ? `<div class="shopee-aviso erro" style="font-size:12px">${esc(traduzErro(ctxAberto.erros[0]))}</div>` : ""}`;
+      ${(ctxAberto.erros || []).length ? `<div class="shopee-aviso erro" style="font-size:12px">${esc(traduzErro(ctxAberto.erros[0]))}</div>` : ""}
+      ${conversaAberta ? `<a class="muted small" style="margin-top:auto" target="_blank" rel="noopener" href="/api/debug/shopee-conversa?shopId=${encodeURIComponent(conversaAberta.shopId)}&conversa=${encodeURIComponent(conversaAberta.id)}">Dados técnicos desta conversa ↗</a>` : ""}`;
   }
 
   function abrirZoom(url, video) {
@@ -1166,7 +1168,10 @@
         <button type="button" class="btn btn-ghost btn-sm sp-voltar" id="sp-voltar">←</button>
         <div class="sp-avatar" style="--sp-loja:${corLoja(c.shopId)};width:34px;height:34px;font-size:13px">${esc(c.comprador.charAt(0).toUpperCase())}</div>
         <div style="min-width:0"><div style="font-weight:700">${esc(c.comprador)}</div><div style="margin-top:2px">${chipLoja(c.shopId, c.loja)}</div></div>
-        <button type="button" class="btn btn-ghost btn-sm sp-ctx-btn" id="sp-ctx-btn">ℹ Detalhes</button>
+        <div class="sp-thread-acoes">
+          <a class="btn btn-ghost btn-sm" id="sp-abrir-shopee" href="https://seller.shopee.com.br/webchat/conversations" target="_blank" rel="noopener" title="Abre o chat da Central do Vendedor e copia o nome do comprador para colar na busca">Abrir na Shopee ↗</a>
+          <button type="button" class="btn btn-ghost btn-sm sp-ctx-btn" id="sp-ctx-btn">ℹ Detalhes</button>
+        </div>
       </div>
       <div class="sp-thread-meio">
         <div class="sp-msgs" id="sp-msgs"><div class="sp-thread-vazio">Carregando mensagens...</div></div>
@@ -1205,6 +1210,14 @@
     );
     $("sp-enviar").addEventListener("click", enviar);
     $("sp-ctx-btn").addEventListener("click", () => t.classList.toggle("ctx-aberto"));
+    // A Shopee nao tem link direto para uma conversa: abre o chat do vendedor
+    // e deixa o nome do comprador copiado para colar na busca de la.
+    $("sp-abrir-shopee").addEventListener("click", () => {
+      navigator.clipboard?.writeText(c.comprador).catch(() => {});
+      const b = $("sp-abrir-shopee");
+      b.textContent = `"${c.comprador}" copiado ✓`;
+      setTimeout(() => b && (b.textContent = "Abrir na Shopee ↗"), 2500);
+    });
     // Anexos (zoom), copiar pedido/rastreio. #sp-thread so e recriado junto
     // com a tela do chat: registra uma vez por elemento.
     if (!t.dataset.ouvindo) {
