@@ -160,6 +160,8 @@ async function coletarLoja(conta) {
     saidos.set(o.order_sn, {
       saiuEm: Number(o.pickup_done_time) * 1000,
       transportadora: o.shipping_carrier || (o.package_list || [])[0]?.shipping_carrier || "",
+      // Horario da venda: define a remessa (tela Remessas).
+      criadoEm: o.create_time ? Number(o.create_time) * 1000 : null,
     });
   const hoje = diaSP(Date.now());
   const saiuHoje = (o) => Number(o.pickup_done_time) > 0 && diaSP(Number(o.pickup_done_time) * 1000) === hoje;
