@@ -416,13 +416,16 @@ router.get("/api/pacotes-dia/ml-saiu-hoje", requireLogin, async (req, res) => {
     const { rows: tem } = await db.query("SELECT to_regclass('prazos_envios') AS t");
     if (!tem[0]?.t) return res.json({ total: 0, porConta: [], semHistorico: true });
     const { rows } = await db.query(
-      `SELECT conta, count(*)::int AS total
+      `SELECT conta, modalidade, count(*)::int AS total
          FROM prazos_envios
         WHERE saiu_em >= (date_trunc('day', now() AT TIME ZONE 'America/Sao_Paulo') AT TIME ZONE 'America/Sao_Paulo')
           AND status_final IS DISTINCT FROM 'cancelled'
-        GROUP BY conta`
+        GROUP BY conta, modalidade`
     );
-    res.json({ total: rows.reduce((s, r) => s + r.total, 0), porConta: rows });
+    // porModalidade: as equipes se dividem por modalidade (flex x coleta/agencia).
+    const porModalidade = {};
+    for (const r of rows) porModalidade[r.modalidade || "?"] = (porModalidade[r.modalidade || "?"] || 0) + r.total;
+    res.json({ total: rows.reduce((s, r) => s + r.total, 0), porConta: rows, porModalidade });
   } catch (err) {
     erro500(res, err);
   }
