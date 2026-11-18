@@ -20,7 +20,9 @@ const ABERTOS = new Set(["REQUESTED", "PROCESSING", "JUDGING", "SELLER_DISPUTE"]
 async function daLoja(conta) {
   const shopId = String(conta.shop_id);
   const fim = Math.floor(Date.now() / 1000);
+  const limite = fim - 4 * 15 * DIA;
   const lista = [];
+  const vistos = new Set();
   // Janela maxima da API: 15 dias por consulta -> 4 janelas = 60 dias.
   for (let j = 0; j < 4; j++) {
     const to = fim - j * 15 * DIA;
@@ -29,7 +31,15 @@ async function daLoja(conta) {
         query: { page_no: pagina, page_size: 100, create_time_from: to - 15 * DIA + 1, create_time_to: to },
       });
       const resp = r.response || {};
+      // Sem filtro a Shopee devolve as mais ANTIGAS primeiro (loja real,
+      // 18/11: 2022 na pagina 0). Se o filtro de data for ignorado, isto
+      // evita repetir a mesma lista em cada janela e mostrar coisa velha.
+      let foraDaJanela = 0;
       for (const d of resp.return || []) {
+        const criada = Number(d.create_time || 0);
+        if (criada < to - 15 * DIA || criada > to) foraDaJanela++;
+        if (criada < limite || vistos.has(String(d.return_sn))) continue;
+        vistos.add(String(d.return_sn));
         const itens = (d.item || []).map((i) => ({
           nome: i.name || i.item_name || `Item ${i.item_id}`,
           qtd: Number(i.amount || 1),
@@ -51,10 +61,12 @@ async function daLoja(conta) {
           atualizadaEm: d.update_time ? d.update_time * 1000 : null,
           responderAte: d.due_date ? d.due_date * 1000 : null,
           negociacao: d.negotiation?.negotiation_status || null,
-          fotos: (d.image || d.images || []).length,
+          fotos: (d.image || d.images || []).length + (d.buyer_videos || []).length,
+          contestacao: (d.dispute_text_reason || [])[0] || null,
           itens,
         });
       }
+      if (foraDaJanela) return lista; // filtro ignorado: nao adianta paginar 60 dias assim
       if (!resp.more) break;
     }
   }

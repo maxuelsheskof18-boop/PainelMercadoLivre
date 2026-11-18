@@ -99,7 +99,8 @@ function montarPedido(shopId, nomeLoja, o) {
   const itens = (o.item_list || []).map((i) => ({
     nome: i.item_name || i.model_name || `Item ${i.item_id}`,
     variacao: i.model_name || "",
-    sku: i.model_sku || i.item_sku || "",
+    // SKU real veio com TAB na frente ("	1A789...") em 18/11.
+    sku: String(i.model_sku || i.item_sku || "").trim(),
     qtd: Number(i.model_quantity_purchased || i.quantity || 1),
     imagem: i.image_info?.image_url || null,
   }));
@@ -129,9 +130,13 @@ async function coletarLoja(conta) {
   for (const o of detalhes) {
     if (Number(o.pickup_done_time) > 0) continue; // ja saiu
     const p = montarPedido(shopId, nome, o);
-    const m = await modalidade(shopId, o.order_sn);
-    p.modalidade = m.modalidade;
-    p.coletaTexto = m.coletaTexto;
+    // get_shipping_parameter so responde antes de organizar o envio. Na loja
+    // real (18/11) quase tudo ja chega PROCESSED — sem isso seriam dezenas de
+    // chamadas inuteis por ciclo.
+    const m =
+      o.order_status === "READY_TO_SHIP" ? await modalidade(shopId, o.order_sn) : cacheModalidade.get(o.order_sn) || {};
+    p.modalidade = m.modalidade || null;
+    p.coletaTexto = m.coletaTexto || null;
     pedidos.push(p);
   }
   return pedidos;

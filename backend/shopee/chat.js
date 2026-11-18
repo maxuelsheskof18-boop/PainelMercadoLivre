@@ -99,14 +99,16 @@ async function listarConversas({ forcar = false } = {}) {
   return { conversas, erros };
 }
 
-async function mensagens(shopId, conversationId) {
+async function mensagens(shopId, conversationId, compradorId) {
   const r = await shopee.chamarLoja(shopId, "/api/v2/sellerchat/get_message", {
     query: { conversation_id: conversationId, page_size: 60 },
   });
   const lista = (r.response?.messages || []).map((m) => ({
     id: String(m.message_id),
     tipo: m.message_type,
-    daLoja: String(m.from_shop_id || "") === String(shopId),
+    // from_id do vendedor e o ID de USUARIO dele, diferente do shop_id (visto
+    // na loja real em 18/11). Por isso compara com o comprador.
+    daLoja: compradorId ? String(m.from_id) !== String(compradorId) : String(m.from_shop_id || "") === String(shopId),
     texto: textoDaMensagem(m.message_type, m.content || {}),
     imagem: m.message_type === "image" ? m.content?.url || m.content?.thumb_url || null : null,
     pedido: m.content?.order_sn || null,
