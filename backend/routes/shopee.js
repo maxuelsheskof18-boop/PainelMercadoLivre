@@ -346,8 +346,8 @@ async function sondarLoja(shopId) {
 // Uso: /api/debug/shopee-conversa?shopId=...&conversa=...  (o painel mostra o link)
 router.get("/api/debug/shopee-conversa", requireLogin, async (req, res) => {
   try {
-    const msgs = await chat.mensagensCruas(req.query.shopId, req.query.conversa);
-    res.json({ total: msgs.length, mensagens: msgs.map((m) => resumir(m)) });
+    const { mensagens: msgs, paginas } = await chat.mensagensCruas(req.query.shopId, req.query.conversa);
+    res.json({ total: msgs.length, paginas, mensagens: msgs.map((m) => resumir(m)) });
   } catch (err) {
     erro500(res, err);
   }
