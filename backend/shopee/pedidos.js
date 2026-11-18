@@ -155,13 +155,18 @@ async function coletarLoja(conta) {
   const aguardando = await listarPorStatus(shopId, "PROCESSED");
   const detalhes = await detalhar(shopId, [...new Set([...aOrganizar, ...aguardando])]);
   const pedidos = [];
-  const saidos = new Map(); // order_sn -> saiuEm (ms)
+  const saidos = new Map(); // order_sn -> { saiuEm (ms), transportadora }
+  const marcarSaida = (o) =>
+    saidos.set(o.order_sn, {
+      saiuEm: Number(o.pickup_done_time) * 1000,
+      transportadora: o.shipping_carrier || (o.package_list || [])[0]?.shipping_carrier || "",
+    });
   const hoje = diaSP(Date.now());
   const saiuHoje = (o) => Number(o.pickup_done_time) > 0 && diaSP(Number(o.pickup_done_time) * 1000) === hoje;
   for (const o of detalhes) {
     if (Number(o.pickup_done_time) > 0) {
       // ja saiu
-      if (saiuHoje(o)) saidos.set(o.order_sn, Number(o.pickup_done_time) * 1000);
+      if (saiuHoje(o)) marcarSaida(o);
       continue;
     }
     const p = montarPedido(shopId, nome, o);
@@ -183,14 +188,14 @@ async function coletarLoja(conta) {
     for (const st of ["SHIPPED", "TO_CONFIRM_RECEIVE"]) enviados.push(...(await listarAtualizados(shopId, st, desde)));
     const faltam = [...new Set(enviados)].filter((sn) => !saidos.has(sn));
     for (const o of await detalhar(shopId, faltam)) {
-      if (saiuHoje(o)) saidos.set(o.order_sn, Number(o.pickup_done_time) * 1000);
+      if (saiuHoje(o)) marcarSaida(o);
     }
   } catch (err) {
     console.error(`[shopee-prazos] enviados hoje ${shopId}:`, err.message);
   }
   return {
     pedidos,
-    saidos: [...saidos].map(([orderSn, saiuEm]) => ({ shopId, loja: nome, orderSn, saiuEm })),
+    saidos: [...saidos].map(([orderSn, s]) => ({ shopId, loja: nome, orderSn, ...s })),
   };
 }
 
