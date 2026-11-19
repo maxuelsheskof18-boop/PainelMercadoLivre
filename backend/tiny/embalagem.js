@@ -112,6 +112,8 @@ function garantirTabela() {
            visto_em TIMESTAMPTZ NOT NULL
          )`
       )
+      // Forma de envio (Shopee Envios, TikTok Shipping...): ritmo por canal.
+      .then(() => db.query("ALTER TABLE tiny_embalados ADD COLUMN IF NOT EXISTS forma TEXT"))
       .then(() =>
         db.query(
           `CREATE TABLE IF NOT EXISTS tiny_formas_envio (
@@ -217,7 +219,8 @@ async function coletarConta(c) {
         const [d, m, a] = String(s.dataCheckout || "").split("/");
         const outroDia = s.dataCheckout && s.dataCheckout !== dataBR(Date.now());
         const vistoEm = outroDia && a ? Date.parse(`${a}-${m}-${d}T12:00:00-03:00`) : Date.now();
-        const e = { conta: c.nome, numero: s.numero, dataCheckout: s.dataCheckout || null, vistoEm, semHora: !!outroDia };
+        const forma = s.idFormaEnvio && s.idFormaEnvio !== "0" ? await nomeForma(c, s) : null;
+        const e = { conta: c.nome, numero: s.numero, dataCheckout: s.dataCheckout || null, vistoEm, semHora: !!outroDia, forma };
         estado.embalados.set(num, e);
         novos.push([num, e]);
       }
@@ -227,15 +230,77 @@ async function coletarConta(c) {
   for (const [num, e] of novos) {
     await db
       .query(
-        `INSERT INTO tiny_embalados (numero_ecommerce, conta, numero, data_checkout, visto_em)
-         VALUES ($1,$2,$3,$4,to_timestamp($5 / 1000.0)) ON CONFLICT (numero_ecommerce) DO NOTHING`,
-        [num, e.conta, e.numero, e.dataCheckout, e.vistoEm]
+        `INSERT INTO tiny_embalados (numero_ecommerce, conta, numero, data_checkout, visto_em, forma)
+         VALUES ($1,$2,$3,$4,to_timestamp($5 / 1000.0),$6) ON CONFLICT (numero_ecommerce) DO NOTHING`,
+        [num, e.conta, e.numero, e.dataCheckout, e.vistoEm, e.forma]
       )
       .catch(() => {});
   }
   // Esquece TikTok/Amazon desta conta que sairam da janela da consulta.
   for (const [num, p] of estado.mkt) if (p.conta === c.nome && !vistosMkt.has(num)) estado.mkt.delete(num);
   estado.contas[c.nome] = { ok: true, erro: null, total, chamadas, atualizadoEm: Date.now() };
+}
+
+// HISTORICO DE 15 DIAS (ideia do usuario, 19/11): o Tiny nao da a hora da
+// embalagem, entao o ritmo de cada dia = (das 9h ate o fim da operacao) /
+// pacotes embalados naquele dia. Aqui so juntamos QUANTOS foram embalados por
+// dia e forma de envio; a conta fica na rota /api/pacotes-dia/ritmo.
+// Roda 1x por dia (~20 chamadas nas 3 contas), guardado em tiny_embalados_dia.
+let historicoFeitoEm = null; // "AAAA-MM-DD" do ultimo historico
+async function historico15() {
+  const hoje = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+  if (historicoFeitoEm === hoje) return;
+  await db.query(
+    `CREATE TABLE IF NOT EXISTS tiny_embalados_dia (
+       dia DATE NOT NULL,
+       forma TEXT NOT NULL,
+       qtd INT NOT NULL,
+       PRIMARY KEY (dia, forma)
+     )`
+  );
+  // Ja feito hoje (ex.: Render reiniciou)? Nao repete.
+  const { rows: marca } = await db.query("SELECT 1 FROM tiny_embalados_dia WHERE dia = $1::date AND forma = '__historico__' LIMIT 1", [hoje]);
+  if (marca.length) {
+    historicoFeitoEm = hoje;
+    return;
+  }
+  const contagem = new Map(); // "AAAA-MM-DD|forma" -> qtd
+  for (const c of contas()) {
+    const info = estado.contas[c.nome] || {};
+    if (info.pausadoAte && info.pausadoAte > Date.now()) return; // tenta mais tarde
+    for (let pagina = 1; pagina <= 40; pagina++) {
+      const r = await chamar(c.token, "separacao.pesquisa.php", {
+        situacao: "3",
+        dataInicial: dataBR(Date.now() - 15 * 864e5),
+        pagina: String(pagina),
+      });
+      if (r.status !== "OK") {
+        const msg = textoErros(r);
+        if (/n[aã]o retornou registros/i.test(msg)) break;
+        if (/bloquead|excedid|limite/i.test(msg)) return; // tenta no proximo ciclo
+        throw new Error(msg);
+      }
+      for (const x of r.separacoes || []) {
+        const s = x.separacao || x;
+        const dia = isoDeBR(s.dataCheckout);
+        if (!dia || dia >= hoje) continue; // so dias completos
+        const forma = s.idFormaEnvio && s.idFormaEnvio !== "0" ? await nomeForma(c, s) : "";
+        const k = `${dia}|${forma || "?"}`;
+        contagem.set(k, (contagem.get(k) || 0) + 1);
+      }
+      if (pagina >= Number(r.numero_paginas || 1)) break;
+    }
+  }
+  for (const [k, qtd] of contagem) {
+    const [dia, forma] = k.split("|");
+    await db.query(
+      "INSERT INTO tiny_embalados_dia (dia, forma, qtd) VALUES ($1,$2,$3) ON CONFLICT (dia, forma) DO UPDATE SET qtd = EXCLUDED.qtd",
+      [dia, forma, qtd]
+    );
+  }
+  await db.query("INSERT INTO tiny_embalados_dia (dia, forma, qtd) VALUES ($1, '__historico__', 0) ON CONFLICT DO NOTHING", [hoje]);
+  await db.query("DELETE FROM tiny_embalados_dia WHERE dia < now() - interval '40 days'");
+  historicoFeitoEm = hoje;
 }
 
 async function coletar({ forcar = false } = {}) {
@@ -253,6 +318,7 @@ async function coletar({ forcar = false } = {}) {
       }
     }
     estado.atualizadoEm = Date.now();
+    await historico15().catch((err) => console.error("[tiny-historico]", err.message));
   } catch (err) {
     console.error("[tiny-embalagem]", err.message);
   } finally {
