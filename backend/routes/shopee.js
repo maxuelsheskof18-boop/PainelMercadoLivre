@@ -518,6 +518,9 @@ router.get("/api/shopee/devolucoes", requireLogin, async (req, res) => {
 
 // Coletor de prazos sobe junto com o modulo (assim server.js nao precisa
 // de mais nenhuma linha). Sem chaves configuradas, cada ciclo so retorna.
-if (process.env.NODE_ENV !== "test") pedidos.iniciar();
+if (process.env.NODE_ENV !== "test") {
+  pedidos.iniciar();
+  require("../tiny/embalagem").iniciar();
+}
 
 module.exports = router;
