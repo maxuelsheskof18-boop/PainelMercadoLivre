@@ -51,8 +51,19 @@ const estado = {
 function contas() {
   const out = [];
   for (let i = 1; i <= 5; i++) {
-    const token = (process.env[`TINY_CONTA_${i}_TOKEN`] || "").trim();
-    if (token) out.push({ nome: process.env[`TINY_CONTA_${i}_NOME`] || `Conta ${i}`, token });
+    let token = (process.env[`TINY_CONTA_${i}_TOKEN`] || "").trim();
+    let nome = process.env[`TINY_CONTA_${i}_NOME`] || "";
+    // Tambem aceita o formato criado no Render em 19/11:
+    // TINY_CONTA_1_COMERCIO = <token>  (o nome da conta no lugar de TOKEN).
+    if (!token) {
+      const chave = Object.keys(process.env).find((k) => new RegExp(`^TINY_CONTA_${i}_(?!NOME$|TOKEN$)\\w+$`).test(k));
+      if (chave) {
+        token = (process.env[chave] || "").trim();
+        const s = chave.replace(`TINY_CONTA_${i}_`, "").toLowerCase();
+        nome = nome || s.charAt(0).toUpperCase() + s.slice(1);
+      }
+    }
+    if (token) out.push({ nome: nome || `Conta ${i}`, token });
   }
   return out;
 }
