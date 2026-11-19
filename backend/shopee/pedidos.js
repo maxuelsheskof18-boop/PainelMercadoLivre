@@ -279,6 +279,7 @@ function snapshot() {
     saidosHoje: estado.saidos.filter((s) => diaSP(s.saiuEm) === diaSP(agora)),
     // Embalagem no Tiny (no lugar do "impresso", que a Shopee nao informa).
     tiny: tiny.resumo(),
+    tinyMkt: tiny.mkt(),
     pedidos: estado.pedidos
       .map((p) => ({ ...p, situacao: situacao(p, agora), embaladoEm: tiny.embalado(p.orderSn)?.vistoEm || null, embaladoSemHora: !!tiny.embalado(p.orderSn)?.semHora }))
       .sort((a, b) => (a.prazo || Infinity) - (b.prazo || Infinity)),
