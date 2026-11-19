@@ -1649,7 +1649,7 @@
   // TikTok ainda nao esta ligado ao painel (entra quando tiver a API).
   const EQUIPES = [
     { id: "bahia", nome: "Equipe Bahia", cor: "#2563eb", canais: "SPX · Flex · Shopee", ordem: ["SPX", "Flex", "Shopee"], mlModalidades: ["flex"], shopee: true },
-    { id: "mathias", nome: "Equipe Mathias", cor: "#7c3aed", canais: "ML coleta · ML agência · TikTok", ordem: ["ML coleta", "ML agência", "TikTok"], mlModalidades: ["coleta", "agencia"], shopee: false },
+    { id: "mathias", nome: "Equipe Mathias", cor: "#7c3aed", canais: "ML coleta · ML agência · TikTok · Amazon", ordem: ["ML coleta", "ML agência", "TikTok", "Amazon"], mlModalidades: ["coleta", "agencia"], shopee: false, tiny: ["tiktok", "amazon"] },
   ];
   const NOME_MOD = { flex: "Flex", coleta: "ML coleta", agencia: "ML agência" };
   let verEquipe = lerPref("verEquipe", "todas");
@@ -1738,6 +1738,23 @@
         }
       } else if (estado?.contas?.length) r.carregando = true;
     }
+    // TikTok / Amazon pela separacao do Tiny (19/11).
+    if (eq.tiny && prazos?.tinyMkt) {
+      const NOME_TINY = { tiktok: "TikTok", amazon: "Amazon" };
+      for (const p of prazos.tinyMkt) {
+        if (!eq.tiny.includes(p.canal)) continue;
+        const nome = NOME_TINY[p.canal];
+        if (p.saiu) {
+          if (p.saiuEm && diaSP(p.saiuEm) === hoje) {
+            r.saiu++;
+            r.saiuPor[nome] = (r.saiuPor[nome] || 0) + 1;
+          }
+        } else {
+          r.falta++;
+          r.partes[nome] = (r.partes[nome] || 0) + 1;
+        }
+      }
+    }
     return r;
   }
 
@@ -1763,8 +1780,8 @@
           <span></span><span class="cab">Faltam</span><span class="cab">Já saíram</span>
           ${canais
             .map((n) =>
-              n === "TikTok"
-                ? `<span class="nome">${n}</span><span class="embreve">em breve</span><span></span>`
+              (n === "TikTok" || n === "Amazon") && !prazos?.tiny?.configurado
+                ? `<span class="nome">${n}</span><span class="embreve">ligar o Tiny</span><span></span>`
                 : `<span class="nome">${esc(n)}</span><span class="${c.partes[n] ? "" : "zero"}">${c.carregando ? "–" : c.partes[n] || 0}</span><span class="ok ${c.saiuPor[n] ? "" : "zero"}">${c.saiuPor[n] || 0}</span>`
             )
             .join("")}
@@ -2062,7 +2079,7 @@
       <div class="sp-equipes" data-eq>${htmlEquipes()}</div>
       <div class="muted small sp-eq-nota">Pacotes que precisam sair hoje (Mercado Livre + Shopee), divididos pelas equipes do app de separação.
         O relógio conta o tempo até o horário "Terminar até" (vazio = próximo limite da plataforma). "Precisa" = pacotes que faltam × minutos por pacote ÷ pessoas — ajuste em cada equipe (fica salvo neste navegador).
-        TikTok entra na equipe Mathias quando estiver ligado ao painel.</div>`;
+        TikTok e Amazon vêm da separação do dia no Tiny (o que já foi enviado para separação).</div>`;
   }
 
   function htmlPacotesDia() {
