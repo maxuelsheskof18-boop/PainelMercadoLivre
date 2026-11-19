@@ -329,6 +329,15 @@
   .pd-eq-det { font-size: 12px; color: var(--muted); }
   .pd-eq-canais .pronto { color: #7c3aed !important; }
   .rm-ritmo { font-size: 12px; color: var(--text-soft); }
+  .rm-tempo { width: 100%; font-size: 12px; color: var(--text-soft); }
+  .rm-recorde { margin-left: 4px; font-weight: 700; color: #b45309; }
+  .rm-peds { font-size: 12px; }
+  .rm-peds summary { cursor: pointer; font-weight: 600; color: var(--text-soft); }
+  .rm-peds table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  .rm-peds th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 3px 6px; border-bottom: 1px solid var(--border); }
+  .rm-peds td { padding: 4px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .rm-peds td:last-child { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rm-peds .pz-copiar { margin-left: 4px; border: none; background: none; cursor: pointer; color: var(--muted); }
   .rm-relogio { font-size: 12.5px; color: var(--text-soft); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border-radius: 10px; background: var(--bg); }
   .rm-relogio.ok { background: color-mix(in srgb, var(--rm) 8%, #fff); }
   .rm-rel-n { font-size: 22px; font-weight: 800; color: var(--rm); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
@@ -1624,7 +1633,21 @@
   // Canais embalados no Tiny (sem hora medida ainda): usa o ritmo de embalagem
   // da equipe nos ultimos 15 dias (das 9h ate o fim / pacotes do dia).
   const CANAL_TINY = new Set(["shopee", "tiktok", "amazon"]);
-  const minCanal = (chave, equipeId) =>
+  // Recorde (melhor dia, volume parecido) vale como meta; senao a media.
+  function ritmoDe(chave, equipeId) {
+    const rc = ritmo?.recordes?.[`canal:${chave}`];
+    if (rc) return { m: rc.minPorPacote, recorde: rc };
+    if (minMedido(chave)) return { m: minMedido(chave), recorde: null };
+    if (CANAL_TINY.has(chave)) {
+      const re = ritmo?.recordes?.[`equipe:${equipeId}`];
+      if (re) return { m: re.minPorPacote, recorde: re };
+      const me = ritmo?.equipes?.[equipeId]?.minPorPacote;
+      if (me) return { m: me, recorde: null };
+    }
+    return { m: null, recorde: null };
+  }
+  const minCanal = (chave, equipeId) => ritmoDe(chave, equipeId).m;
+  const minCanalAntigo = (chave, equipeId) =>
     minMedido(chave) || (CANAL_TINY.has(chave) ? ritmo?.equipes?.[equipeId]?.minPorPacote || null : null);
   const paneML = document.getElementById("prazos-pane");
   let faixaML = null;
@@ -1989,8 +2012,34 @@
   // 15 min para justificar; depois, atraso sem justificativa.
   const MOTIVOS = ["Falta de produto", "Separação", "Produto não encontrado", "Outro"];
   const fmtMin = (min) => (min < 60 ? `${min} min` : `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}`);
+  // Pedidos que faltam na remessa (numero + conta), aberto/fechado lembrado
+  // entre as atualizacoes da tela.
+  const pendAbertos = new Set();
+  document.addEventListener(
+    "toggle",
+    (ev) => {
+      const d = ev.target;
+      if (!d.matches?.("[data-rm-pend]")) return;
+      d.open ? pendAbertos.add(d.dataset.rmPend) : pendAbertos.delete(d.dataset.rmPend);
+    },
+    true
+  );
+  function listaPendentes(cat, k, x, ehML) {
+    if (!x.pend.length) return "";
+    const chave = `${cat.id}|${k + 1}`;
+    const verbo = ehML ? "imprimir" : "embalar";
+    return `<details class="rm-peds" data-rm-pend="${chave}" ${pendAbertos.has(chave) ? "open" : ""}>
+      <summary>Ver os ${x.pend.length} pedido${x.pend.length === 1 ? "" : "s"} que falta${x.pend.length === 1 ? "" : "m"} ${verbo}</summary>
+      <table><thead><tr><th>Pedido</th><th>Conta / loja</th><th>Produto</th></tr></thead><tbody>${x.pend
+        .map(
+          (d) => `<tr><td><span class="sp-sn">${esc(d.num)}</span><button type="button" class="pz-copiar" data-sp-copiar="${esc(d.num)}" title="Copiar">⧉</button></td><td>${esc(d.conta || "")}</td><td title="${esc(d.sku)}">${esc(d.prod || "")}</td></tr>`
+        )
+        .join("")}</tbody></table>
+    </details>`;
+  }
+
   function relogioRemessa(cat, k, x, cortes, ehML) {
-    const m = minCanal(RITMO_CAT[cat.id], cat.equipe);
+    const { m, recorde } = ritmoDe(RITMO_CAT[cat.id], cat.equipe);
     if (!m || !x.total) return "";
     const agora = Date.now();
     const hoje = diaSP(agora);
@@ -1999,6 +2048,13 @@
     const resta = x.falta - x.embalado;
     const o = ocorr[`${cat.id}|${k + 1}`];
     const verbo = ehML ? "imprimir" : "embalar";
+    // Tempo por pacote e total da remessa (sempre visivel).
+    const dataBR = (iso) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : "");
+    const info = `<div class="rm-tempo">⏱ <b>${String(m).replace(".", ",")} min</b> por pacote · remessa toda: <b>${fmtMin(
+      Math.ceil(x.total * m)
+    )}</b>${resta > 0 ? ` · faltam ~<b>${fmtMin(Math.ceil(resta * m))}</b>` : ""}${
+      recorde ? ` <span class="rm-recorde" title="Melhor dia: ${recorde.pacotes} pacotes">🏆 meta do recorde de ${dataBR(recorde.dia)}</span>` : ""
+    }</div>`;
     if (resta <= 0) {
       if (!o?.finalizadaEm && !finalizadasEnviadas.has(`${cat.id}|${k + 1}`)) {
         finalizadasEnviadas.add(`${cat.id}|${k + 1}`);
@@ -2016,11 +2072,11 @@
       }</div>`;
     }
     if (agora < ini) {
-      return `<div class="rm-relogio">🕘 Começa às ${hhmm(ini)} · ${resta} para ${verbo} · tem até <b>${hhmm(prazo)}</b></div>`;
+      return `<div class="rm-relogio">🕘 Começa às ${hhmm(ini)} · ${resta} para ${verbo} · tem até <b>${hhmm(prazo)}</b>${info}</div>`;
     }
     if (agora < prazo) {
       return `<div class="rm-relogio ok"><span class="rm-rel-n" data-contagem="${prazo}">${contagem(prazo - agora)}</span>
-        <span>para finalizar · até <b>${hhmm(prazo)}</b> · ${resta} para ${verbo}</span></div>`;
+        <span>para finalizar · até <b>${hhmm(prazo)}</b> · ${resta} para ${verbo}</span>${info}</div>`;
     }
     const atraso = Math.floor((agora - prazo) / 60e3);
     const botoes = (rotulo) => `<div class="rm-just"><span>${rotulo}</span>${MOTIVOS.map(
@@ -2029,16 +2085,16 @@
     if (o?.motivo) {
       return `<div class="rm-relogio just">⚠ Atrasada <b>+${fmtMin(atraso)}</b> · justificado: <b>${esc(o.motivo)}</b>${
         o.obs ? ` — ${esc(o.obs)}` : ""
-      }${o.quem ? ` (${esc(o.quem)})` : ""} · ${resta} para ${verbo}</div>`;
+      }${o.quem ? ` (${esc(o.quem)})` : ""} · ${resta} para ${verbo}${info}</div>`;
     }
     const limiteJust = prazo + 15 * 60e3;
     if (agora < limiteJust) {
       return `<div class="rm-relogio alerta">⏰ Passou do tempo! ${resta} ainda para ${verbo}.
         Justifique em <b><span data-contagem="${limiteJust}">${contagem(limiteJust - agora)}</span></b> ou revise (procurar o produto, separação...)
-        ${botoes("O que aconteceu?")}</div>`;
+        ${info}${botoes("O que aconteceu?")}</div>`;
     }
     return `<div class="rm-relogio atraso">🔴 Atraso sem justificativa <b>+${fmtMin(atraso)}</b> · ${resta} para ${verbo}
-      ${botoes("Justificar agora:")}</div>`;
+      ${info}${botoes("Justificar agora:")}</div>`;
   }
 
   function renderRemessas() {
@@ -2060,7 +2116,13 @@
     const vistas = {};
     if (temShopee) {
       for (const p of prazos.pedidos.filter((x) => passaLoja(x.shopId))) {
-        itens.push({ cat: categoriaShopee(p.transportadora), venda: p.criadoEm || p.pagoEm, saiu: false, embalado: !!p.embaladoEm });
+        itens.push({
+          cat: categoriaShopee(p.transportadora),
+          venda: p.criadoEm || p.pagoEm,
+          saiu: false,
+          embalado: !!p.embaladoEm,
+          det: { num: p.orderSn, conta: p.loja, prod: (p.itens || []).map((i) => `${i.qtd}× ${i.nome}`).join(" · "), sku: (p.itens || []).map((i) => i.sku).filter(Boolean).join(", ") },
+        });
         vistas[p.transportadora || "(sem transportadora)"] = (vistas[p.transportadora || "(sem transportadora)"] || 0) + 1;
       }
       for (const s of (prazos.saidosHoje || []).filter((x) => passaLoja(x.shopId))) {
@@ -2071,7 +2133,16 @@
     if (temML) {
       for (const e of mlPrazos.envios) {
         if (!ML_CATS.includes(e.modalidade)) continue;
-        itens.push({ cat: e.modalidade, venda: e.criadoEm ? Date.parse(e.criadoEm) : null, saiu: false, ml: true, situacao: e.situacao, prazo: e.prazo, embalado: e.situacao === "impresso" });
+        itens.push({
+          cat: e.modalidade,
+          venda: e.criadoEm ? Date.parse(e.criadoEm) : null,
+          saiu: false,
+          ml: true,
+          situacao: e.situacao,
+          prazo: e.prazo,
+          embalado: e.situacao === "impresso",
+          det: { num: e.venda, conta: e.conta, prod: (e.itens || []).map((i) => `${i.qtd}× ${i.titulo}`).join(" · "), sku: "" },
+        });
       }
       for (const e of mlSaiuHoje?.envios || []) itens.push({ cat: e.modalidade, venda: e.vendaAprox, saiu: true, ml: true });
     }
@@ -2080,7 +2151,7 @@
     const cards = cats.map((cat) => {
       const cortes = cortesDe(cat);
       const meus = itens.filter((i) => i.cat === cat.id);
-      const rem = cortes.map(() => ({ total: 0, saiu: 0, falta: 0, embalado: 0 }));
+      const rem = cortes.map(() => ({ total: 0, saiu: 0, falta: 0, embalado: 0, pend: [] }));
       let paraAmanha = 0;
       let anteriores = 0;
       let semHora = 0;
@@ -2111,6 +2182,7 @@
           x.total++;
           i.saiu ? x.saiu++ : x.falta++;
           if (!i.saiu && i.embalado) x.embalado++;
+          if (!i.saiu && !i.embalado && i.det) x.pend.push(i.det);
         } else if (r.dia === amanha) paraAmanha++;
         else if (r.dia < hoje && !i.saiu) anteriores++;
       }
@@ -2143,7 +2215,7 @@
                 : tinyLigado && x.falta
                   ? `<span class="rm-emb">📦 ${x.embalado} de ${x.falta} já embalados no Tiny</span>`
                   : ""
-            }${relogioRemessa(cat, k, x, cortes, ehML)}<div class="pd-acum-barra"><span style="width:${pct}%;background:var(--rm)"></span></div></div>
+            }${relogioRemessa(cat, k, x, cortes, ehML)}${listaPendentes(cat, k, x, ehML)}<div class="pd-acum-barra"><span style="width:${pct}%;background:var(--rm)"></span></div></div>
           </div>`;
         })
         .join("");
