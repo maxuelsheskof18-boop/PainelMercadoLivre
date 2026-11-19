@@ -300,6 +300,14 @@
   .rm-rodape { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-soft); }
   .rm-alerta { color: #b91c1c; }
   @media (max-width: 900px) { .rm-grade { grid-template-columns: 1fr; } }
+  .eq-remessas { display: flex; flex-direction: column; gap: 8px; }
+  .eq-sub { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .pd-eq-grade:not(.uma) .eq-remessas .rm-grade { grid-template-columns: 1fr; }
+  .eq-remessas .rm-card { padding: 12px 14px; gap: 8px; }
+  .eq-remessas .rm-topo b { font-size: 15px; }
+  .eq-remessas .rm-linha { padding: 8px 12px; }
+  .eq-remessas .rm-total span { font-size: 26px; }
+  .eq-remessas .sp-eq-nota { margin-top: 0; }
   .pd-eq-sel { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
   .pd-eq-sel button { border: 1px solid var(--border); background: var(--surface, #fff); border-radius: 999px; padding: 3px 11px; font: inherit; font-size: 12px; text-transform: none; letter-spacing: 0; color: var(--text-soft); cursor: pointer; }
   .pd-eq-sel button.ativo { background: var(--text); color: #fff; border-color: var(--text); }
@@ -467,8 +475,8 @@
     bRem.title = "Operação · Remessas do dia (por horário de venda)";
     bRem.innerHTML = `<span class="module-nav-icon">${svg('<rect x="3" y="4" width="18" height="5" rx="1"/><rect x="3" y="11" width="18" height="5" rx="1"/><path d="M7 20h10"/>')}</span><span class="module-nav-label">Remessas</span>`;
     bRem.addEventListener("click", () => irPara("remessas"));
-    bEq.after(bRem);
-    navAbas.remessas = bRem;
+    // Remessas nao tem item proprio: aparecem dentro de Equipes (pedido 18/11).
+    void bRem;
     for (const a of ABAS) {
       const badge = document.createElement("span");
       badge.id = `sp-conta-${a.id}`;
@@ -1761,7 +1769,17 @@
         // ---- RELOGIO: quanto tempo a equipe TEM para finalizar tudo ----
         // Alvo = "Terminar ate" que o lider definiu; sem isso, o primeiro
         // limite que ainda vai vencer. Precisa = faltam x ritmo.
-        const alvo = metaHoje(cfg.meta) || c.primeiroLimite || null;
+        // Prioridade: horario definido pelo lider > o que vencer primeiro entre
+        // o limite da plataforma e o corte da proxima remessa (so equipes com
+        // Shopee). Assim o relogio conversa com as remessas.
+        const candidatos = [
+          c.primeiroLimite && { ms: c.primeiroLimite, rot: "limite da plataforma" },
+          eq.shopee && proximoCorte(),
+        ].filter(Boolean);
+        const alvoInfo = cfg.meta
+          ? { ms: metaHoje(cfg.meta), rot: "horário definido" }
+          : candidatos.sort((a, b) => a.ms - b.ms)[0] || null;
+        const alvo = alvoInfo?.ms || null;
         const tem = alvo ? alvo - agora : null;
         const precisa = minutos * 60e3;
         const folga = tem !== null ? tem - precisa : null;
@@ -1774,7 +1792,7 @@
         };
         const veredito = {
           fim: "🎉 Tudo finalizado por hoje",
-          sem: `Precisa de ${fmtDur(precisa)} · defina "Terminar até"`,
+          sem: `⏱ ${fmtDur(precisa)} de trabalho · pronto ~${hhmm(termina)}`,
           passou: "⏰ O horário-alvo já passou",
           estoura: `⚠ Faltam ${fmtDur(-folga)} — reforce a equipe`,
           apertado: `⚡ Apertado: sobra só ${fmtDur(folga)}`,
@@ -1792,7 +1810,7 @@
           st === "fim"
             ? `<div class="eq-relogio-n">✓</div><div class="eq-relogio-rot">tudo pronto</div>`
             : alvo
-              ? `<div class="eq-relogio-n" data-contagem="${alvo}">${contagem(alvo - agora)}</div><div class="eq-relogio-rot">para finalizar tudo<br>até <b>${hhmm(alvo)}</b></div>`
+              ? `<div class="eq-relogio-n" data-contagem="${alvo}">${contagem(alvo - agora)}</div><div class="eq-relogio-rot">para finalizar tudo<br>até <b>${hhmm(alvo)}</b><br>${esc(alvoInfo.rot)}</div>`
               : `<div class="eq-relogio-n">${fmtDur(precisa)}</div><div class="eq-relogio-rot">de trabalho<br>no ritmo atual</div>`;
         return `<div class="pd-eq eq-st-${st}" style="--eq:${eq.cor};--st:${corSt}">
           <div class="pd-eq-topo"><b>${esc(eq.nome)}</b><span>${esc(eq.canais)}</span></div>
@@ -1814,6 +1832,7 @@
             </div>
           </div>
           ${tabelaCanais}
+          ${eq.shopee ? `<div class="eq-remessas"><div class="eq-sub">Remessas Shopee (por horário da venda)</div>${htmlRemessas()}</div>` : ""}
           ${c.antigos ? `<div class="pd-eq-det">+${c.antigos} atrasado(s) de dias anteriores fora da conta</div>` : ""}
           ${c.primeiroLimite && c.falta && cfg.meta ? `<div class="pd-eq-det">Próximo limite da plataforma: <b>${hhmm(c.primeiroLimite)}</b></div>` : ""}
           <div class="pd-eq-cfg">
@@ -1868,11 +1887,30 @@
   }
   const nomeRem = (n) => `${n}ª remessa`;
 
-  function renderRemessas() {
-    if (!prazos?.pedidos) {
-      corpo.innerHTML = `<div class="shopee-vazio">Carregando pedidos da Shopee...</div>`;
-      return;
+  // Proximo corte de remessa ainda por vir hoje (para o relogio das equipes).
+  function proximoCorte() {
+    const agora = Date.now();
+    const hoje = diaSP(agora);
+    let melhor = null;
+    for (const cat of CATEGORIAS_REM) {
+      const cortes = cortesDe(cat);
+      for (let k = 0; k < cortes.length; k++) {
+        const ms = Date.parse(`${hoje}T${cortes[k]}:00-03:00`);
+        if (ms > agora) {
+          if (!melhor || ms < melhor.ms) melhor = { ms, rot: `fecha ${nomeRem(k + 1)} ${cat.nome}` };
+          break;
+        }
+      }
     }
+    return melhor;
+  }
+
+  function renderRemessas() {
+    corpo.innerHTML = htmlRemessas();
+  }
+
+  function htmlRemessas() {
+    if (!prazos?.pedidos) return `<div class="shopee-vazio">Carregando pedidos da Shopee...</div>`;
     const agora = Date.now();
     const hoje = diaSP(agora);
     const amanha = somaDia(hoje, 1);
@@ -1945,7 +1983,7 @@
     }).join("");
 
     const outras = itens.filter((i) => categoriaShopee(i.transp) === "outras").length;
-    corpo.innerHTML = `
+    return `
       <div class="rm-grade">${cards}</div>
       <div class="muted small sp-eq-nota">
         Pacotes da Shopee contados pelo <b>horário da venda</b>: "já saíram" = coletados/postados hoje; "faltam" = ainda não saíram.
@@ -1963,7 +2001,7 @@
     cortes[Number(i.dataset.k)] = i.value;
     cortes.sort();
     salvarPref(`cortes_${cat.id}`, JSON.stringify(cortes));
-    renderRemessas();
+    atualizarFaixas();
   });
 
   function renderEquipes() {
