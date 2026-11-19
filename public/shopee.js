@@ -1864,6 +1864,9 @@
   const CATEGORIAS_REM = [
     { id: "spx", nome: "SPX Entrega Rápida", equipe: "bahia", cor: "#ee4d2d", cortes: ["07:00", "11:00"] },
     { id: "xpress", nome: "Shopee Xpress", equipe: "bahia", cor: "#2563eb", cortes: ["07:00", "13:00"] },
+    // Flex (19/11): faltava na Bahia. Mesmas regras do ML; corte padrao 13h
+    // (ultimo envio do Flex) - ajustavel na tela.
+    { id: "flex", nome: "ML Flex", equipe: "bahia", cor: "#16a34a", cortes: ["07:00", "13:00"] },
     // ML (19/11): coleta e agencia, ate 7h = 1a remessa, 7h-13h = 2a.
     { id: "coleta", nome: "ML coleta", equipe: "mathias", cor: "#ca8a04", cortes: ["07:00", "13:00"] },
     { id: "agencia", nome: "ML agência", equipe: "mathias", cor: "#0891b2", cortes: ["07:00", "13:00"] },
@@ -1916,7 +1919,8 @@
   function htmlRemessas(eq) {
     const cats = catsDaEquipe(eq);
     const temShopee = cats.some((c) => c.id === "spx" || c.id === "xpress");
-    const temML = cats.some((c) => c.id === "coleta" || c.id === "agencia");
+    const ML_CATS = ["coleta", "agencia", "flex"];
+    const temML = cats.some((c) => ML_CATS.includes(c.id));
     if (temShopee && !prazos?.pedidos) return `<div class="shopee-vazio">Carregando pedidos da Shopee...</div>`;
     if (temML && !mlPrazos?.envios) return `<div class="shopee-vazio">Carregando envios do Mercado Livre...</div>`;
     const agora = Date.now();
@@ -1937,7 +1941,7 @@
     }
     if (temML) {
       for (const e of mlPrazos.envios) {
-        if (e.modalidade !== "coleta" && e.modalidade !== "agencia") continue;
+        if (!ML_CATS.includes(e.modalidade)) continue;
         itens.push({ cat: e.modalidade, venda: e.criadoEm ? Date.parse(e.criadoEm) : null, saiu: false, ml: true, situacao: e.situacao, prazo: e.prazo });
       }
       for (const e of mlSaiuHoje?.envios || []) itens.push({ cat: e.modalidade, venda: e.vendaAprox, saiu: true, ml: true });
@@ -1982,7 +1986,7 @@
       const agoraMin = minutosSP(agora);
       const linhas = rem
         .map((x, k) => {
-          const ehML = cat.id === "coleta" || cat.id === "agencia";
+          const ehML = ML_CATS.includes(cat.id);
           const ini = k === 0 ? (ehML ? null : `${cortes[cortes.length - 1]} de ontem`) : cortes[k - 1];
           const fim = cortes[k];
           const fecha = Date.parse(`${hoje}T${fim}:00-03:00`);
