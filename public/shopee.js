@@ -1938,9 +1938,9 @@
     if (temML) {
       for (const e of mlPrazos.envios) {
         if (e.modalidade !== "coleta" && e.modalidade !== "agencia") continue;
-        itens.push({ cat: e.modalidade, venda: e.criadoEm ? Date.parse(e.criadoEm) : null, saiu: false });
+        itens.push({ cat: e.modalidade, venda: e.criadoEm ? Date.parse(e.criadoEm) : null, saiu: false, ml: true, situacao: e.situacao, prazo: e.prazo });
       }
-      for (const e of mlSaiuHoje?.envios || []) itens.push({ cat: e.modalidade, venda: e.vendaAprox, saiu: true });
+      for (const e of mlSaiuHoje?.envios || []) itens.push({ cat: e.modalidade, venda: e.vendaAprox, saiu: true, ml: true });
     }
 
     const cards = cats.map((cat) => {
@@ -1950,12 +1950,28 @@
       let paraAmanha = 0;
       let anteriores = 0;
       let semHora = 0;
+      let programados = 0;
       for (const i of meus) {
+        // ML tem envio com DATA PROGRAMADA (19/11): vendido dias atras, coleta
+        // marcada para hoje. Regra: o que tem envio para hoje e foi vendido
+        // antes do 1o corte de hoje entra na 1a remessa, seja de que dia for.
+        // Programado para outro dia fica fora; atrasado de dia anterior vira alerta.
+        if (i.ml && !i.saiu) {
+          if (i.situacao === "proximos") {
+            programados++;
+            continue;
+          }
+          if (i.situacao === "atrasado" && i.prazo && diaSP(Date.parse(i.prazo)) < hoje) {
+            anteriores++;
+            continue;
+          }
+        }
         if (!i.venda) {
           semHora++;
           continue;
         }
-        const r = remessaDe(i.venda, cortes);
+        let r = remessaDe(i.venda, cortes);
+        if (i.ml && r.dia < hoje) r = { dia: hoje, n: 1 };
         if (r.dia === hoje) {
           const x = rem[r.n - 1];
           x.total++;
@@ -1966,7 +1982,8 @@
       const agoraMin = minutosSP(agora);
       const linhas = rem
         .map((x, k) => {
-          const ini = k === 0 ? `${cortes[cortes.length - 1]} de ontem` : cortes[k - 1];
+          const ehML = cat.id === "coleta" || cat.id === "agencia";
+          const ini = k === 0 ? (ehML ? null : `${cortes[cortes.length - 1]} de ontem`) : cortes[k - 1];
           const fim = cortes[k];
           const fecha = Date.parse(`${hoje}T${fim}:00-03:00`);
           const aberta = agoraMin < minDe(fim);
@@ -1979,7 +1996,9 @@
                 ? `<span class="rm-chip ok">fechada · tudo despachado ✓</span>`
                 : `<span class="rm-chip">fechada</span>`;
           return `<div class="rm-linha">
-            <div class="rm-nome"><b>${nomeRem(k + 1)}</b><small>vendas de ${ini} até ${fim}</small></div>
+            <div class="rm-nome"><b>${nomeRem(k + 1)}</b><small>${
+              ini ? `vendas de ${ini} até ${fim}` : `vendas até ${fim} de hoje, inclui envios programados para hoje`
+            }</small></div>
             <div class="rm-total"><span>${x.total}</span><small>pacotes</small></div>
             <div class="rm-num ok"><span>${x.saiu}</span><small>já saíram</small></div>
             <div class="rm-num"><span>${x.falta}</span><small>faltam</small></div>
@@ -1995,6 +2014,7 @@
           ${paraAmanha ? `<span>➜ <b>${paraAmanha}</b> vendido${paraAmanha === 1 ? "" : "s"} depois das ${cortes[cortes.length - 1]} — já ${paraAmanha === 1 ? "entra" : "entram"} na 1ª remessa de amanhã</span>` : ""}
           ${anteriores ? `<span class="rm-alerta">⚠ <b>${anteriores}</b> de remessas de dias anteriores ainda não ${anteriores === 1 ? "saiu" : "saíram"}</span>` : ""}
           ${semHora ? `<span>${semHora} sem horário de venda</span>` : ""}
+          ${programados ? `<span>📅 ${programados} programado${programados === 1 ? "" : "s"} para os próximos dias (fora da conta de hoje)</span>` : ""}
         </div>
         <div class="pd-eq-cfg">Cortes:
           ${cortes
