@@ -439,7 +439,7 @@ router.get("/api/pacotes-dia/ml-saiu-hoje", requireLogin, async (req, res) => {
          FROM prazos_envios
         WHERE saiu_em >= (date_trunc('day', now() AT TIME ZONE 'America/Sao_Paulo') AT TIME ZONE 'America/Sao_Paulo')
           AND status_final IS DISTINCT FROM 'cancelled'
-          AND modalidade IN ('coleta', 'agencia')`
+          AND modalidade IN ('coleta', 'agencia', 'flex')`
     );
     res.json({
       total: rows.reduce((s, r) => s + r.total, 0),
