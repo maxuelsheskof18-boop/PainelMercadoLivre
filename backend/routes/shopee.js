@@ -534,6 +534,104 @@ async function ritmoEquipes15() {
   return out;
 }
 
+// ---- RELOGIO POR REMESSA: atraso e justificativa (pedido de 19/11) ----
+// Prazo da remessa = inicio + pacotes x ritmo (calculado na tela). Passou do
+// prazo sem terminar: a equipe tem 15 min para justificar (falta de produto,
+// separacao, produto nao encontrado, outro); senao conta como atraso sem
+// justificativa. Tudo por dia/canal/remessa, para relatorio depois.
+let tabelaRemessas = null;
+function garantirTabelaRemessas() {
+  if (!tabelaRemessas) {
+    tabelaRemessas = db
+      .query(
+        `CREATE TABLE IF NOT EXISTS remessa_ocorrencias (
+           dia DATE NOT NULL,
+           cat TEXT NOT NULL,
+           n INT NOT NULL,
+           prazo TIMESTAMPTZ,
+           motivo TEXT,
+           obs TEXT,
+           quem TEXT,
+           justificado_em TIMESTAMPTZ,
+           finalizada_em TIMESTAMPTZ,
+           atraso_min INT,
+           PRIMARY KEY (dia, cat, n)
+         )`
+      )
+      .catch((err) => {
+        tabelaRemessas = null;
+        throw err;
+      });
+  }
+  return tabelaRemessas;
+}
+const MOTIVOS_REMESSA = ["Falta de produto", "Separação", "Produto não encontrado", "Outro"];
+const DIA_OK = /^\d{4}-\d{2}-\d{2}$/;
+
+router.get("/api/remessas/ocorrencias", requireLogin, async (req, res) => {
+  try {
+    if (!DIA_OK.test(req.query.dia || "")) return res.status(400).json({ error: "dia=AAAA-MM-DD" });
+    await garantirTabelaRemessas();
+    const { rows } = await db.query(
+      `SELECT cat, n, motivo, obs, quem,
+              extract(epoch FROM prazo) * 1000 AS prazo,
+              extract(epoch FROM justificado_em) * 1000 AS "justificadoEm",
+              extract(epoch FROM finalizada_em) * 1000 AS "finalizadaEm",
+              atraso_min AS "atrasoMin"
+         FROM remessa_ocorrencias WHERE dia = $1`,
+      [req.query.dia]
+    );
+    res.json({ ocorrencias: rows.map((r) => ({ ...r, prazo: Number(r.prazo) || null, justificadoEm: Number(r.justificadoEm) || null, finalizadaEm: Number(r.finalizadaEm) || null })) });
+  } catch (err) {
+    erro500(res, err);
+  }
+});
+
+router.post("/api/remessas/justificar", requireLogin, express.json(), async (req, res) => {
+  try {
+    const { dia, cat, n, motivo, obs, quem, prazo } = req.body || {};
+    if (!DIA_OK.test(dia || "") || !cat || !Number(n) || !MOTIVOS_REMESSA.includes(motivo)) {
+      return res.status(400).json({ error: "dados invalidos" });
+    }
+    await garantirTabelaRemessas();
+    await db.query(
+      `INSERT INTO remessa_ocorrencias (dia, cat, n, prazo, motivo, obs, quem, justificado_em, atraso_min)
+       VALUES ($1,$2,$3,to_timestamp($4 / 1000.0),$5,$6,$7,now(), GREATEST(0, round(extract(epoch FROM now() - to_timestamp($4 / 1000.0)) / 60)))
+       ON CONFLICT (dia, cat, n) DO UPDATE SET
+         motivo = EXCLUDED.motivo, obs = EXCLUDED.obs, quem = EXCLUDED.quem,
+         justificado_em = now(), prazo = COALESCE(remessa_ocorrencias.prazo, EXCLUDED.prazo)`,
+      [dia, String(cat).slice(0, 20), Number(n), Number(prazo) || Date.now(), motivo, String(obs || "").slice(0, 300), String(quem || "").slice(0, 60)]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    erro500(res, err);
+  }
+});
+
+// Primeira vez que alguma tela viu a remessa terminada: guarda a hora e o
+// atraso final (0 se terminou no prazo).
+router.post("/api/remessas/finalizar", requireLogin, express.json(), async (req, res) => {
+  try {
+    const { dia, cat, n, prazo } = req.body || {};
+    if (!DIA_OK.test(dia || "") || !cat || !Number(n)) return res.status(400).json({ error: "dados invalidos" });
+    await garantirTabelaRemessas();
+    await db.query(
+      `INSERT INTO remessa_ocorrencias (dia, cat, n, prazo, finalizada_em, atraso_min)
+       VALUES ($1,$2,$3,to_timestamp($4 / 1000.0),now(), GREATEST(0, round(extract(epoch FROM now() - to_timestamp($4 / 1000.0)) / 60)))
+       ON CONFLICT (dia, cat, n) DO UPDATE SET
+         finalizada_em = COALESCE(remessa_ocorrencias.finalizada_em, now()),
+         prazo = COALESCE(remessa_ocorrencias.prazo, EXCLUDED.prazo),
+         atraso_min = CASE WHEN remessa_ocorrencias.finalizada_em IS NULL
+                           THEN GREATEST(0, round(extract(epoch FROM now() - COALESCE(remessa_ocorrencias.prazo, EXCLUDED.prazo)) / 60))
+                           ELSE remessa_ocorrencias.atraso_min END`,
+      [dia, String(cat).slice(0, 20), Number(n), Number(prazo) || Date.now()]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    erro500(res, err);
+  }
+});
+
 let cacheRitmo = null;
 router.get("/api/pacotes-dia/ritmo", requireLogin, async (req, res) => {
   try {
