@@ -26,8 +26,23 @@ const ESPACO_MS = 2500;
 const PAUSA_LIMITE_MS = 15 * 60 * 1000;
 const MAX_PAGINAS = 15;
 
+// TikTok e Amazon (19/11): as APIs deles nao liberaram, mas os pedidos estao
+// no Tiny. Sugestao do usuario para economizar chamadas: ler SO a separacao do
+// dia. A mesma consulta (separacao.pesquisa, todas as situacoes) ja traz:
+//   - idFormaEnvio -> "TikTok Shipping" / "Amazon DBA" (nome via separacao.obter,
+//     1 chamada por forma nova, guardado no banco);
+//   - situacao 3 = embalada;
+//   - situacaoVenda (codigos do Tiny: 3 aprovado, 1 faturado, 7 pronto para
+//     envio, 5 enviado, 6 entregue, 2 cancelado) -> 5/6 = ja saiu.
+// Ou seja: embalados + TikTok/Amazon com 1 consulta por conta.
+const SAIU = new Set(["5", "6"]);
+const CANCELADO = "2";
+const canalDaForma = (nome) => (/tik\s*tok/i.test(nome || "") ? "tiktok" : /amazon/i.test(nome || "") ? "amazon" : null);
+
 const estado = {
   atualizadoEm: null,
+  formas: new Map(), // "conta:idFormaEnvio" -> nome
+  mkt: new Map(), // numeroPedidoEcommerce -> pedido TikTok/Amazon da separacao
   rodando: false,
   embalados: new Map(), // numeroPedidoEcommerce -> { conta, dataCheckout, vistoEm, numero }
   contas: {}, // nome -> { ok, erro, total, paginas, chamadas, pausadoAte }
@@ -86,7 +101,17 @@ function garantirTabela() {
            visto_em TIMESTAMPTZ NOT NULL
          )`
       )
+      .then(() =>
+        db.query(
+          `CREATE TABLE IF NOT EXISTS tiny_formas_envio (
+             chave TEXT PRIMARY KEY,
+             nome TEXT
+           )`
+        )
+      )
       .then(async () => {
+        const { rows: formas } = await db.query("SELECT chave, nome FROM tiny_formas_envio");
+        for (const f of formas) estado.formas.set(f.chave, f.nome);
         // Recarrega o que ja foi visto (a hora sobrevive ao Render dormir).
         await db.query("DELETE FROM tiny_embalados WHERE visto_em < now() - interval '10 days'");
         const { rows } = await db.query("SELECT * FROM tiny_embalados");
@@ -108,19 +133,37 @@ function garantirTabela() {
   return tabela;
 }
 
+// Nome da forma de envio (cache; so chama o Tiny para forma nunca vista).
+async function nomeForma(c, s) {
+  const chave = `${c.nome}:${s.idFormaEnvio}`;
+  if (estado.formas.has(chave)) return estado.formas.get(chave);
+  const r = await chamar(c.token, "separacao.obter.php", { idSeparacao: s.id });
+  const nome = r.separacao?.formaEnvio || "";
+  estado.formas.set(chave, nome);
+  await db.query("INSERT INTO tiny_formas_envio (chave, nome) VALUES ($1,$2) ON CONFLICT (chave) DO UPDATE SET nome = EXCLUDED.nome", [chave, nome]).catch(() => {});
+  return nome;
+}
+
+const isoDeBR = (br) => {
+  const [d, m, a] = String(br || "").split("/");
+  return a ? `${a}-${m}-${d}` : null;
+};
+
 async function coletarConta(c) {
   const info = estado.contas[c.nome] || {};
   if (info.pausadoAte && info.pausadoAte > Date.now()) return; // respeita o limite
-  const desde = dataBR(Date.now() - 2 * 864e5);
+  // Separacao do dia (e de ontem, para o que sobrou), TODAS as situacoes.
+  const desde = dataBR(Date.now() - 864e5);
+  const vistosMkt = new Set();
   let chamadas = 0;
   let total = 0;
   const novos = [];
   for (let pagina = 1; pagina <= MAX_PAGINAS; pagina++) {
-    const r = await chamar(c.token, "separacao.pesquisa.php", { situacao: "3", dataInicial: desde, pagina: String(pagina) });
+    const r = await chamar(c.token, "separacao.pesquisa.php", { dataInicial: desde, pagina: String(pagina) });
     chamadas++;
     if (r.status !== "OK") {
       const msg = textoErros(r);
-      if (/n[aã]o retornou registros/i.test(msg)) break; // nenhuma embalada
+      if (/n[aã]o retornou registros/i.test(msg)) break; // nenhuma separacao
       if (/bloquead|excedid|limite/i.test(msg)) {
         estado.contas[c.nome] = { ...info, ok: false, erro: `limite da API do Tiny — pausado 15 min (${msg})`, pausadoAte: Date.now() + PAUSA_LIMITE_MS, chamadas };
         return;
@@ -130,7 +173,32 @@ async function coletarConta(c) {
     for (const x of r.separacoes || []) {
       const s = x.separacao || x;
       const num = String(s.numeroPedidoEcommerce || "").trim();
-      if (!num || String(s.situacao) !== "3") continue;
+      if (!num) continue;
+      // TikTok / Amazon
+      if (s.idFormaEnvio && s.idFormaEnvio !== "0") {
+        const canal = canalDaForma(await nomeForma(c, s));
+        if (canal && String(s.situacaoVenda) !== CANCELADO) {
+          const antes = estado.mkt.get(num);
+          const saiu = SAIU.has(String(s.situacaoVenda));
+          // Hora de saida = quando o painel viu virar enviado. Se ja chegou
+          // enviado na 1a leitura, so conta como "hoje" se a separacao e de hoje.
+          let saiuEm = antes?.saiuEm || null;
+          if (saiu && !saiuEm) saiuEm = antes ? Date.now() : s.dataCriacao === dataBR(Date.now()) ? Date.now() : -1;
+          estado.mkt.set(num, {
+            canal,
+            conta: c.nome,
+            numero: s.numero,
+            numeroEcommerce: num,
+            situacao: String(s.situacao),
+            situacaoVenda: String(s.situacaoVenda),
+            dataSeparacao: isoDeBR(s.dataCriacao),
+            saiu,
+            saiuEm: saiu ? saiuEm : null,
+          });
+          vistosMkt.add(num);
+        }
+      }
+      if (String(s.situacao) !== "3") continue;
       total++;
       if (!estado.embalados.has(num)) {
         // Embalado em OUTRO dia (ex.: primeira leitura): sem hora, meio-dia
@@ -154,6 +222,8 @@ async function coletarConta(c) {
       )
       .catch(() => {});
   }
+  // Esquece TikTok/Amazon desta conta que sairam da janela da consulta.
+  for (const [num, p] of estado.mkt) if (p.conta === c.nome && !vistosMkt.has(num)) estado.mkt.delete(num);
   estado.contas[c.nome] = { ok: true, erro: null, total, chamadas, atualizadoEm: Date.now() };
 }
 
@@ -199,4 +269,13 @@ function iniciar() {
   timer = setInterval(() => coletar().catch(() => {}), INTERVALO_MS);
 }
 
-module.exports = { iniciar, coletar, embalado, resumo, configurado };
+// TikTok/Amazon da separacao (para Equipes). embaladoEm vem do mesmo ciclo.
+function mkt() {
+  return [...estado.mkt.values()].map((p) => ({
+    ...p,
+    saiuEm: p.saiuEm > 0 ? p.saiuEm : null,
+    embaladoEm: estado.embalados.get(p.numeroEcommerce)?.vistoEm || null,
+  }));
+}
+
+module.exports = { iniciar, coletar, embalado, mkt, resumo, configurado };
