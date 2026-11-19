@@ -416,6 +416,166 @@ router.get("/api/shopee/prazos", requireLogin, async (req, res) => {
 // Prazos do ML ja grava (prazos_envios). Conta os envios que sairam da lista
 // de pendentes hoje (horario de SP), menos cancelados. saiu_em = ciclo em que
 // o painel percebeu a saida (~3 min de precisao).
+// RITMO MEDIDO (19/11): quantos minutos a operacao leva por pacote, por canal,
+// nos ultimos 15 dias. O Tiny so informa a DATA da embalagem; a hora vem de
+//   - ML: prazos_envios.impresso_em (hora vista impressa, ~3 min, historico
+//     de semanas; ignora impresso_estimado);
+//   - Shopee/TikTok/Amazon: tiny_embalados.visto_em (hora vista embalada,
+//     ~5 min; comeca a juntar historico em 19/11).
+// Conta: por dia e canal, ordena os horarios e quebra em "sessoes" quando
+// passa 30 min sem nenhum pacote; tempo da sessao / intervalos = min por
+// pacote. Sessao com menos de 3 horarios distintos (ex.: o Render acordou e
+// viu tudo de uma vez) e descartada. E o ritmo da EQUIPE inteira.
+function medirRitmo(linhas) {
+  const porCanal = {};
+  const grupos = new Map();
+  for (const l of linhas) {
+    const k = `${l.canal}|${l.dia}`;
+    if (!grupos.has(k)) grupos.set(k, []);
+    grupos.get(k).push(Number(l.t));
+  }
+  for (const [k, ts] of grupos) {
+    const canal = k.split("|")[0];
+    ts.sort((a, b) => a - b);
+    if (!porCanal[canal]) porCanal[canal] = { ms: 0, intervalos: 0, pacotes: 0, dias: new Set() };
+    const acc = porCanal[canal];
+    let ini = 0;
+    const fechar = (fim) => {
+      const sessao = ts.slice(ini, fim + 1);
+      if (new Set(sessao).size >= 3) {
+        acc.ms += sessao[sessao.length - 1] - sessao[0];
+        acc.intervalos += sessao.length - 1;
+        acc.pacotes += sessao.length;
+        acc.dias.add(k.split("|")[1]);
+      }
+    };
+    for (let i = 1; i < ts.length; i++) {
+      if (ts[i] - ts[i - 1] > 30 * 60e3) {
+        fechar(i - 1);
+        ini = i;
+      }
+    }
+    fechar(ts.length - 1);
+  }
+  const out = {};
+  for (const [canal, a] of Object.entries(porCanal)) {
+    if (a.intervalos < 20 || !a.ms) continue; // pouco dado
+    out[canal] = { minPorPacote: Math.round((a.ms / a.intervalos / 60e3) * 100) / 100, pacotes: a.pacotes, dias: a.dias.size };
+  }
+  return out;
+}
+
+// Ritmo de EMBALAGEM por equipe nos ultimos 15 dias (ideia do usuario):
+// por dia, (fim da operacao - 09:00) / pacotes embalados no Tiny pela equipe.
+// Fim = ultima etiqueta impressa do dia nas modalidades ML da equipe (hora
+// real gravada pelo Prazos); sem isso, 17:00.
+//   Bahia: Shopee Envios + Mercado Envios Flex
+//   Mathias: Mercado Envios (coleta/agencia) + TikTok + Amazon
+const INICIO_TRABALHO = process.env.RITMO_INICIO || "09:00";
+const FIM_PADRAO = process.env.RITMO_FIM_PADRAO || "17:00";
+function equipeDaForma(forma) {
+  const f = forma || "";
+  if (/shopee|flex/i.test(f)) return "bahia";
+  if (/tik\s*tok|amazon|mercado\s*envios/i.test(f)) return "mathias";
+  return null;
+}
+async function ritmoEquipes15() {
+  const { rows: tem } = await db.query("SELECT to_regclass('tiny_embalados_dia') AS t");
+  if (!tem[0]?.t) return {};
+  const { rows } = await db.query(
+    `SELECT to_char(dia, 'YYYY-MM-DD') AS dia, forma, qtd
+       FROM tiny_embalados_dia
+      WHERE dia >= current_date - 14 AND dia < current_date AND forma <> '__historico__'`
+  );
+  // Fim da operacao por dia e equipe (ultima impressao do ML).
+  const fins = {};
+  const { rows: temML } = await db.query("SELECT to_regclass('prazos_envios') AS t");
+  if (temML[0]?.t) {
+    const { rows: f } = await db.query(
+      `SELECT to_char(impresso_em AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD') AS dia,
+              CASE WHEN modalidade = 'flex' THEN 'bahia' ELSE 'mathias' END AS equipe,
+              to_char(max(impresso_em AT TIME ZONE 'America/Sao_Paulo'), 'HH24:MI') AS fim
+         FROM prazos_envios
+        WHERE impresso_em > now() - interval '16 days' AND NOT impresso_estimado
+        GROUP BY 1, 2`
+    );
+    for (const x of f) fins[`${x.dia}|${x.equipe}`] = x.fim;
+  }
+  const min = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+  const acc = {};
+  const porDia = {};
+  for (const r of rows) {
+    const eq = equipeDaForma(r.forma);
+    if (!eq) continue;
+    const k = `${r.dia}|${eq}`;
+    porDia[k] = (porDia[k] || 0) + Number(r.qtd);
+  }
+  for (const [k, qtd] of Object.entries(porDia)) {
+    const [dia, eq] = k.split("|");
+    if (qtd < 5) continue;
+    let fim = fins[k] || FIM_PADRAO;
+    if (min(fim) <= min(INICIO_TRABALHO) + 30) fim = FIM_PADRAO; // fim estranho
+    const minutos = min(fim) - min(INICIO_TRABALHO);
+    if (!acc[eq]) acc[eq] = { minutos: 0, pacotes: 0, dias: 0 };
+    acc[eq].minutos += minutos;
+    acc[eq].pacotes += qtd;
+    acc[eq].dias++;
+  }
+  const out = {};
+  for (const [eq, a] of Object.entries(acc)) {
+    out[eq] = {
+      minPorPacote: Math.round((a.minutos / a.pacotes) * 100) / 100,
+      pacotes: a.pacotes,
+      dias: a.dias,
+      pacotesPorDia: Math.round(a.pacotes / a.dias),
+      inicio: INICIO_TRABALHO,
+    };
+  }
+  return out;
+}
+
+let cacheRitmo = null;
+router.get("/api/pacotes-dia/ritmo", requireLogin, async (req, res) => {
+  try {
+    if (cacheRitmo && Date.now() - cacheRitmo.em < 30 * 60e3) return res.json(cacheRitmo.dados);
+    const linhas = [];
+    const { rows: temML } = await db.query("SELECT to_regclass('prazos_envios') AS t");
+    if (temML[0]?.t) {
+      const { rows } = await db.query(
+        `SELECT modalidade AS canal,
+                to_char(impresso_em AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD') AS dia,
+                extract(epoch FROM impresso_em) * 1000 AS t
+           FROM prazos_envios
+          WHERE impresso_em > now() - interval '15 days'
+            AND NOT impresso_estimado
+            AND modalidade IN ('coleta', 'agencia', 'flex')`
+      );
+      linhas.push(...rows);
+    }
+    const { rows: temTiny } = await db.query("SELECT to_regclass('tiny_embalados') AS t");
+    if (temTiny[0]?.t) {
+      const { rows } = await db.query(
+        `SELECT CASE WHEN forma ILIKE '%shopee%' THEN 'shopee'
+                     WHEN forma ILIKE '%tik%tok%' THEN 'tiktok'
+                     WHEN forma ILIKE '%amazon%' THEN 'amazon' END AS canal,
+                to_char(visto_em AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD') AS dia,
+                extract(epoch FROM visto_em) * 1000 AS t
+           FROM tiny_embalados
+          WHERE visto_em > now() - interval '15 days'
+            AND forma IS NOT NULL
+            -- so o que foi visto no MESMO dia da embalagem (hora real)
+            AND to_char(visto_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM/YYYY') = data_checkout`
+      );
+      linhas.push(...rows.filter((r) => r.canal));
+    }
+    const dados = { canais: medirRitmo(linhas), equipes: await ritmoEquipes15(), calculadoEm: Date.now() };
+    cacheRitmo = { em: Date.now(), dados };
+    res.json(dados);
+  } catch (err) {
+    erro500(res, err);
+  }
+});
+
 router.get("/api/pacotes-dia/ml-saiu-hoje", requireLogin, async (req, res) => {
   try {
     const { rows: tem } = await db.query("SELECT to_regclass('prazos_envios') AS t");
