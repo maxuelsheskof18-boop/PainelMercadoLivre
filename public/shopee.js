@@ -327,7 +327,9 @@
   .pd-eq-tempo .pd-eq-n { color: var(--eq); }
   .pd-eq-tempo.estoura .pd-eq-n { color: #dc2626; }
   .pd-eq-det { font-size: 12px; color: var(--muted); }
-  .pd-eq-canais { display: grid; grid-template-columns: minmax(90px, max-content) 80px 80px; gap: 3px 14px; align-items: baseline; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .pd-eq-canais .pronto { color: #7c3aed !important; }
+  .rm-ritmo { font-size: 12px; color: var(--text-soft); }
+  .pd-eq-canais { display: grid; grid-template-columns: minmax(90px, max-content) 64px 64px 72px; gap: 3px 14px; align-items: baseline; font-size: 13px; font-variant-numeric: tabular-nums; }
   .pd-eq-canais .cab { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
   .pd-eq-canais .nome { font-weight: 600; color: var(--text-soft); }
   .pd-eq-canais span:not(.nome):not(.cab) { font-weight: 700; color: var(--text); }
@@ -1600,6 +1602,17 @@
   // numero do dia) e aparecem so como nota. Mostrado no topo dos dois Prazos.
   let mlPrazos = null; // /api/prazos (o mesmo que o prazos.js usa)
   let mlSaiuHoje = null; // acumulado do dia do ML (ja sairam hoje)
+  let ritmo = null; // /api/pacotes-dia/ritmo (min por pacote medido, por canal)
+  let ritmoEm = 0;
+  // Nome do canal na tela -> chave do ritmo medido.
+  const RITMO_DE = { SPX: "shopee", Shopee: "shopee", Flex: "flex", "ML coleta": "coleta", "ML agência": "agencia", TikTok: "tiktok", Amazon: "amazon" };
+  const RITMO_CAT = { spx: "shopee", xpress: "shopee", flex: "flex", coleta: "coleta", agencia: "agencia" };
+  const minMedido = (chave) => ritmo?.canais?.[chave]?.minPorPacote || null;
+  // Canais embalados no Tiny (sem hora medida ainda): usa o ritmo de embalagem
+  // da equipe nos ultimos 15 dias (das 9h ate o fim / pacotes do dia).
+  const CANAL_TINY = new Set(["shopee", "tiktok", "amazon"]);
+  const minCanal = (chave, equipeId) =>
+    minMedido(chave) || (CANAL_TINY.has(chave) ? ritmo?.equipes?.[equipeId]?.minPorPacote || null : null);
   const paneML = document.getElementById("prazos-pane");
   let faixaML = null;
   if (paneML) {
@@ -1659,7 +1672,8 @@
       c = JSON.parse(lerPref(`equipe_${id}`, "{}")) || {};
     } catch {}
     return {
-      minPorPacote: Number(c.minPorPacote) > 0 ? Number(c.minPorPacote) : 2,
+      // null = automatico (ritmo medido de cada canal; sem medida, 2 min)
+      minPorPacote: Number(c.minPorPacote) > 0 ? Number(c.minPorPacote) : null,
       pessoas: Number(c.pessoas) > 0 ? Number(c.pessoas) : 1,
       meta: /^\d{2}:\d{2}$/.test(c.meta || "") ? c.meta : "",
     };
@@ -1689,7 +1703,9 @@
   // prazo de hoje + atrasados de hoje; atrasados antigos ficam como nota).
   function contarEquipe(eq) {
     const hoje = diaSP(Date.now());
-    const r = { falta: 0, partes: {}, antigos: 0, primeiroLimite: null, saiu: 0, carregando: false, saiuPor: {} };
+    const r = { falta: 0, partes: {}, antigos: 0, primeiroLimite: null, saiu: 0, carregando: false, saiuPor: {}, prontoPor: {} };
+    // Pronto = ja impresso (ML) ou ja embalado no Tiny (Shopee/TikTok/Amazon).
+    const marcarPronto = (nome) => (r.prontoPor[nome] = (r.prontoPor[nome] || 0) + 1);
     const canalShopee = (transp) => (categoriaShopee(transp) === "spx" ? "SPX" : "Shopee");
     const somarLimite = (ms) => {
       // So limites que ainda vao vencer (o que ja venceu aparece como atrasado).
@@ -1706,6 +1722,7 @@
         r.falta++;
         const nome = NOME_MOD[e.modalidade] || e.modalidade;
         r.partes[nome] = (r.partes[nome] || 0) + 1;
+        if (e.situacao === "impresso") marcarPronto(nome);
         if (e.situacao !== "impresso") somarLimite(Date.parse(e.limiteImpressao || e.prazo));
       }
       for (const m of eq.mlModalidades) {
@@ -1728,6 +1745,7 @@
           // SPX = Shopee Xpress (transportadora); o resto e "Shopee".
           const nome = canalShopee(p.transportadora);
           r.partes[nome] = (r.partes[nome] || 0) + 1;
+          if (p.embaladoEm) marcarPronto(nome);
           somarLimite(p.prazo);
         }
         for (const s of prazos.saidosHoje || []) {
@@ -1752,6 +1770,7 @@
         } else {
           r.falta++;
           r.partes[nome] = (r.partes[nome] || 0) + 1;
+          if (p.embaladoEm) marcarPronto(nome);
         }
       }
     }
@@ -1770,19 +1789,30 @@
       .map((eq) => {
         const c = contarEquipe(eq);
         const cfg = cfgEquipe(eq.id);
-        const minutos = Math.ceil((c.falta * cfg.minPorPacote) / cfg.pessoas);
+        // Precisa: com ritmo manual = faltam x min; automatico = soma de cada
+        // canal (faltam x ritmo medido do canal; sem medida, 2 min).
+        // Ja prontos (impressos/embalados) nao entram no trabalho que falta.
+        const prontos = Object.values(c.prontoPor).reduce((s, q) => s + q, 0);
+        const minutos = cfg.minPorPacote
+          ? Math.ceil((Math.max(0, c.falta - prontos) * cfg.minPorPacote) / cfg.pessoas)
+          : Math.ceil(
+              Object.entries(c.partes).reduce((s, [n, q]) => s + Math.max(0, q - (c.prontoPor[n] || 0)) * (minCanal(RITMO_DE[n], eq.id) || 2), 0) / cfg.pessoas
+            );
+        const medidoEq = Object.keys(c.partes).map((n) => minCanal(RITMO_DE[n], eq.id)).filter(Boolean);
+        const restam = Math.max(0, c.falta - prontos);
+        const minAuto = restam ? Math.round((minutos * cfg.pessoas * 10) / restam) / 10 : null;
         const termina = agora + minutos * 60e3;
         const total = c.falta + c.saiu;
         const pct = total ? Math.round((100 * c.saiu) / total) : 0;
         // Por plataforma: quanto falta e quanto ja saiu de cada uma.
         const canais = [...new Set([...eq.ordem, ...Object.keys(c.partes), ...Object.keys(c.saiuPor)])];
         const tabelaCanais = `<div class="pd-eq-canais">
-          <span></span><span class="cab">Faltam</span><span class="cab">Já saíram</span>
+          <span></span><span class="cab">Faltam</span><span class="cab" title="Impressos (ML) ou embalados no Tiny (Shopee/TikTok/Amazon), entre os que faltam">Prontos</span><span class="cab">Já saíram</span>
           ${canais
             .map((n) =>
               (n === "TikTok" || n === "Amazon") && !prazos?.tiny?.configurado
-                ? `<span class="nome">${n}</span><span class="embreve">ligar o Tiny</span><span></span>`
-                : `<span class="nome">${esc(n)}</span><span class="${c.partes[n] ? "" : "zero"}">${c.carregando ? "–" : c.partes[n] || 0}</span><span class="ok ${c.saiuPor[n] ? "" : "zero"}">${c.saiuPor[n] || 0}</span>`
+                ? `<span class="nome">${n}</span><span class="embreve">ligar o Tiny</span><span></span><span></span>`
+                : `<span class="nome">${esc(n)}</span><span class="${c.partes[n] ? "" : "zero"}">${c.carregando ? "–" : c.partes[n] || 0}</span><span class="pronto ${c.prontoPor[n] ? "" : "zero"}">${c.prontoPor[n] || 0}</span><span class="ok ${c.saiuPor[n] ? "" : "zero"}">${c.saiuPor[n] || 0}</span>`
             )
             .join("")}
         </div>`;
@@ -1857,7 +1887,9 @@
           ${c.primeiroLimite && c.falta && cfg.meta ? `<div class="pd-eq-det">Próximo limite da plataforma: <b>${hhmm(c.primeiroLimite)}</b></div>` : ""}
           <div class="pd-eq-cfg">
             <label>Terminar até <input type="time" value="${esc(cfg.meta || "")}" data-eq-cfg="${eq.id}" data-campo="meta" title="Vazio = usa o próximo limite da plataforma"></label>
-            <label><input type="number" min="0.2" step="0.1" value="${cfg.minPorPacote}" data-eq-cfg="${eq.id}" data-campo="minPorPacote"> min por pacote</label>
+            <label title="Vazio = automático: usa o ritmo medido de cada canal nos últimos 15 dias"><input type="number" min="0.2" step="0.1" value="${cfg.minPorPacote || ""}" placeholder="${minAuto || "auto"}" data-eq-cfg="${eq.id}" data-campo="minPorPacote"> min por pacote ${
+              cfg.minPorPacote ? "(manual)" : medidoEq.length ? "(medido)" : "(padrão)"
+            }</label>
             <label><input type="number" min="1" step="1" value="${cfg.pessoas}" data-eq-cfg="${eq.id}" data-campo="pessoas"> pessoa(s)</label>
           </div>
         </div>`;
@@ -1962,7 +1994,7 @@
     if (temML) {
       for (const e of mlPrazos.envios) {
         if (!ML_CATS.includes(e.modalidade)) continue;
-        itens.push({ cat: e.modalidade, venda: e.criadoEm ? Date.parse(e.criadoEm) : null, saiu: false, ml: true, situacao: e.situacao, prazo: e.prazo });
+        itens.push({ cat: e.modalidade, venda: e.criadoEm ? Date.parse(e.criadoEm) : null, saiu: false, ml: true, situacao: e.situacao, prazo: e.prazo, embalado: e.situacao === "impresso" });
       }
       for (const e of mlSaiuHoje?.envios || []) itens.push({ cat: e.modalidade, venda: e.vendaAprox, saiu: true, ml: true });
     }
@@ -2029,8 +2061,27 @@
             <div class="rm-num ok"><span>${x.saiu}</span><small>já saíram</small></div>
             <div class="rm-num"><span>${x.falta}</span><small>faltam</small></div>
             <div class="rm-st">${chip}${
-              tinyLigado && !ehML && x.falta ? `<span class="rm-emb">📦 ${x.embalado} de ${x.falta} já embalados no Tiny</span>` : ""
-            }<div class="pd-acum-barra"><span style="width:${pct}%;background:var(--rm)"></span></div></div>
+              ehML && x.falta
+                ? `<span class="rm-emb">🖨 ${x.embalado} de ${x.falta} já impressos</span>`
+                : tinyLigado && x.falta
+                  ? `<span class="rm-emb">📦 ${x.embalado} de ${x.falta} já embalados no Tiny</span>`
+                  : ""
+            }${(() => {
+              // Tempo estimado da remessa = pacotes que faltam (e ainda nao estao
+              // prontos) x ritmo medido do canal.
+              const chave = RITMO_CAT[cat.id];
+              const m = minCanal(chave, cat.equipe);
+              const resta = x.falta - x.embalado;
+              if (!m || resta <= 0) return "";
+              const min = Math.ceil(resta * m);
+              const txt = min < 60 ? `${min} min` : `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}`;
+              const r = ritmo.canais?.[chave];
+              const re = ritmo.equipes?.[cat.equipe];
+              const origem = r
+                ? `medido em ${r.dias} dia${r.dias === 1 ? "" : "s"}`
+                : `média de ${re.dias} dia${re.dias === 1 ? "" : "s"} no Tiny, das ${re.inicio} ao fim, ~${re.pacotesPorDia} pacotes/dia`;
+              return `<span class="rm-ritmo">⏱ ~${txt} para ${ehML ? "imprimir" : "embalar"} os ${resta} restantes · ${String(m).replace(".", ",")} min/pacote (${origem})</span>`;
+            })()}<div class="pd-acum-barra"><span style="width:${pct}%;background:var(--rm)"></span></div></div>
           </div>`;
         })
         .join("");
@@ -2152,6 +2203,7 @@
     if (!i) return;
     const cfg = cfgEquipe(i.dataset.eqCfg);
     if (i.dataset.campo === "meta") cfg.meta = i.value || "";
+    else if (i.dataset.campo === "minPorPacote" && !String(i.value).trim()) cfg.minPorPacote = null;
     else {
       const v = Number(String(i.value).replace(",", "."));
       if (v > 0) cfg[i.dataset.campo] = v;
@@ -2176,6 +2228,16 @@
     ]);
     if (ml.status === "fulfilled") mlPrazos = ml.value;
     if (mlSaiu.status === "fulfilled") mlSaiuHoje = mlSaiu.value;
+    // Ritmo medido muda devagar: busca a cada 30 min.
+    if (Date.now() - ritmoEm > 30 * 60e3) {
+      ritmoEm = Date.now();
+      api("/api/pacotes-dia/ritmo")
+        .then((r) => {
+          ritmo = r;
+          atualizarFaixas();
+        })
+        .catch(() => {});
+    }
     if (sp.status === "fulfilled" && sp.value) {
       prazos = sp.value;
       atualizarContas();
