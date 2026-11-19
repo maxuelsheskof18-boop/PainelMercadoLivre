@@ -15,6 +15,7 @@
 // (sandbox estava sem pedidos). Tudo com fallback para nao quebrar a tela.
 
 const shopee = require("./api");
+const tiny = require("../tiny/embalagem");
 
 const DIA = 24 * 60 * 60;
 const INTERVALO_MS = 3 * 60 * 1000;
@@ -214,6 +215,8 @@ function coletar() {
 async function garantirAtual() {
   const idade = estado.atualizadoEm ? Date.now() - estado.atualizadoEm : Infinity;
   if (idade < INTERVALO_MS + 30_000) return;
+  // Tiny tambem dormiu: pede uma leitura (nao espera; respeita o limite dele).
+  tiny.coletar().catch(() => {});
   await Promise.race([coletar(), new Promise((r) => setTimeout(r, 25_000))]);
 }
 
@@ -274,8 +277,10 @@ function snapshot() {
     lojas: estado.lojas,
     // Acumulado do dia: pacotes ja coletados/postados hoje.
     saidosHoje: estado.saidos.filter((s) => diaSP(s.saiuEm) === diaSP(agora)),
+    // Embalagem no Tiny (no lugar do "impresso", que a Shopee nao informa).
+    tiny: tiny.resumo(),
     pedidos: estado.pedidos
-      .map((p) => ({ ...p, situacao: situacao(p, agora) }))
+      .map((p) => ({ ...p, situacao: situacao(p, agora), embaladoEm: tiny.embalado(p.orderSn)?.vistoEm || null, embaladoSemHora: !!tiny.embalado(p.orderSn)?.semHora }))
       .sort((a, b) => (a.prazo || Infinity) - (b.prazo || Infinity)),
   };
 }
