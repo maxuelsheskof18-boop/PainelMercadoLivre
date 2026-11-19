@@ -329,6 +329,17 @@
   .pd-eq-det { font-size: 12px; color: var(--muted); }
   .pd-eq-canais .pronto { color: #7c3aed !important; }
   .rm-ritmo { font-size: 12px; color: var(--text-soft); }
+  .rm-relogio { font-size: 12.5px; color: var(--text-soft); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border-radius: 10px; background: var(--bg); }
+  .rm-relogio.ok { background: color-mix(in srgb, var(--rm) 8%, #fff); }
+  .rm-rel-n { font-size: 22px; font-weight: 800; color: var(--rm); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .rm-relogio.fim { background: #f0fdf4; color: #15803d; }
+  .rm-relogio.just { background: #fffbeb; color: #92400e; }
+  .rm-relogio.alerta { background: #fff7ed; color: #9a3412; border: 2px solid #fb923c; }
+  .rm-relogio.atraso { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+  .rm-just { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; width: 100%; animation: none; }
+  .rm-just span { font-weight: 700; }
+  .rm-just button { border: 1px solid currentColor; background: #fff; color: inherit; border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .rm-just button:hover { filter: brightness(.93); box-shadow: 0 0 0 2px currentColor inset; }
   .pd-eq-canais { display: grid; grid-template-columns: minmax(90px, max-content) 64px 64px 72px; gap: 3px 14px; align-items: baseline; font-size: 13px; font-variant-numeric: tabular-nums; }
   .pd-eq-canais .cab { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
   .pd-eq-canais .nome { font-weight: 600; color: var(--text-soft); }
@@ -1603,6 +1614,8 @@
   let mlPrazos = null; // /api/prazos (o mesmo que o prazos.js usa)
   let mlSaiuHoje = null; // acumulado do dia do ML (ja sairam hoje)
   let ritmo = null; // /api/pacotes-dia/ritmo (min por pacote medido, por canal)
+  let ocorr = {}; // "cat|n" -> ocorrencia da remessa de hoje (justificativa/finalizada)
+  const finalizadasEnviadas = new Set();
   let ritmoEm = 0;
   // Nome do canal na tela -> chave do ritmo medido.
   const RITMO_DE = { SPX: "shopee", Shopee: "shopee", Flex: "flex", "ML coleta": "coleta", "ML agência": "agencia", TikTok: "tiktok", Amazon: "amazon" };
@@ -1931,6 +1944,11 @@
     } catch {}
     return cat.cortes;
   }
+  // Inicio do trabalho da 1a remessa (as seguintes comecam quando fecham).
+  function inicioDe(cat) {
+    const v = lerPref(`inicio_${cat.id}`, "09:00");
+    return /^\d{2}:\d{2}$/.test(v) ? v : "09:00";
+  }
   const minutosSP = (ms) => {
     const [h, m] = new Date(ms).toLocaleTimeString("en-GB", { timeZone: TZ, hour12: false }).split(":").map(Number);
     return (h % 24) * 60 + m;
@@ -1962,6 +1980,65 @@
       }
     }
     return melhor;
+  }
+
+  // RELOGIO DA REMESSA (19/11): "SPX, voce tem X para finalizar".
+  // Inicio: 1a remessa = "Inicio do trabalho" (09:00); as seguintes, quando
+  // fecham (a lista so fica completa no corte). Prazo = inicio + pacotes x
+  // ritmo. Terminar = todos impressos/embalados ou ja saidos. Passou do prazo:
+  // 15 min para justificar; depois, atraso sem justificativa.
+  const MOTIVOS = ["Falta de produto", "Separação", "Produto não encontrado", "Outro"];
+  const fmtMin = (min) => (min < 60 ? `${min} min` : `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}`);
+  function relogioRemessa(cat, k, x, cortes, ehML) {
+    const m = minCanal(RITMO_CAT[cat.id], cat.equipe);
+    if (!m || !x.total) return "";
+    const agora = Date.now();
+    const hoje = diaSP(agora);
+    const ini = Date.parse(`${hoje}T${k === 0 ? inicioDe(cat) : cortes[k]}:00-03:00`);
+    const prazo = ini + Math.ceil(x.total * m) * 60e3;
+    const resta = x.falta - x.embalado;
+    const o = ocorr[`${cat.id}|${k + 1}`];
+    const verbo = ehML ? "imprimir" : "embalar";
+    if (resta <= 0) {
+      if (!o?.finalizadaEm && !finalizadasEnviadas.has(`${cat.id}|${k + 1}`)) {
+        finalizadasEnviadas.add(`${cat.id}|${k + 1}`);
+        api("/api/remessas/finalizar", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dia: hoje, cat: cat.id, n: k + 1, prazo }),
+        })
+          .then(carregarOcorrencias)
+          .catch(() => {});
+      }
+      const atr = o?.atrasoMin || 0;
+      return `<div class="rm-relogio fim">✓ Finalizada${o?.finalizadaEm ? ` às ${hhmm(o.finalizadaEm)}` : ""}${
+        atr ? ` · <b>${fmtMin(atr)} de atraso</b>${o?.motivo ? ` (${esc(o.motivo)})` : " sem justificativa"}` : " no prazo"
+      }</div>`;
+    }
+    if (agora < ini) {
+      return `<div class="rm-relogio">🕘 Começa às ${hhmm(ini)} · ${resta} para ${verbo} · tem até <b>${hhmm(prazo)}</b></div>`;
+    }
+    if (agora < prazo) {
+      return `<div class="rm-relogio ok"><span class="rm-rel-n" data-contagem="${prazo}">${contagem(prazo - agora)}</span>
+        <span>para finalizar · até <b>${hhmm(prazo)}</b> · ${resta} para ${verbo}</span></div>`;
+    }
+    const atraso = Math.floor((agora - prazo) / 60e3);
+    const botoes = (rotulo) => `<div class="rm-just"><span>${rotulo}</span>${MOTIVOS.map(
+      (mo) => `<button type="button" data-rm-just="${cat.id}|${k + 1}|${mo}" data-prazo="${prazo}">${mo}</button>`
+    ).join("")}</div>`;
+    if (o?.motivo) {
+      return `<div class="rm-relogio just">⚠ Atrasada <b>+${fmtMin(atraso)}</b> · justificado: <b>${esc(o.motivo)}</b>${
+        o.obs ? ` — ${esc(o.obs)}` : ""
+      }${o.quem ? ` (${esc(o.quem)})` : ""} · ${resta} para ${verbo}</div>`;
+    }
+    const limiteJust = prazo + 15 * 60e3;
+    if (agora < limiteJust) {
+      return `<div class="rm-relogio alerta">⏰ Passou do tempo! ${resta} ainda para ${verbo}.
+        Justifique em <b><span data-contagem="${limiteJust}">${contagem(limiteJust - agora)}</span></b> ou revise (procurar o produto, separação...)
+        ${botoes("O que aconteceu?")}</div>`;
+    }
+    return `<div class="rm-relogio atraso">🔴 Atraso sem justificativa <b>+${fmtMin(atraso)}</b> · ${resta} para ${verbo}
+      ${botoes("Justificar agora:")}</div>`;
   }
 
   function renderRemessas() {
@@ -2066,22 +2143,7 @@
                 : tinyLigado && x.falta
                   ? `<span class="rm-emb">📦 ${x.embalado} de ${x.falta} já embalados no Tiny</span>`
                   : ""
-            }${(() => {
-              // Tempo estimado da remessa = pacotes que faltam (e ainda nao estao
-              // prontos) x ritmo medido do canal.
-              const chave = RITMO_CAT[cat.id];
-              const m = minCanal(chave, cat.equipe);
-              const resta = x.falta - x.embalado;
-              if (!m || resta <= 0) return "";
-              const min = Math.ceil(resta * m);
-              const txt = min < 60 ? `${min} min` : `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}`;
-              const r = ritmo.canais?.[chave];
-              const re = ritmo.equipes?.[cat.equipe];
-              const origem = r
-                ? `medido em ${r.dias} dia${r.dias === 1 ? "" : "s"}`
-                : `média de ${re.dias} dia${re.dias === 1 ? "" : "s"} no Tiny, das ${re.inicio} ao fim, ~${re.pacotesPorDia} pacotes/dia`;
-              return `<span class="rm-ritmo">⏱ ~${txt} para ${ehML ? "imprimir" : "embalar"} os ${resta} restantes · ${String(m).replace(".", ",")} min/pacote (${origem})</span>`;
-            })()}<div class="pd-acum-barra"><span style="width:${pct}%;background:var(--rm)"></span></div></div>
+            }${relogioRemessa(cat, k, x, cortes, ehML)}<div class="pd-acum-barra"><span style="width:${pct}%;background:var(--rm)"></span></div></div>
           </div>`;
         })
         .join("");
@@ -2095,7 +2157,7 @@
           ${semHora ? `<span>${semHora} sem horário de venda</span>` : ""}
           ${programados ? `<span>📅 ${programados} programado${programados === 1 ? "" : "s"} para os próximos dias (fora da conta de hoje)</span>` : ""}
         </div>
-        <div class="pd-eq-cfg">Cortes:
+        <div class="pd-eq-cfg"><label>Início do trabalho <input type="time" value="${inicioDe(cat)}" data-rm-inicio="${cat.id}"></label> Cortes:
           ${cortes
             .map((h, k) => `<label>${nomeRem(k + 1)} até <input type="time" value="${h}" data-rm-corte="${cat.id}" data-k="${k}"></label>`)
             .join("")}
@@ -2115,6 +2177,12 @@
 
   // Editar cortes de uma categoria.
   document.addEventListener("change", (ev) => {
+    const ini = ev.target.closest("[data-rm-inicio]");
+    if (ini && /^\d{2}:\d{2}$/.test(ini.value)) {
+      salvarPref(`inicio_${ini.dataset.rmInicio}`, ini.value);
+      atualizarFaixas();
+      return;
+    }
     const i = ev.target.closest("[data-rm-corte]");
     if (!i || !/^\d{2}:\d{2}$/.test(i.value)) return;
     const cat = CATEGORIAS_REM.find((c) => c.id === i.dataset.rmCorte);
@@ -2220,6 +2288,42 @@
     else irPara("prazos");
   });
 
+  async function carregarOcorrencias() {
+    try {
+      const r = await api(`/api/remessas/ocorrencias?dia=${diaSP(Date.now())}`);
+      ocorr = Object.fromEntries(r.ocorrencias.map((o) => [`${o.cat}|${o.n}`, o]));
+    } catch {}
+  }
+
+  // Justificar atraso de uma remessa (mini painel de revisao).
+  document.addEventListener("click", async (ev) => {
+    const b = ev.target.closest("[data-rm-just]");
+    if (!b) return;
+    const [cat, n, motivo] = b.dataset.rmJust.split("|");
+    let obs = "";
+    if (motivo === "Outro") {
+      obs = prompt("O que aconteceu com esta remessa?") || "";
+      if (!obs.trim()) return;
+    }
+    let quem = "";
+    try {
+      quem = localStorage.getItem("ml-painel-operator-name") || "";
+    } catch {}
+    b.disabled = true;
+    try {
+      await api("/api/remessas/justificar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dia: diaSP(Date.now()), cat, n: Number(n), motivo, obs, quem, prazo: Number(b.dataset.prazo) }),
+      });
+      await carregarOcorrencias();
+      atualizarFaixas();
+    } catch (err) {
+      alert(`Não foi salvo: ${err.message}`);
+      b.disabled = false;
+    }
+  });
+
   async function carregarPacotesDia() {
     const [ml, sp, mlSaiu] = await Promise.allSettled([
       api("/api/prazos"),
@@ -2228,6 +2332,7 @@
     ]);
     if (ml.status === "fulfilled") mlPrazos = ml.value;
     if (mlSaiu.status === "fulfilled") mlSaiuHoje = mlSaiu.value;
+    await carregarOcorrencias();
     // Ritmo medido muda devagar: busca a cada 30 min.
     if (Date.now() - ritmoEm > 30 * 60e3) {
       ritmoEm = Date.now();
