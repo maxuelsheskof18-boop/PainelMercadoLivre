@@ -404,7 +404,12 @@ router.get("/api/shopee/resumo", requireLogin, async (req, res) => {
   }
 });
 
-router.get("/api/shopee/prazos", requireLogin, (req, res) => res.json(pedidos.snapshot()));
+router.get("/api/shopee/prazos", requireLogin, async (req, res) => {
+  try {
+    await pedidos.garantirAtual();
+  } catch {}
+  res.json(pedidos.snapshot());
+});
 
 // Acumulado do dia do MERCADO LIVRE (faixa "Pacotes do dia"). Fica aqui e nao
 // em routes/prazos.js para nao mexer no modulo do ML: le o historico que o
@@ -425,7 +430,23 @@ router.get("/api/pacotes-dia/ml-saiu-hoje", requireLogin, async (req, res) => {
     // porModalidade: as equipes se dividem por modalidade (flex x coleta/agencia).
     const porModalidade = {};
     for (const r of rows) porModalidade[r.modalidade || "?"] = (porModalidade[r.modalidade || "?"] || 0) + r.total;
-    res.json({ total: rows.reduce((s, r) => s + r.total, 0), porConta: rows, porModalidade });
+    // Remessas do ML: cada envio que saiu hoje com a hora aproximada da venda.
+    // A tabela nao guarda a data da venda: visto_em = primeira vez que o
+    // painel viu o envio (coleta a cada 3 min; se o Render estava dormindo,
+    // pode cair na remessa seguinte).
+    const { rows: envios } = await db.query(
+      `SELECT modalidade, visto_em
+         FROM prazos_envios
+        WHERE saiu_em >= (date_trunc('day', now() AT TIME ZONE 'America/Sao_Paulo') AT TIME ZONE 'America/Sao_Paulo')
+          AND status_final IS DISTINCT FROM 'cancelled'
+          AND modalidade IN ('coleta', 'agencia')`
+    );
+    res.json({
+      total: rows.reduce((s, r) => s + r.total, 0),
+      porConta: rows,
+      porModalidade,
+      envios: envios.map((e) => ({ modalidade: e.modalidade, vendaAprox: new Date(e.visto_em).getTime() })),
+    });
   } catch (err) {
     erro500(res, err);
   }
