@@ -299,6 +299,8 @@
   .rm-chip.ok { background: #f0fdf4; color: #15803d; }
   .rm-rodape { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-soft); }
   .rm-alerta { color: #b91c1c; }
+  .rm-emb { font-size: 12px; font-weight: 600; color: #7c3aed; }
+  .sp-chip.embalado { background: #f5f3ff; border-color: #ddd6fe; color: #6d28d9; }
   @media (max-width: 900px) { .rm-grade { grid-template-columns: 1fr; } }
   .eq-remessas { display: flex; flex-direction: column; gap: 8px; }
   .eq-sub { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
@@ -958,8 +960,9 @@
         .map((p) => {
           const qtd = p.itens.reduce((s, i) => s + (i.qtd || 0), 0);
           const produto = p.itens.map((i) => `${i.nome}${i.variacao ? ` (${i.variacao})` : ""}`).join(" · ");
-          const etapa =
-            p.etapa === "organizar"
+          const etapa = p.embaladoEm
+            ? `<span class="sp-chip embalado" title="Embalado no Tiny (horário = quando o painel viu)">Embalado ✓ ${p.embaladoSemHora ? dataHora(p.embaladoEm).slice(0, 5) : hora(p.embaladoEm)}</span>`
+            : p.etapa === "organizar"
               ? '<span class="sp-chip organizar">Organizar envio</span>'
               : `<span class="sp-chip aguardando">${p.modalidade === "agencia" ? "Levar na agência" : p.modalidade === "coleta" ? "Aguardando coleta" : "Etiqueta gerada"}</span>`;
           const s = sitClasse(p.situacao);
@@ -1931,7 +1934,7 @@
     const vistas = {};
     if (temShopee) {
       for (const p of prazos.pedidos.filter((x) => passaLoja(x.shopId))) {
-        itens.push({ cat: categoriaShopee(p.transportadora), venda: p.criadoEm || p.pagoEm, saiu: false });
+        itens.push({ cat: categoriaShopee(p.transportadora), venda: p.criadoEm || p.pagoEm, saiu: false, embalado: !!p.embaladoEm });
         vistas[p.transportadora || "(sem transportadora)"] = (vistas[p.transportadora || "(sem transportadora)"] || 0) + 1;
       }
       for (const s of (prazos.saidosHoje || []).filter((x) => passaLoja(x.shopId))) {
@@ -1947,10 +1950,11 @@
       for (const e of mlSaiuHoje?.envios || []) itens.push({ cat: e.modalidade, venda: e.vendaAprox, saiu: true, ml: true });
     }
 
+    const tinyLigado = temShopee && !!prazos?.tiny?.configurado;
     const cards = cats.map((cat) => {
       const cortes = cortesDe(cat);
       const meus = itens.filter((i) => i.cat === cat.id);
-      const rem = cortes.map(() => ({ total: 0, saiu: 0, falta: 0 }));
+      const rem = cortes.map(() => ({ total: 0, saiu: 0, falta: 0, embalado: 0 }));
       let paraAmanha = 0;
       let anteriores = 0;
       let semHora = 0;
@@ -1980,6 +1984,7 @@
           const x = rem[r.n - 1];
           x.total++;
           i.saiu ? x.saiu++ : x.falta++;
+          if (!i.saiu && i.embalado) x.embalado++;
         } else if (r.dia === amanha) paraAmanha++;
         else if (r.dia < hoje && !i.saiu) anteriores++;
       }
@@ -2006,7 +2011,9 @@
             <div class="rm-total"><span>${x.total}</span><small>pacotes</small></div>
             <div class="rm-num ok"><span>${x.saiu}</span><small>já saíram</small></div>
             <div class="rm-num"><span>${x.falta}</span><small>faltam</small></div>
-            <div class="rm-st">${chip}<div class="pd-acum-barra"><span style="width:${pct}%;background:var(--rm)"></span></div></div>
+            <div class="rm-st">${chip}${
+              tinyLigado && !ehML && x.falta ? `<span class="rm-emb">📦 ${x.embalado} de ${x.falta} já embalados no Tiny</span>` : ""
+            }<div class="pd-acum-barra"><span style="width:${pct}%;background:var(--rm)"></span></div></div>
           </div>`;
         })
         .join("");
