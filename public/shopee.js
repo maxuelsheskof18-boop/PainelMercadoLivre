@@ -1774,7 +1774,7 @@
         // Shopee). Assim o relogio conversa com as remessas.
         const candidatos = [
           c.primeiroLimite && { ms: c.primeiroLimite, rot: "limite da plataforma" },
-          eq.shopee && proximoCorte(),
+          proximoCorte(eq),
         ].filter(Boolean);
         const alvoInfo = cfg.meta
           ? { ms: metaHoje(cfg.meta), rot: "horário definido" }
@@ -1832,7 +1832,7 @@
             </div>
           </div>
           ${tabelaCanais}
-          ${eq.shopee ? `<div class="eq-remessas"><div class="eq-sub">Remessas Shopee (por horário da venda)</div>${htmlRemessas()}</div>` : ""}
+          ${catsDaEquipe(eq).length ? `<div class="eq-remessas"><div class="eq-sub">Remessas (por horário da venda)</div>${htmlRemessas(eq)}</div>` : ""}
           ${c.antigos ? `<div class="pd-eq-det">+${c.antigos} atrasado(s) de dias anteriores fora da conta</div>` : ""}
           ${c.primeiroLimite && c.falta && cfg.meta ? `<div class="pd-eq-det">Próximo limite da plataforma: <b>${hhmm(c.primeiroLimite)}</b></div>` : ""}
           <div class="pd-eq-cfg">
@@ -1862,9 +1862,13 @@
     return "outras";
   }
   const CATEGORIAS_REM = [
-    { id: "spx", nome: "SPX Entrega Rápida", cor: "#ee4d2d", cortes: ["07:00", "11:00"] },
-    { id: "xpress", nome: "Shopee Xpress", cor: "#2563eb", cortes: ["07:00", "13:00"] },
+    { id: "spx", nome: "SPX Entrega Rápida", equipe: "bahia", cor: "#ee4d2d", cortes: ["07:00", "11:00"] },
+    { id: "xpress", nome: "Shopee Xpress", equipe: "bahia", cor: "#2563eb", cortes: ["07:00", "13:00"] },
+    // ML (19/11): coleta e agencia, ate 7h = 1a remessa, 7h-13h = 2a.
+    { id: "coleta", nome: "ML coleta", equipe: "mathias", cor: "#ca8a04", cortes: ["07:00", "13:00"] },
+    { id: "agencia", nome: "ML agência", equipe: "mathias", cor: "#0891b2", cortes: ["07:00", "13:00"] },
   ];
+  const catsDaEquipe = (eq) => CATEGORIAS_REM.filter((c) => c.equipe === eq.id);
   function cortesDe(cat) {
     try {
       const salvo = JSON.parse(lerPref(`cortes_${cat.id}`, "null"));
@@ -1888,11 +1892,11 @@
   const nomeRem = (n) => `${n}ª remessa`;
 
   // Proximo corte de remessa ainda por vir hoje (para o relogio das equipes).
-  function proximoCorte() {
+  function proximoCorte(eq) {
     const agora = Date.now();
     const hoje = diaSP(agora);
     let melhor = null;
-    for (const cat of CATEGORIAS_REM) {
+    for (const cat of catsDaEquipe(eq)) {
       const cortes = cortesDe(cat);
       for (let k = 0; k < cortes.length; k++) {
         const ms = Date.parse(`${hoje}T${cortes[k]}:00-03:00`);
@@ -1906,24 +1910,42 @@
   }
 
   function renderRemessas() {
-    corpo.innerHTML = htmlRemessas();
+    corpo.innerHTML = EQUIPES.map(htmlRemessas).join("");
   }
 
-  function htmlRemessas() {
-    if (!prazos?.pedidos) return `<div class="shopee-vazio">Carregando pedidos da Shopee...</div>`;
+  function htmlRemessas(eq) {
+    const cats = catsDaEquipe(eq);
+    const temShopee = cats.some((c) => c.id === "spx" || c.id === "xpress");
+    const temML = cats.some((c) => c.id === "coleta" || c.id === "agencia");
+    if (temShopee && !prazos?.pedidos) return `<div class="shopee-vazio">Carregando pedidos da Shopee...</div>`;
+    if (temML && !mlPrazos?.envios) return `<div class="shopee-vazio">Carregando envios do Mercado Livre...</div>`;
     const agora = Date.now();
     const hoje = diaSP(agora);
     const amanha = somaDia(hoje, 1);
-    const itens = [
-      ...prazos.pedidos.filter((p) => passaLoja(p.shopId)).map((p) => ({ venda: p.criadoEm || p.pagoEm, transp: p.transportadora, saiu: false })),
-      ...(prazos.saidosHoje || []).filter((s) => passaLoja(s.shopId)).map((s) => ({ venda: s.criadoEm, transp: s.transportadora, saiu: true })),
-    ];
+    // { cat, venda (ms), saiu }
+    const itens = [];
     const vistas = {};
-    for (const i of itens) vistas[i.transp || "(sem transportadora)"] = (vistas[i.transp || "(sem transportadora)"] || 0) + 1;
+    if (temShopee) {
+      for (const p of prazos.pedidos.filter((x) => passaLoja(x.shopId))) {
+        itens.push({ cat: categoriaShopee(p.transportadora), venda: p.criadoEm || p.pagoEm, saiu: false });
+        vistas[p.transportadora || "(sem transportadora)"] = (vistas[p.transportadora || "(sem transportadora)"] || 0) + 1;
+      }
+      for (const s of (prazos.saidosHoje || []).filter((x) => passaLoja(x.shopId))) {
+        itens.push({ cat: categoriaShopee(s.transportadora), venda: s.criadoEm, saiu: true });
+        vistas[s.transportadora || "(sem transportadora)"] = (vistas[s.transportadora || "(sem transportadora)"] || 0) + 1;
+      }
+    }
+    if (temML) {
+      for (const e of mlPrazos.envios) {
+        if (e.modalidade !== "coleta" && e.modalidade !== "agencia") continue;
+        itens.push({ cat: e.modalidade, venda: e.criadoEm ? Date.parse(e.criadoEm) : null, saiu: false });
+      }
+      for (const e of mlSaiuHoje?.envios || []) itens.push({ cat: e.modalidade, venda: e.vendaAprox, saiu: true });
+    }
 
-    const cards = CATEGORIAS_REM.map((cat) => {
+    const cards = cats.map((cat) => {
       const cortes = cortesDe(cat);
-      const meus = itens.filter((i) => categoriaShopee(i.transp) === cat.id);
+      const meus = itens.filter((i) => i.cat === cat.id);
       const rem = cortes.map(() => ({ total: 0, saiu: 0, falta: 0 }));
       let paraAmanha = 0;
       let anteriores = 0;
@@ -1982,13 +2004,13 @@
       </div>`;
     }).join("");
 
-    const outras = itens.filter((i) => categoriaShopee(i.transp) === "outras").length;
+    const outras = itens.filter((i) => i.cat === "outras").length;
     return `
       <div class="rm-grade">${cards}</div>
       <div class="muted small sp-eq-nota">
-        Pacotes da Shopee contados pelo <b>horário da venda</b>: "já saíram" = coletados/postados hoje; "faltam" = ainda não saíram.
-        ${outras ? `${outras} pacote(s) de outras transportadoras ficam fora das remessas.` : ""}
-        <br>Transportadoras vistas: ${Object.entries(vistas).map(([n, q]) => `${esc(n)} (${q})`).join(" · ") || "nenhuma"}
+        Contado pelo <b>horário da venda</b>: "já saíram" = coletados/postados hoje; "faltam" = ainda não saíram.
+        ${temShopee && outras ? `${outras} pacote(s) da Shopee de outras transportadoras ficam fora das remessas.` : ""}
+        ${temShopee ? `<br>Transportadoras Shopee vistas: ${Object.entries(vistas).map(([n, q]) => `${esc(n)} (${q})`).join(" · ") || "nenhuma"}` : ""}
       </div>`;
   }
 
