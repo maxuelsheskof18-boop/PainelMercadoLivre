@@ -201,7 +201,23 @@ async function coletarLoja(conta) {
   };
 }
 
-async function coletar() {
+// Coleta em andamento (para quem precisa ESPERAR o resultado).
+let emAndamento = null;
+function coletar() {
+  if (!emAndamento) emAndamento = coletarAgora().finally(() => (emAndamento = null));
+  return emAndamento;
+}
+
+// Render gratuito dorme e para o setInterval: ao acordar a lista estava vazia
+// (19/11: tela de Equipes/Remessas com 0 da Shopee). Se o dado estiver velho,
+// coleta agora e espera (no maximo ~25s; depois devolve o que tiver).
+async function garantirAtual() {
+  const idade = estado.atualizadoEm ? Date.now() - estado.atualizadoEm : Infinity;
+  if (idade < INTERVALO_MS + 30_000) return;
+  await Promise.race([coletar(), new Promise((r) => setTimeout(r, 25_000))]);
+}
+
+async function coletarAgora() {
   if (estado.rodando || !shopee.configurado()) return;
   estado.rodando = true;
   try {
@@ -272,4 +288,4 @@ function iniciar() {
   timer = setInterval(() => coletar().catch(() => {}), INTERVALO_MS);
 }
 
-module.exports = { iniciar, coletar, snapshot, situacao };
+module.exports = { iniciar, coletar, garantirAtual, snapshot, situacao };
