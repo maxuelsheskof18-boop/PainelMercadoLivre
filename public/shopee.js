@@ -190,6 +190,17 @@
   }
   @media (max-width: 900px) { .sp-ctx { width: 100%; } }
   .sp-msg-hora { font-size: 10.5px; color: var(--muted); text-align: right; margin-top: 2px; }
+  .sp-st-msg { margin-left: 6px; font-weight: 600; }
+  .sp-st-msg.ok { color: #15803d; }
+  .sp-st-msg.erro { color: #b91c1c; }
+  .sp-msg.enviando { opacity: .72; }
+  .sp-msg.erro { background: #fef2f2 !important; border: 1px solid #fecaca; }
+  .sp-msg-erro { margin-top: 6px; font-size: 12px; color: #991b1b; white-space: normal; }
+  .sp-msg-erro-bt { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .sp-msg-erro-bt button { border: 1px solid currentColor; background: #fff; color: #991b1b; border-radius: 999px; padding: 2px 10px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .sp-perfil { margin-left: 6px; font-size: 11px; color: var(--muted); }
+  .sp-aviso-rapido { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px); background: #1f2937; color: #fff; padding: 12px 18px; border-radius: 12px; font-size: 13.5px; line-height: 1.5; box-shadow: 0 10px 30px rgba(0,0,0,.3); opacity: 0; pointer-events: none; transition: .25s; z-index: 9999; max-width: min(92vw, 460px); text-align: center; }
+  .sp-aviso-rapido.on { opacity: 1; transform: translate(-50%, 0); }
   .sp-composer { border-top: 1px solid var(--border); background: var(--card); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
   .sp-rapidas { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
   .sp-rapidas button { border: 1px solid #fed7c9; background: var(--shopee-suave); color: var(--shopee-escuro); border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
@@ -340,7 +351,14 @@
   .rm-peds .pz-copiar { margin-left: 4px; border: none; background: none; cursor: pointer; color: var(--muted); }
   .rm-relogio { font-size: 12.5px; color: var(--text-soft); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border-radius: 10px; background: var(--bg); }
   .rm-relogio.ok { background: color-mix(in srgb, var(--rm) 8%, #fff); }
-  .rm-rel-n { font-size: 22px; font-weight: 800; color: var(--rm); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .rm-rel-grande { display: flex; align-items: center; gap: 14px; width: 100%; flex-wrap: wrap; }
+  .rm-rel-n { font-size: 44px; font-weight: 800; line-height: 1; color: var(--rm); font-variant-numeric: tabular-nums; letter-spacing: -.03em; }
+  .rm-rel-rot { font-size: 13px; line-height: 1.4; color: inherit; }
+  .rm-relogio { padding: 12px 14px !important; }
+  .rm-relogio.alerta .rm-rel-n { color: #ea580c; }
+  .rm-relogio.atraso .rm-rel-n { color: #dc2626; animation: eq-pisca 1.2s ease-in-out infinite; }
+  .rm-relogio.just .rm-rel-n { color: #b45309; }
+  @media (max-width: 700px) { .rm-rel-n { font-size: 34px; } }
   .rm-relogio.fim { background: #f0fdf4; color: #15803d; }
   .rm-relogio.just { background: #fffbeb; color: #92400e; }
   .rm-relogio.alerta { background: #fff7ed; color: #9a3412; border: 2px solid #fb923c; }
@@ -989,7 +1007,7 @@
               : `<span class="sp-chip aguardando">${p.modalidade === "agencia" ? "Levar na agência" : p.modalidade === "coleta" ? "Aguardando coleta" : "Etiqueta gerada"}</span>`;
           const s = sitClasse(p.situacao);
           return `<tr class="${s ? `sit-${s}` : ""}">
-            <td data-label="Pedido"><span class="pz-venda"><span class="sp-sn">${esc(p.orderSn)}</span><button type="button" class="pz-copiar" data-sp-copiar="${esc(p.orderSn)}" title="Copiar número do pedido" aria-label="Copiar pedido ${esc(p.orderSn)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></span></td>
+            <td data-label="Pedido"><span class="pz-venda"><span class="sp-sn">${esc(p.orderSn)}</span><button type="button" class="pz-copiar" data-sp-copiar="${esc(p.orderSn)}" title="Copiar número do pedido" aria-label="Copiar pedido ${esc(p.orderSn)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><button type="button" class="pz-copiar" data-sp-abrir="${esc(p.orderSn)}" data-tipo="pedido" data-shop="${esc(p.shopId)}" data-loja="${esc(p.loja)}" title="Abrir a lista de pedidos na Shopee (copia o número)" aria-label="Abrir pedido ${esc(p.orderSn)} na Shopee">↗</button></span></td>
             <td data-label="Loja"><i class="sp-ponto-loja" style="background:${corLoja(p.shopId)}"></i>${esc(p.loja)}</td>
             <td data-label="Produto" class="pz-td-produto" title="${esc(produto)}">${esc(produto)}</td>
             <td data-label="Qtd" class="num">${qtd}</td>
@@ -1183,6 +1201,8 @@
 
   async function abrirConversa(c) {
     conversaAberta = { ...c };
+    rapidoOk = false;
+    ultimoCompleto = 0;
     msgsAbertas = [];
     ctxAberto = null;
     ctxChave = "";
@@ -1205,19 +1225,54 @@
     }
   }
 
-  async function carregarMensagens({ rolar = false } = {}) {
+  // Atualizacao RAPIDA (so as 25 mensagens mais recentes) quando a Shopee
+  // devolve a mais nova na 1a pagina; a cada 90 s (e ao abrir) le tudo.
+  let rapidoOk = false;
+  let ultimoCompleto = 0;
+  const normTxt = (t) => String(t || "").replace(/\s+/g, " ").trim();
+  const casaLocal = (m, l) =>
+    m.daLoja && ((l.idReal && m.id === l.idReal) || (m.tipo !== "image" && m.tipo !== "video" && normTxt(m.texto) === normTxt(l.texto) && Math.abs((m.em || 0) - l.em) < 5 * 60e3));
+
+  async function carregarMensagens({ rolar = false, completo = false } = {}) {
     if (!conversaAberta) return;
     const alvo = conversaAberta;
+    const rapido = !completo && rapidoOk && Date.now() - ultimoCompleto < 90_000;
     try {
-      const r = await api(`/api/shopee/chat/${encodeURIComponent(alvo.shopId)}/${encodeURIComponent(alvo.id)}?comprador=${encodeURIComponent(alvo.compradorId)}`);
+      const r = await api(
+        `/api/shopee/chat/${encodeURIComponent(alvo.shopId)}/${encodeURIComponent(alvo.id)}?comprador=${encodeURIComponent(alvo.compradorId)}${rapido ? "&rapido=1" : ""}`
+      );
       if (conversaAberta !== alvo) return; // trocou de conversa no meio
-      const mudou = r.mensagens.length !== msgsAbertas.length || r.mensagens.at(-1)?.id !== msgsAbertas.at(-1)?.id;
-      msgsAbertas = r.mensagens;
-      if (mudou || rolar) renderMensagens(true);
+      if (!rapido) {
+        ultimoCompleto = Date.now();
+        rapidoOk = r.rapidoOk !== false;
+      }
+      const antes = msgsAbertas;
+      let reais = r.mensagens;
+      if (rapido) {
+        const porId = new Map(antes.filter((m) => !m.local).map((m) => [m.id, m]));
+        for (const m of r.mensagens) porId.set(m.id, m);
+        reais = [...porId.values()].sort((a, b) => (a.em || 0) - (b.em || 0));
+      }
+      // Mensagens enviadas agora e ainda nao vistas na lista da Shopee ficam
+      // no fim, com o status; as confirmadas (ou velhas demais) saem.
+      const usados = new Set();
+      const pendentes = antes
+        .filter((m) => m.local)
+        .filter((l) => {
+          const achou = reais.find((x) => !usados.has(x.id) && casaLocal(x, l));
+          if (achou) {
+            usados.add(achou.id);
+            return false;
+          }
+          return !(l.status === "enviada" && Date.now() - l.em > 90_000);
+        });
+      msgsAbertas = [...reais, ...pendentes];
+      const sig = (a) => `${a.length}|${a.at(-1)?.id}|${a.map((m) => m.status || "").join("")}`;
+      if (sig(msgsAbertas) !== sig(antes) || rolar) renderMensagens(true);
       carregarContexto();
     } catch (err) {
       const box = $("sp-msgs");
-      if (box) box.innerHTML = `<div class="sp-thread-vazio">Não deu para abrir a conversa: ${esc(traduzErro(err.message))}</div>`;
+      if (box && !msgsAbertas.length) box.innerHTML = `<div class="sp-thread-vazio">Não deu para abrir a conversa: ${esc(traduzErro(err.message))}</div>`;
     }
   }
 
@@ -1270,7 +1325,7 @@
   function cartaoPedido(o) {
     const linha = (rot, val) => (val ? `<dt>${rot}</dt><dd>${val}</dd>` : "");
     return `<div class="sp-ped-card">
-      <div class="sp-ped-card-topo"><span><span class="sp-sn">${esc(o.orderSn)}</span><button type="button" class="sp-mini-copiar" data-sp-copiar-chat="${esc(o.orderSn)}" title="Copiar número do pedido">⧉</button></span><span class="sp-ped-st">${esc(o.statusTexto)}</span></div>
+      <div class="sp-ped-card-topo"><span><span class="sp-sn">${esc(o.orderSn)}</span><button type="button" class="sp-mini-copiar" data-sp-copiar-chat="${esc(o.orderSn)}" title="Copiar número do pedido">⧉</button><button type="button" class="sp-mini-copiar" data-sp-abrir="${esc(o.orderSn)}" data-tipo="pedido" data-shop="${esc(conversaAberta?.shopId || "")}" data-loja="${esc(conversaAberta?.loja || "")}" title="Abrir a lista de pedidos na Shopee (copia o número)">↗</button></span><span class="sp-ped-st">${esc(o.statusTexto)}</span></div>
       <div class="sp-ped-itens">${o.itens
         .map(
           (i) => `<div class="sp-ped-item">${i.imagem ? `<img src="${esc(i.imagem)}" alt="" loading="lazy">` : '<span class="sp-prod-sem"></span>'}
@@ -1342,9 +1397,9 @@
       <div class="sp-thread-topo">
         <button type="button" class="btn btn-ghost btn-sm sp-voltar" id="sp-voltar">←</button>
         <div class="sp-avatar" style="--sp-loja:${corLoja(c.shopId)};width:34px;height:34px;font-size:13px">${esc(c.comprador.charAt(0).toUpperCase())}</div>
-        <div style="min-width:0"><div style="font-weight:700">${esc(c.comprador)}</div><div style="margin-top:2px">${chipLoja(c.shopId, c.loja)}</div></div>
+        <div style="min-width:0"><div style="font-weight:700;white-space:nowrap">${esc(c.comprador)}<button type="button" class="sp-mini-copiar" data-sp-copiar-chat="${esc(c.comprador)}" title="Copiar usuário do comprador">⧉</button></div><div style="margin-top:2px">${chipLoja(c.shopId, c.loja)}${perfilDe(c.shopId) ? `<span class="sp-perfil" title="Perfil do Chrome onde esta loja está logada">🌐 ${esc(perfilDe(c.shopId))}</span>` : ""}</div></div>
         <div class="sp-thread-acoes">
-          <a class="btn btn-ghost btn-sm" id="sp-abrir-shopee" href="https://seller.shopee.com.br/webchat/conversations" target="_blank" rel="noopener" title="Abre o chat da Central do Vendedor e copia o nome do comprador para colar na busca">Abrir na Shopee ↗</a>
+          <button type="button" class="btn btn-ghost btn-sm" id="sp-abrir-shopee" title="Copia o usuário do comprador e abre o chat da Central do Vendedor; cole na busca (use o Chrome da loja ${esc(c.loja)})">Abrir chat na Shopee ↗</button>
           <button type="button" class="btn btn-ghost btn-sm sp-ctx-btn" id="sp-ctx-btn">ℹ Detalhes</button>
         </div>
       </div>
@@ -1383,21 +1438,36 @@
         txt.focus();
       })
     );
-    $("sp-enviar").addEventListener("click", enviar);
+    $("sp-enviar").addEventListener("click", () => enviar());
     $("sp-ctx-btn").addEventListener("click", () => t.classList.toggle("ctx-aberto"));
-    // A Shopee nao tem link direto para uma conversa: abre o chat do vendedor
-    // e deixa o nome do comprador copiado para colar na busca de la.
-    $("sp-abrir-shopee").addEventListener("click", () => {
-      navigator.clipboard?.writeText(c.comprador).catch(() => {});
-      const b = $("sp-abrir-shopee");
-      b.textContent = `"${c.comprador}" copiado ✓`;
-      setTimeout(() => b && (b.textContent = "Abrir na Shopee ↗"), 2500);
-    });
+    // A Shopee nao publica link direto para uma conversa: abre o chat do
+    // vendedor e deixa o usuario do comprador copiado para colar na busca.
+    $("sp-abrir-shopee").addEventListener("click", () => abrirNaShopee({ shopId: c.shopId, loja: c.loja, tipo: "chat", texto: c.comprador }));
     // Anexos (zoom), copiar pedido/rastreio. #sp-thread so e recriado junto
     // com a tela do chat: registra uma vez por elemento.
     if (!t.dataset.ouvindo) {
       t.dataset.ouvindo = "1";
       t.addEventListener("click", async (e) => {
+      const acaoMsg = e.target.closest("[data-sp-reenviar],[data-sp-editar],[data-sp-descartar]");
+      if (acaoMsg) {
+        const id = acaoMsg.dataset.spReenviar || acaoMsg.dataset.spEditar || acaoMsg.dataset.spDescartar;
+        const m = msgsAbertas.find((x) => x.id === id);
+        if (!m) return;
+        if (acaoMsg.dataset.spReenviar) enviar(m.texto, m);
+        else {
+          msgsAbertas = msgsAbertas.filter((x) => x !== m);
+          if (acaoMsg.dataset.spEditar) {
+            const tx = $("sp-texto");
+            if (tx) {
+              tx.value = m.texto;
+              tx.dispatchEvent(new Event("input"));
+              tx.focus();
+            }
+          }
+          renderMensagens(false);
+        }
+        return;
+      }
       const anexo = e.target.closest("[data-sp-zoom]");
       if (anexo) {
         e.preventDefault();
@@ -1453,32 +1523,87 @@
           const o = ctxAberto?.pedidos?.find((x) => x.orderSn === m.pedido);
           corpoMsg = `🧾 Pedido <b>${esc(m.pedido)}</b>${o ? `<br><span class="small">${esc(o.statusTexto)}${o.total != null ? ` · ${brl(o.total)}` : ""}</span>` : ""}`;
         } else corpoMsg = esc(m.texto);
-        return `${sep}<div class="sp-msg ${m.daLoja ? "nossa" : "dele"}${anexo ? " anexo" : ""}">${corpoMsg}<div class="sp-msg-hora">${m.em ? hora(m.em) : ""}</div></div>`;
+        const st =
+          m.status === "enviando"
+            ? ' <span class="sp-st-msg">⏳ enviando…</span>'
+            : m.status === "enviada"
+              ? ' <span class="sp-st-msg ok">✓ enviada</span>'
+              : m.status === "erro"
+                ? ' <span class="sp-st-msg erro">⚠ não enviada</span>'
+                : "";
+        const erroBox =
+          m.status === "erro"
+            ? `<div class="sp-msg-erro">${esc(m.erro || "")}<div class="sp-msg-erro-bt">${
+                m.censurada ? "" : `<button type="button" data-sp-reenviar="${esc(m.id)}">Tentar de novo</button>`
+              }<button type="button" data-sp-editar="${esc(m.id)}">Editar</button><button type="button" data-sp-descartar="${esc(m.id)}">Descartar</button></div></div>`
+            : "";
+        return `${sep}<div class="sp-msg ${m.daLoja ? "nossa" : "dele"}${anexo ? " anexo" : ""}${m.status ? ` ${m.status}` : ""}">${corpoMsg}<div class="sp-msg-hora">${m.em ? hora(m.em) : ""}${st}</div>${erroBox}</div>`;
       })
       .join("");
     if (rolar || noFim) box.scrollTop = box.scrollHeight;
     else box.scrollTop = topoAntes;
   }
 
-  async function enviar() {
-    const txt = $("sp-texto");
-    const texto = txt?.value.trim();
-    if (!texto || enviando || !conversaAberta) return;
-    enviando = true;
-    const btn = $("sp-enviar");
-    btn.disabled = true;
-    btn.textContent = "Enviando...";
-    const c = conversaAberta;
+  // ---- Abrir na Central do Vendedor da loja certa (23/11) ----
+  // O usuario tem uma loja por perfil do Chrome. O painel nao consegue trocar
+  // de perfil, entao: copia o que buscar, abre a Central e avisa DE QUAL loja
+  // (e perfil do Chrome, se informado na aba Lojas) e o que colar.
+  const perfilDe = (shopId) => lerPref(`perfil_${shopId}`, "");
+  const CENTRAL = { chat: "https://seller.shopee.com.br/webchat/conversations", pedido: "https://seller.shopee.com.br/portal/sale/order" };
+  function avisoRapido(html, ms = 9000) {
+    let el = document.getElementById("sp-aviso-rapido");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "sp-aviso-rapido";
+      el.className = "sp-aviso-rapido";
+      document.body.appendChild(el);
+    }
+    el.innerHTML = html;
+    el.classList.add("on");
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.classList.remove("on"), ms);
+  }
+  async function abrirNaShopee({ shopId, loja, tipo, texto }) {
+    window.open(CENTRAL[tipo], "_blank", "noopener");
     try {
-      await api(`/api/shopee/chat/${encodeURIComponent(c.shopId)}/${encodeURIComponent(c.id)}/enviar`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ compradorId: c.compradorId, texto }),
-      });
-      txt.value = "";
-      txt.dispatchEvent(new Event("input"));
-      msgsAbertas.push({ id: `local-${Date.now()}`, daLoja: true, texto, em: Date.now() });
-      renderMensagens(true);
+      await navigator.clipboard.writeText(texto);
+    } catch {}
+    const perfil = perfilDe(shopId);
+    avisoRapido(
+      `<b>${tipo === "chat" ? "Usuário" : "Pedido"} copiado:</b> ${esc(texto)}<br>` +
+        `Use a loja <b>${esc(loja || `Loja ${shopId}`)}</b>${perfil ? ` · Chrome: <b>${esc(perfil)}</b>` : ""} e cole na busca.`
+    );
+  }
+  corpo.addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-sp-abrir]");
+    if (!b) return;
+    ev.preventDefault();
+    const c = estado?.contas?.find((x) => x.shopId === b.dataset.shop);
+    abrirNaShopee({ shopId: b.dataset.shop, loja: b.dataset.loja || c?.nome, tipo: b.dataset.tipo || "pedido", texto: b.dataset.spAbrir });
+  });
+  document.addEventListener("change", (ev) => {
+    const i = ev.target.closest("[data-perfil]");
+    if (i) salvarPref(`perfil_${i.dataset.perfil}`, i.value.trim());
+  });
+
+  // Envio OTIMISTA (23/11: "demora para enviar e para confirmar"): o balao
+  // aparece na hora como "enviando", vira "enviada" quando a Shopee aceita e
+  // some quando a mensagem de verdade chega na lista. Erro fica no balao,
+  // com Tentar de novo / Editar / Descartar.
+  async function enviar(textoForcado, localExistente) {
+    const txt = $("sp-texto");
+    const texto = String(textoForcado ?? txt?.value ?? "").trim();
+    if (!texto || !conversaAberta) return;
+    const c = conversaAberta;
+    let local = localExistente;
+    if (!local) {
+      local = { id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, local: true, daLoja: true, texto, em: Date.now(), status: "enviando" };
+      msgsAbertas.push(local);
+      if (txt && textoForcado === undefined) {
+        txt.value = "";
+        txt.dispatchEvent(new Event("input"));
+        txt.focus();
+      }
       const conv = chat?.conversas.find((x) => x.shopId === c.shopId && x.id === c.id);
       if (conv) {
         conv.ultimaTexto = texto;
@@ -1486,21 +1611,34 @@
         conv.ultimaEm = Date.now();
         renderListaConversas();
       }
-      setTimeout(() => carregarMensagens(), 1500);
+    } else {
+      local.status = "enviando";
+      local.erro = null;
+      local.censurada = false;
+    }
+    if (conversaAberta === c) renderMensagens(true);
+    try {
+      const r = await api(`/api/shopee/chat/${encodeURIComponent(c.shopId)}/${encodeURIComponent(c.id)}/enviar`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ compradorId: c.compradorId, texto }),
+      });
+      local.status = "enviada";
+      local.idReal = r.resposta?.message_id ? String(r.resposta.message_id) : null;
+      if (conversaAberta === c) {
+        renderMensagens(false);
+        setTimeout(() => carregarMensagens(), 700);
+      }
     } catch (err) {
       // A Shopee bloqueia palavras que ela entende como desvio da plataforma
       // (visto em 18/11 com uma resposta normal de atendimento).
-      if (/message_is_censored|blacklist/i.test(err.message)) {
-        alert(
-          "A Shopee bloqueou esta mensagem: tem alguma palavra proibida no chat.\n\n" +
-            "Costumam ser bloqueados: telefone, WhatsApp, e-mail, links, Pix, nomes de outros sites/lojas e às vezes uma assinatura com o nome da empresa.\n\n" +
-            "Tente tirar a assinatura (\"Equipe ...\") ou trocar palavras e envie de novo. O texto continua na caixa."
-        );
-      } else alert(`Não foi enviado: ${traduzErro(err.message)}`);
-    } finally {
-      enviando = false;
-      btn.disabled = false;
-      btn.textContent = "Enviar";
+      local.status = "erro";
+      local.censurada = /message_is_censored|blacklist/i.test(err.message);
+      local.erro = local.censurada
+        ? "A Shopee bloqueou esta mensagem: tem alguma palavra proibida no chat (telefone, WhatsApp, e-mail, link, Pix, nome de outro site ou até a assinatura com o nome da empresa). Clique em Editar, ajuste e envie de novo."
+        : `Não foi enviada: ${traduzErro(err.message)}`;
+      if (conversaAberta === c) renderMensagens(true);
+      else alert(`Mensagem para ${c.comprador} não foi enviada.\n\n${local.erro}`);
     }
   }
 
@@ -1732,6 +1870,9 @@
   setInterval(() => {
     document.querySelectorAll("[data-contagem]").forEach((el) => {
       el.textContent = contagem(Number(el.dataset.contagem) - Date.now());
+    });
+    document.querySelectorAll("[data-desde]").forEach((el) => {
+      el.textContent = `+${contagem(Date.now() - Number(el.dataset.desde))}`;
     });
   }, 1000);
 
@@ -2071,30 +2212,47 @@
         atr ? ` · <b>${fmtMin(atr)} de atraso</b>${o?.motivo ? ` (${esc(o.motivo)})` : " sem justificativa"}` : " no prazo"
       }</div>`;
     }
+    // Cronometro grande (pedido 19/11: "igual o relogio da equipe").
+    const grande = (num, rot, attr = "") =>
+      `<div class="rm-rel-grande"><span class="rm-rel-n" ${attr}>${num}</span><span class="rm-rel-rot">${rot}</span></div>`;
     if (agora < ini) {
-      return `<div class="rm-relogio">🕘 Começa às ${hhmm(ini)} · ${resta} para ${verbo} · tem até <b>${hhmm(prazo)}</b>${info}</div>`;
+      return `<div class="rm-relogio">${grande(
+        hhmm(ini),
+        `começa às ${hhmm(ini)}<br>tem até <b>${hhmm(prazo)}</b> · ${resta} para ${verbo}`
+      )}${info}</div>`;
     }
     if (agora < prazo) {
-      return `<div class="rm-relogio ok"><span class="rm-rel-n" data-contagem="${prazo}">${contagem(prazo - agora)}</span>
-        <span>para finalizar · até <b>${hhmm(prazo)}</b> · ${resta} para ${verbo}</span>${info}</div>`;
+      return `<div class="rm-relogio ok">${grande(
+        contagem(prazo - agora),
+        `para finalizar<br>até <b>${hhmm(prazo)}</b> · ${resta} para ${verbo}`,
+        `data-contagem="${prazo}"`
+      )}${info}</div>`;
     }
     const atraso = Math.floor((agora - prazo) / 60e3);
     const botoes = (rotulo) => `<div class="rm-just"><span>${rotulo}</span>${MOTIVOS.map(
       (mo) => `<button type="button" data-rm-just="${cat.id}|${k + 1}|${mo}" data-prazo="${prazo}">${mo}</button>`
     ).join("")}</div>`;
     if (o?.motivo) {
-      return `<div class="rm-relogio just">⚠ Atrasada <b>+${fmtMin(atraso)}</b> · justificado: <b>${esc(o.motivo)}</b>${
-        o.obs ? ` — ${esc(o.obs)}` : ""
-      }${o.quem ? ` (${esc(o.quem)})` : ""} · ${resta} para ${verbo}${info}</div>`;
+      return `<div class="rm-relogio just">${grande(
+        `+${contagem(agora - prazo)}`,
+        `de atraso · justificado: <b>${esc(o.motivo)}</b>${o.obs ? ` — ${esc(o.obs)}` : ""}${o.quem ? ` (${esc(o.quem)})` : ""}<br>${resta} para ${verbo}`,
+        `data-desde="${prazo}"`
+      )}${info}</div>`;
     }
     const limiteJust = prazo + 15 * 60e3;
     if (agora < limiteJust) {
-      return `<div class="rm-relogio alerta">⏰ Passou do tempo! ${resta} ainda para ${verbo}.
-        Justifique em <b><span data-contagem="${limiteJust}">${contagem(limiteJust - agora)}</span></b> ou revise (procurar o produto, separação...)
-        ${info}${botoes("O que aconteceu?")}</div>`;
+      return `<div class="rm-relogio alerta">${grande(
+        contagem(limiteJust - agora),
+        `⏰ <b>Passou do tempo!</b> ${resta} ainda para ${verbo}<br>justifique ou revise (procurar o produto, separação...)`,
+        `data-contagem="${limiteJust}"`
+      )}${info}${botoes("O que aconteceu?")}</div>`;
     }
-    return `<div class="rm-relogio atraso">🔴 Atraso sem justificativa <b>+${fmtMin(atraso)}</b> · ${resta} para ${verbo}
-      ${info}${botoes("Justificar agora:")}</div>`;
+    void atraso;
+    return `<div class="rm-relogio atraso">${grande(
+      `+${contagem(agora - prazo)}`,
+      `🔴 <b>atraso sem justificativa</b><br>${resta} para ${verbo}`,
+      `data-desde="${prazo}"`
+    )}${info}${botoes("Justificar agora:")}</div>`;
   }
 
   function renderRemessas() {
@@ -2466,6 +2624,7 @@
         <div class="shopee-loja" data-shop="${esc(c.shopId)}" style="border-left-color:${corLoja(c.shopId)}">
           <div class="shopee-loja-nome">${esc(c.nome || `Loja ${c.shopId}`)}</div>
           <div class="muted small">ID ${esc(c.shopId)} · ${c.ambiente === "live" ? "produção" : "teste"}</div>
+          <label class="small muted" style="display:block;margin-top:6px">Perfil do Chrome desta loja <input type="text" data-perfil="${esc(c.shopId)}" value="${esc(perfilDe(c.shopId))}" placeholder="ex.: Samuel" style="margin-left:4px;padding:2px 6px;border:1px solid var(--border);border-radius:6px;width:130px"></label>
           ${
             modoTrocado
               ? `<div class="small" style="color:var(--danger)">Loja de ${c.ambiente === "live" ? "produção" : "teste"}, mas o painel está em modo ${
