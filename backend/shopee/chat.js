@@ -156,7 +156,11 @@ async function buscarMensagens(shopId, conversationId, { maxPaginas = 10 } = {})
     const resp = r.response || {};
     const msgs = resp.messages || [];
     todas.push(...msgs);
-    paginas.push({ qtd: msgs.length, page_result: resp.page_result || null });
+    paginas.push({
+      qtd: msgs.length,
+      page_result: resp.page_result || null,
+      maxTs: Math.max(0, ...msgs.map((m) => nanoParaMs(m.created_timestamp) || 0)),
+    });
     const prox = resp.page_result?.next_offset;
     if (!msgs.length || !prox || prox === "0" || prox === offset) break;
     offset = prox;
@@ -169,14 +173,40 @@ async function buscarMensagens(shopId, conversationId, { maxPaginas = 10 } = {})
   };
 }
 
+// Cache de 6 s por conversa: abrir a conversa e carregar o contexto pedem as
+// mesmas mensagens em seguida (eram ate 10 chamadas a Shopee duplicadas).
+const cacheMsgs = new Map(); // shop|conversa|paginas -> { em, p }
+function buscarMensagensCache(shopId, conversationId, opts = {}) {
+  const k = `${shopId}|${conversationId}|${opts.maxPaginas ?? 10}`;
+  const c = cacheMsgs.get(k);
+  if (c && Date.now() - c.em < 6000) return c.p;
+  if (cacheMsgs.size > 200) for (const [kk, v] of cacheMsgs) if (Date.now() - v.em > 6000) cacheMsgs.delete(kk);
+  const p = buscarMensagens(shopId, conversationId, opts).catch((err) => {
+    cacheMsgs.delete(k);
+    throw err;
+  });
+  cacheMsgs.set(k, { em: Date.now(), p });
+  return p;
+}
+const limparCacheMsgs = (shopId) => {
+  for (const k of cacheMsgs.keys()) if (k.startsWith(`${shopId}|`)) cacheMsgs.delete(k);
+};
+
 // Pedido/produto de ORIGEM da conversa: o comprador abriu o chat pela pagina
 // do pedido ou do anuncio ("O cliente esta perguntando sobre este pedido",
 // no chat da Shopee). Pela doc vem em source_content de cada mensagem.
 const refPedido = (m) => m.source_content?.order_sn || m.content?.source_content?.order_sn || null;
 const refProduto = (m) => m.source_content?.item_id || m.content?.source_content?.item_id || null;
 
-async function mensagens(shopId, conversationId, compradorId) {
-  const { mensagens: brutas } = await buscarMensagens(shopId, conversationId);
+async function mensagens(shopId, conversationId, compradorId, opts) {
+  return (await mensagensComMeta(shopId, conversationId, compradorId, opts)).lista;
+}
+
+// opts.maxPaginas = 1 -> so as 25 mais recentes (atualizacao rapida da tela).
+// primeiraPaginaRecente: a 1a pagina da Shopee contem a mensagem mais nova?
+// So entao a tela pode usar a atualizacao rapida.
+async function mensagensComMeta(shopId, conversationId, compradorId, opts = {}) {
+  const { mensagens: brutas, paginas } = await buscarMensagensCache(shopId, conversationId, opts);
   const lista = brutas.map((m) => {
     const c = m.content || {};
     return {
@@ -201,7 +231,8 @@ async function mensagens(shopId, conversationId, compradorId) {
   });
   // Mais antiga primeiro (ordem de leitura).
   lista.sort((a, b) => (a.em || 0) - (b.em || 0));
-  return lista;
+  const maxTodas = Math.max(0, ...paginas.map((p) => p.maxTs || 0));
+  return { lista, primeiraPaginaRecente: !paginas.length || (paginas[0].maxTs || 0) >= maxTodas };
 }
 
 // item_id(s) citados numa mensagem de produto (um ou lista).
@@ -366,6 +397,7 @@ async function enviar(shopId, compradorId, texto) {
     corpo: { to_id: Number(compradorId), message_type: "text", content: { text: texto } },
   });
   cacheLista.delete(String(shopId));
+  limparCacheMsgs(shopId);
   return r.response || {};
 }
 
@@ -383,4 +415,4 @@ async function mensagensCruas(shopId, conversationId) {
   return buscarMensagens(shopId, conversationId, { maxPaginas: 4 });
 }
 
-module.exports = { listarConversas, mensagens, mensagensCruas, contexto, enviar, marcarLida };
+module.exports = { listarConversas, mensagens, mensagensComMeta, mensagensCruas, contexto, enviar, marcarLida };
