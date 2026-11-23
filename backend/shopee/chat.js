@@ -511,4 +511,4 @@ async function mensagensCruas(shopId, conversationId) {
   return buscarMensagens(shopId, conversationId, { maxPaginas: 4 });
 }
 
-module.exports = { listarConversas, mensagens, mensagensComMeta, mensagensCruas, conversaCrua, contexto, enviar, marcarLida };
+module.exports = { listarConversas, mensagens, mensagensComMeta, mensagensCruas, conversaCrua, contexto, enviar, marcarLida, produtos };
