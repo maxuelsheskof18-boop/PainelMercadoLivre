@@ -410,9 +410,39 @@ async function marcarLida(shopId, conversationId, ultimaMensagemId) {
   cacheLista.delete(String(shopId));
 }
 
+// Dados CRUS da conversa (diagnostico, 23/11): a Shopee mostra "O cliente esta
+// perguntando sobre este produto / variacao" mesmo quando get_message volta
+// vazio — esses dados devem estar no registro da conversa. Procura a entrada
+// na lista de conversas e tenta get_one_conversation.
+async function conversaCrua(shopId, conversationId) {
+  const out = { naLista: null, umaConversa: null };
+  try {
+    let nextNano;
+    for (let pagina = 0; pagina < 5 && !out.naLista; pagina++) {
+      const r = await shopee.chamarLoja(shopId, "/api/v2/sellerchat/get_conversation_list", {
+        query: { direction: "older", type: "all", page_size: 60, next_timestamp_nano: nextNano },
+      });
+      const resp = r.response || {};
+      out.naLista = (resp.conversations || []).find((c) => String(c.conversation_id) === String(conversationId)) || null;
+      const prox = resp.page_result?.next_cursor?.next_message_time_nano;
+      if (!resp.page_result?.more || !prox || prox === "0") break;
+      nextNano = prox;
+    }
+  } catch (err) {
+    out.naLista = { erro: err.message };
+  }
+  try {
+    const r = await shopee.chamarLoja(shopId, "/api/v2/sellerchat/get_one_conversation", { query: { conversation_id: conversationId } });
+    out.umaConversa = r.response || r;
+  } catch (err) {
+    out.umaConversa = { erro: err.message };
+  }
+  return out;
+}
+
 // Mensagens cruas (para descobrir o formato de tipos novos, ex. bundle_message).
 async function mensagensCruas(shopId, conversationId) {
   return buscarMensagens(shopId, conversationId, { maxPaginas: 4 });
 }
 
-module.exports = { listarConversas, mensagens, mensagensComMeta, mensagensCruas, contexto, enviar, marcarLida };
+module.exports = { listarConversas, mensagens, mensagensComMeta, mensagensCruas, conversaCrua, contexto, enviar, marcarLida };
