@@ -1580,7 +1580,13 @@
     const noFim = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
     const topoAntes = box.scrollTop;
     if (!msgsAbertas.length) {
-      box.innerHTML = `<div class="sp-thread-vazio">Nenhuma mensagem nesta conversa.</div>`;
+      const conv = conversaAberta && chat?.conversas.find((x) => x.shopId === conversaAberta.shopId && x.id === conversaAberta.id);
+      box.innerHTML = `<div class="sp-thread-vazio" style="max-width:420px;margin:auto;line-height:1.5">
+        <b>A Shopee não enviou nenhuma mensagem desta conversa.</b><br>
+        <span class="small">Na Central do Vendedor ela mostra só cartões do que o cliente consultou (produto, variação) e avisos automáticos, como "conversa fechada automaticamente". Esses cartões ainda não aparecem aqui.</span>
+        ${conv?.ultimaTexto ? `<div class="small" style="margin-top:10px">Último registro da lista: “${esc(conv.ultimaTexto)}”</div>` : ""}
+        ${conversaAberta ? `<div class="small" style="margin-top:10px"><a target="_blank" rel="noopener" href="/api/debug/shopee-conversa?shopId=${encodeURIComponent(conversaAberta.shopId)}&conversa=${encodeURIComponent(conversaAberta.id)}">Ver dados técnicos desta conversa ↗</a></div>` : ""}
+      </div>`;
       return;
     }
     let ultimoDia = "";
