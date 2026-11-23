@@ -382,6 +382,86 @@ router.get("/api/debug/probe-shopee", requireLogin, async (req, res) => {
 const json = express.json({ limit: "64kb" });
 const erro500 = (res, err) => res.status(500).json({ error: err.message });
 
+// ---- Marcas do chat (23/11): "Resolvido" e "Em tratativa" (cliente quer
+// devolver). Guardadas no banco: valem para todos os computadores.
+//  - resolvido: some das listas normais; se o COMPRADOR escrever depois, a
+//    conversa reabre sozinha (a marca cai). Nunca esconde mensagem nova.
+//  - tratativa: fica ate alguem tirar; se o comprador escrever depois, ganha
+//    o aviso "cliente respondeu".
+let tabelaMarcas = null;
+function garantirTabelaMarcas() {
+  if (!tabelaMarcas) {
+    tabelaMarcas = db
+      .query(
+        `CREATE TABLE IF NOT EXISTS shopee_chat_marcas (
+           shop_id TEXT NOT NULL,
+           conversa TEXT NOT NULL,
+           estado TEXT NOT NULL,
+           quem TEXT,
+           atualizado_em TIMESTAMPTZ NOT NULL DEFAULT now(),
+           ultima_em BIGINT NOT NULL DEFAULT 0,
+           PRIMARY KEY (shop_id, conversa)
+         )`
+      )
+      .catch((err) => {
+        tabelaMarcas = null;
+        throw err;
+      });
+  }
+  return tabelaMarcas;
+}
+
+// Devolve COPIAS das conversas com .marca (a lista do chat.js e cacheada:
+// nao pode ser alterada no lugar).
+async function comMarcas(conversas) {
+  try {
+    await garantirTabelaMarcas();
+    const { rows } = await db.query(
+      "SELECT shop_id, conversa, estado, quem, ultima_em, extract(epoch FROM atualizado_em) * 1000 AS em FROM shopee_chat_marcas"
+    );
+    const porChave = new Map(rows.map((r) => [`${r.shop_id}|${r.conversa}`, r]));
+    const reabrir = [];
+    const out = conversas.map((c) => {
+      const m = porChave.get(`${c.shopId}|${c.id}`);
+      if (!m) return c;
+      const compradorEscreveu = c.ultimaDoComprador && Number(c.ultimaEm) > Number(m.ultima_em);
+      if (m.estado === "resolvido" && compradorEscreveu) {
+        reabrir.push([c.shopId, c.id]);
+        return c;
+      }
+      return { ...c, marca: { estado: m.estado, quem: m.quem || "", em: Number(m.em), novaMsg: m.estado === "tratativa" && compradorEscreveu } };
+    });
+    for (const [shopId, conversa] of reabrir) {
+      db.query("DELETE FROM shopee_chat_marcas WHERE shop_id = $1 AND conversa = $2 AND estado = 'resolvido'", [shopId, conversa]).catch(() => {});
+    }
+    return out;
+  } catch (err) {
+    console.error("[shopee-marcas]", err.message);
+    return conversas;
+  }
+}
+
+router.post("/api/shopee/chat/:shopId/:conversa/marca", requireLogin, json, async (req, res) => {
+  try {
+    const { estado, quem, ultimaEm } = req.body || {};
+    if (estado !== null && !["resolvido", "tratativa"].includes(estado)) return res.status(400).json({ error: "estado invalido" });
+    await garantirTabelaMarcas();
+    if (estado === null) {
+      await db.query("DELETE FROM shopee_chat_marcas WHERE shop_id = $1 AND conversa = $2", [req.params.shopId, req.params.conversa]);
+    } else {
+      await db.query(
+        `INSERT INTO shopee_chat_marcas (shop_id, conversa, estado, quem, atualizado_em, ultima_em)
+         VALUES ($1,$2,$3,$4,now(),$5)
+         ON CONFLICT (shop_id, conversa) DO UPDATE SET estado = EXCLUDED.estado, quem = EXCLUDED.quem, atualizado_em = now(), ultima_em = EXCLUDED.ultima_em`,
+        [req.params.shopId, req.params.conversa, estado, String(quem || "").slice(0, 60), Math.max(0, Math.floor(Number(ultimaEm) || 0))]
+      );
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    erro500(res, err);
+  }
+});
+
 router.get("/api/shopee/resumo", requireLogin, async (req, res) => {
   try {
     const p = pedidos.snapshot().pedidos;
@@ -393,7 +473,7 @@ router.get("/api/shopee/resumo", requireLogin, async (req, res) => {
     };
     try {
       const { conversas } = await chat.listarConversas();
-      resumo.chatNaoLidas = conversas.filter((c) => c.naoLidas > 0).length;
+      resumo.chatNaoLidas = (await comMarcas(conversas)).filter((c) => c.naoLidas > 0 && c.marca?.estado !== "resolvido").length;
     } catch {}
     try {
       resumo.devolucoesAbertas = (await devolucoes.listar()).devolucoes.filter((d) => d.aberta).length;
@@ -428,6 +508,7 @@ router.get("/api/shopee/prazos", requireLogin, async (req, res) => {
 // viu tudo de uma vez) e descartada. E o ritmo da EQUIPE inteira.
 function medirRitmo(linhas) {
   const porCanal = {};
+  const porDiaAcc = {}; // "canal|dia" -> { ms, intervalos, pacotes }
   const grupos = new Map();
   for (const l of linhas) {
     const k = `${l.canal}|${l.dia}`;
@@ -443,6 +524,10 @@ function medirRitmo(linhas) {
     const fechar = (fim) => {
       const sessao = ts.slice(ini, fim + 1);
       if (new Set(sessao).size >= 3) {
+        const d = (porDiaAcc[k] = porDiaAcc[k] || { ms: 0, intervalos: 0, pacotes: 0 });
+        d.ms += sessao[sessao.length - 1] - sessao[0];
+        d.intervalos += sessao.length - 1;
+        d.pacotes += sessao.length;
         acc.ms += sessao[sessao.length - 1] - sessao[0];
         acc.intervalos += sessao.length - 1;
         acc.pacotes += sessao.length;
@@ -462,7 +547,46 @@ function medirRitmo(linhas) {
     if (a.intervalos < 20 || !a.ms) continue; // pouco dado
     out[canal] = { minPorPacote: Math.round((a.ms / a.intervalos / 60e3) * 100) / 100, pacotes: a.pacotes, dias: a.dias.size };
   }
-  return out;
+  const porDia = Object.entries(porDiaAcc)
+    .filter(([, d]) => d.intervalos >= 10 && d.ms)
+    .map(([k, d]) => {
+      const [canal, dia] = k.split("|");
+      return { chave: `canal:${canal}`, dia, minPorPacote: d.ms / d.intervalos / 60e3, pacotes: d.pacotes };
+    });
+  return { media: out, porDia };
+}
+
+// RECORDE (pedido do usuario, 19/11): o dia em que a equipe foi mais rapida
+// vira a meta, "se conseguiu aquele dia consegue outro". Fica guardado para
+// sempre (nao so 15 dias). Um dia novo so vira recorde se for mais rapido E
+// com volume parecido (pelo menos 70% dos pacotes do recorde) — dia de pouco
+// pacote nao vale. Abaixo de 0,2 min/pacote (12 s) e descartado (erro).
+async function atualizarRecordes(candidatos) {
+  await db.query(
+    `CREATE TABLE IF NOT EXISTS ritmo_recordes (
+       chave TEXT PRIMARY KEY,
+       min_por_pacote NUMERIC NOT NULL,
+       pacotes INT NOT NULL,
+       dia DATE NOT NULL
+     )`
+  );
+  const { rows } = await db.query("SELECT chave, min_por_pacote, pacotes, to_char(dia, 'YYYY-MM-DD') AS dia FROM ritmo_recordes");
+  const rec = Object.fromEntries(rows.map((r) => [r.chave, { min: Number(r.min_por_pacote), pacotes: r.pacotes, dia: r.dia }]));
+  const hoje = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+  for (const c of candidatos) {
+    if (c.dia >= hoje || c.pacotes < 20 || !(c.minPorPacote >= 0.2)) continue; // so dias completos
+    const atual = rec[c.chave];
+    if (atual && !(c.minPorPacote < atual.min && c.pacotes >= 0.7 * atual.pacotes)) continue;
+    rec[c.chave] = { min: c.minPorPacote, pacotes: c.pacotes, dia: c.dia };
+    await db.query(
+      `INSERT INTO ritmo_recordes (chave, min_por_pacote, pacotes, dia) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (chave) DO UPDATE SET min_por_pacote = EXCLUDED.min_por_pacote, pacotes = EXCLUDED.pacotes, dia = EXCLUDED.dia`,
+      [c.chave, Math.round(c.minPorPacote * 100) / 100, c.pacotes, c.dia]
+    );
+  }
+  return Object.fromEntries(
+    Object.entries(rec).map(([k, r]) => [k, { minPorPacote: Math.round(r.min * 100) / 100, pacotes: r.pacotes, dia: r.dia }])
+  );
 }
 
 // Ritmo de EMBALAGEM por equipe nos ultimos 15 dias (ideia do usuario):
@@ -479,7 +603,7 @@ function equipeDaForma(forma) {
   if (/tik\s*tok|amazon|mercado\s*envios/i.test(f)) return "mathias";
   return null;
 }
-async function ritmoEquipes15() {
+async function ritmoEquipes15(candidatos = []) {
   const { rows: tem } = await db.query("SELECT to_regclass('tiny_embalados_dia') AS t");
   if (!tem[0]?.t) return {};
   const { rows } = await db.query(
@@ -516,6 +640,7 @@ async function ritmoEquipes15() {
     let fim = fins[k] || FIM_PADRAO;
     if (min(fim) <= min(INICIO_TRABALHO) + 30) fim = FIM_PADRAO; // fim estranho
     const minutos = min(fim) - min(INICIO_TRABALHO);
+    candidatos.push({ chave: `equipe:${eq}`, dia, minPorPacote: minutos / qtd, pacotes: qtd });
     if (!acc[eq]) acc[eq] = { minutos: 0, pacotes: 0, dias: 0 };
     acc[eq].minutos += minutos;
     acc[eq].pacotes += qtd;
@@ -666,7 +791,14 @@ router.get("/api/pacotes-dia/ritmo", requireLogin, async (req, res) => {
       );
       linhas.push(...rows.filter((r) => r.canal));
     }
-    const dados = { canais: medirRitmo(linhas), equipes: await ritmoEquipes15(), calculadoEm: Date.now() };
+    const medido = medirRitmo(linhas);
+    const candidatos = [...medido.porDia];
+    const equipes = await ritmoEquipes15(candidatos);
+    const recordes = await atualizarRecordes(candidatos).catch((err) => {
+      console.error("[ritmo-recordes]", err.message);
+      return {};
+    });
+    const dados = { canais: medido.media, equipes, recordes, calculadoEm: Date.now() };
     cacheRitmo = { em: Date.now(), dados };
     res.json(dados);
   } catch (err) {
@@ -721,7 +853,8 @@ router.post("/api/shopee/prazos/atualizar", requireLogin, async (req, res) => {
 
 router.get("/api/shopee/chat", requireLogin, async (req, res) => {
   try {
-    res.json(await chat.listarConversas({ forcar: req.query.forcar === "1" }));
+    const r = await chat.listarConversas({ forcar: req.query.forcar === "1" });
+    res.json({ ...r, conversas: await comMarcas(r.conversas) });
   } catch (err) {
     erro500(res, err);
   }
@@ -729,7 +862,11 @@ router.get("/api/shopee/chat", requireLogin, async (req, res) => {
 
 router.get("/api/shopee/chat/:shopId/:conversa", requireLogin, async (req, res) => {
   try {
-    res.json({ mensagens: await chat.mensagens(req.params.shopId, req.params.conversa, req.query.comprador) });
+    // ?rapido=1: so as 25 mais recentes (a tela mescla com o que ja tem).
+    const r = await chat.mensagensComMeta(req.params.shopId, req.params.conversa, req.query.comprador, {
+      maxPaginas: req.query.rapido === "1" ? 1 : undefined,
+    });
+    res.json({ mensagens: r.lista, rapidoOk: r.primeiraPaginaRecente });
   } catch (err) {
     erro500(res, err);
   }
