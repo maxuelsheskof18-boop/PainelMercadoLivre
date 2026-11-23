@@ -19,6 +19,7 @@ const {
   apagarHistorico,
   diagnosticar,
   sondarTelefone,
+  explicarPedido,
   lerEstado,
   lerConfig,
   salvarConfig,
@@ -202,6 +203,18 @@ router.get("/flex/cep", async (req, res) => {
     res.json({ ok: !!info?.cidade, ...info });
   } catch (err) {
     console.error("[flex/cep]", err);
+    res.status(500).json({ ok: false, erro: String(err?.message || err) });
+  }
+});
+
+/*  "Por que esse pedido nao aparece?" — pergunta a API, conta por conta,
+    em que pe esta o pedido (aceita numero do pedido, do pacote ou do envio)
+    e responde com um veredito. Chamada sob demanda: nao entra no ciclo. */
+router.get("/flex/porque", async (req, res) => {
+  try {
+    res.json(await explicarPedido(String(req.query.pedido || "")));
+  } catch (err) {
+    console.error("[flex/porque]", err);
     res.status(500).json({ ok: false, erro: String(err?.message || err) });
   }
 });
