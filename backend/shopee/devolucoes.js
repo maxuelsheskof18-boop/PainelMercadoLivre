@@ -62,6 +62,10 @@ async function daLoja(conta) {
           responderAte: d.due_date ? d.due_date * 1000 : null,
           negociacao: d.negotiation?.negotiation_status || null,
           fotos: (d.image || d.images || []).length + (d.buyer_videos || []).length,
+          // A API de devolucao traz o USUARIO do comprador (o mesmo nome do chat) —
+          // a de pedido nao (dados pessoais): e o que liga conversa -> devolucao -> pedido.
+          comprador: String(d.user?.username || ""),
+          fotosUrls: (d.image || d.images || []).filter((u) => typeof u === "string").slice(0, 6),
           contestacao: (d.dispute_text_reason || [])[0] || null,
           itens,
         });

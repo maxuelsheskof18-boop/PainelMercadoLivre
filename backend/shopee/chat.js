@@ -52,6 +52,48 @@ function textoDaMensagem(tipo, c = {}) {
   }
 }
 
+// ---- Fotos em tipos que a doc nao detalha (ex.: image_with_text: foto + legenda) ----
+// Na loja real (23/11) a foto do comprador com legenda aparecia so como texto.
+// Nomes de campo nao confirmados: junta qualquer URL de imagem do conteudo
+// (cf.shopee / susercontent / .jpg...) e aponta a versao grande (sem "_tn").
+const SEM_FOTO = new Set(["text", "video", "item", "product", "item_list", "product_list", "order", "bundle_message", "add_on_deal", "voucher", "offer", "faq", "faq_liveagent", "notification", "sticker"]);
+function ehUrlImagem(u) {
+  return (
+    /^https?:\/\/\S+$/i.test(u) &&
+    !/\.(mp4|mov|webm|m3u8)(\?|$)/i.test(u) &&
+    (/\.(jpe?g|png|webp|gif|heic)(\?|$)/i.test(u) || /susercontent\.com|cf\.shopee|shopee\.com|shopeemobile/i.test(u))
+  );
+}
+const PAPEL_MINIATURA = /thumb|small|preview|mini/i;
+// Junta as fotos do conteudo. Um objeto com url + thumb_url vira UMA foto.
+function juntarImagens(c, out = [], nivel = 0) {
+  if (!c || nivel > 4) return out;
+  if (Array.isArray(c)) {
+    for (const x of c) {
+      if (typeof x === "string") {
+        if (ehUrlImagem(x)) out.push({ url: x.replace(/_tn$/, ""), thumb: x });
+      } else juntarImagens(x, out, nivel + 1);
+    }
+    return out;
+  }
+  if (typeof c === "object") {
+    const urls = Object.entries(c).filter(([, v]) => typeof v === "string" && ehUrlImagem(v));
+    if (urls.length) {
+      const mini = urls.find(([k]) => PAPEL_MINIATURA.test(k));
+      const cheia = urls.find(([k]) => !PAPEL_MINIATURA.test(k));
+      out.push({ url: (cheia || mini)[1].replace(/_tn$/, ""), thumb: (mini || cheia)[1] });
+    }
+    for (const v of Object.values(c)) if (v && typeof v === "object") juntarImagens(v, out, nivel + 1);
+  }
+  return out;
+}
+function imagensDe(tipo, c) {
+  if (SEM_FOTO.has(tipo)) return [];
+  const vistas = new Map(); // url cheia -> foto
+  for (const f of juntarImagens(c)) if (!vistas.has(f.url)) vistas.set(f.url, f);
+  return [...vistas.values()].slice(0, 6);
+}
+
 const ROTULO_TIPO = {
   bundle_message: "🎁 Mensagem de promoção/combo da Shopee",
   add_on_deal: "🎁 Promoção (compre junto)",
@@ -209,9 +251,15 @@ async function mensagensComMeta(shopId, conversationId, compradorId, opts = {}) 
   const { mensagens: brutas, paginas } = await buscarMensagensCache(shopId, conversationId, opts);
   const lista = brutas.map((m) => {
     const c = m.content || {};
+    const imagens = m.message_type === "image" ? [] : imagensDe(m.message_type, c);
+    const texto = textoDaMensagem(m.message_type, c);
+    const ehRotulo = !texto || texto === "Mensagem automática da Shopee" || Object.values(ROTULO_TIPO).includes(texto);
     return {
       id: String(m.message_id),
       tipo: m.message_type,
+      // Foto + legenda (image_with_text e semelhantes).
+      imagens,
+      legenda: imagens.length && !ehRotulo ? texto : "",
       // from_id do vendedor e o ID de USUARIO dele, diferente do shop_id (visto
       // na loja real em 18/11). Por isso compara com o comprador.
       daLoja: compradorId ? String(m.from_id) !== String(compradorId) : String(m.from_shop_id || "") === String(shopId),
@@ -356,7 +404,7 @@ async function pedidos(shopId, sns) {
   return out;
 }
 
-async function contexto(shopId, conversationId, compradorId) {
+async function contexto(shopId, conversationId, compradorId, nome) {
   const msgs = await mensagens(shopId, conversationId, compradorId);
   // Mais recentes primeiro: o que o comprador falou por ultimo e o mais relevante.
   const rev = msgs.slice().reverse();
@@ -372,6 +420,23 @@ async function contexto(shopId, conversationId, compradorId) {
         .map((p) => p.orderSn)
     : [];
   for (const sn of doComprador) if (!sns.includes(sn)) sns.push(sn);
+  // Devolucoes do comprador (23/11): a API de devolucao traz o usuario (igual ao
+  // nome do chat); a de pedido nao. Acha o pedido de uma conversa tipo "Eu quero
+  // meu reembolso" mesmo com o pedido ja entregue.
+  let devs = [];
+  if (nome) {
+    try {
+      const alvo = String(nome).trim().toLowerCase();
+      devs = (await require("./devolucoes").listar()).devolucoes
+        .filter((d) => d.shopId === String(shopId) && d.comprador && d.comprador.trim().toLowerCase() === alvo)
+        .sort((a, b) => (b.criadaEm || 0) - (a.criadaEm || 0))
+        .slice(0, 3);
+    } catch {}
+  }
+  for (const d of devs.slice().reverse()) if (d.orderSn) sns.unshift(d.orderSn);
+  const unicos = [...new Set(sns)];
+  sns.length = 0;
+  sns.push(...unicos);
   sns.splice(6);
   const [prod, ped] = await Promise.allSettled([produtos(shopId, idsProd), pedidos(shopId, sns)]);
   // Produtos dos pedidos tambem viram cartao (foto/estoque/link do anuncio).
@@ -387,6 +452,7 @@ async function contexto(shopId, conversationId, compradorId) {
     produtos: prod.status === "fulfilled" ? prod.value : [],
     produtosDosPedidos: prodPedidos,
     pedidos: pedidosOk,
+    devolucoes: devs,
     erros: [prod, ped].filter((x) => x.status === "rejected").map((x) => x.reason.message),
   };
 }
