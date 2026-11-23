@@ -788,6 +788,7 @@ router.get("/api/pacotes-dia/ritmo", requireLogin, async (req, res) => {
            FROM tiny_embalados
           WHERE visto_em > now() - interval '15 days'
             AND forma IS NOT NULL
+            AND COALESCE(hora_real, true)
             -- so o que foi visto no MESMO dia da embalagem (hora real)
             AND to_char(visto_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM/YYYY') = data_checkout`
       );
