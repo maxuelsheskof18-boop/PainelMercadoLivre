@@ -227,6 +227,9 @@
   }
 
   .sp-externo { border: 1px dashed #fdba9f; background: var(--shopee-suave); border-radius: var(--radius-md); padding: 14px 16px; }
+  .sp-externo > summary { cursor: pointer; font-size: 12.5px; font-weight: 700; color: var(--shopee-escuro); }
+  .sp-externo:not([open]) { border: none; background: none; padding: 4px 2px; }
+  .sp-externo:not([open]) > summary { font-weight: 500; color: var(--muted); }
   .sp-externo-linha { display: flex; gap: 8px; }
   .sp-externo-linha input { flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: #fff; }
 
@@ -538,6 +541,22 @@
       badge.className = "tab-count module-badge hidden";
       navAbas[a.id].appendChild(badge);
     }
+    // "Lojas" sai do menu da esquerda e vira botao no topo, ao lado de
+    // "Contas" (igual ao Mercado Livre) — pedido de 23/11.
+    if (navAbas.lojas) navAbas.lojas.style.display = "none";
+    const topo = document.querySelector(".topbar-actions");
+    if (topo && !document.getElementById("sp-lojas-topo")) {
+      const b = document.createElement("button");
+      b.id = "sp-lojas-topo";
+      b.type = "button";
+      b.className = "btn btn-ghost";
+      b.title = "Lojas da Shopee: conectar, renomear, desconectar";
+      b.innerHTML = '<span class="btn-icon">🛍️</span><span class="btn-label">Lojas Shopee</span>';
+      b.addEventListener("click", () => irPara("lojas"));
+      const ref = topo.querySelector(".accounts-dropdown");
+      if (ref) ref.after(b);
+      else topo.prepend(b);
+    }
   }
   // Selo amarelo nas telas de largura inteira que sao so do Mercado Livre.
   for (const id of ["prazos-pane", "history-pane"]) {
@@ -715,7 +734,7 @@
     if (!estado) return;
     // Sem loja conectada, as abas de dados so explicam o que falta.
     if (aba !== "lojas" && (!estado.configurado || !estado.contas.length)) {
-      corpo.innerHTML = `<div class="shopee-vazio">Nenhuma loja Shopee conectada ainda.<br>Abra a aba <b>Lojas</b> e clique em <b>Conectar loja Shopee</b>.</div>`;
+      corpo.innerHTML = `<div class="shopee-vazio">Nenhuma loja Shopee conectada ainda.<br>Clique em <b>Lojas Shopee</b> (botão no topo, ao lado de Contas) e depois em <b>Conectar loja Shopee</b>.</div>`;
       return;
     }
     if (aba === "prazos") renderPrazos();
@@ -734,7 +753,7 @@
   }
   function traduzErro(e) {
     if (/permission/i.test(e)) return "a Shopee ainda não liberou esta função para o app (permissão). Peça a liberação no console.";
-    if (/invalid_access_token|invalid_acceess_token|error_auth/i.test(e)) return "autorização da loja expirou — conecte a loja de novo na aba Lojas.";
+    if (/invalid_access_token|invalid_acceess_token|error_auth/i.test(e)) return "autorização da loja expirou — conecte a loja de novo em Lojas Shopee (botão no topo).";
     if (/invalid_partner_id/i.test(e)) return "chave do app não confere com a loja (confira SHOPEE_ENV e as chaves no Render).";
     return e;
   }
@@ -2888,7 +2907,7 @@
       </section>
       ${estado.configurado ? `
       <details class="sp-externo">
-        <summary class="shopee-titulo" style="margin:0;cursor:pointer">Conectar loja de outra empresa (outro CNPJ)</summary>
+        <summary>Avançado: conectar loja de outra empresa (outro CNPJ)</summary>
         <p class="muted small" style="margin:10px 0;line-height:1.55">Mande este link para o responsável pela loja. Ele abre, entra com a <b>conta de vendedor da loja</b> (Central do Vendedor — não a da Open Platform) e confirma. A loja aparece aqui sozinha.</p>
         <div class="sp-externo-linha"><input id="sp-link-externo" class="sp-busca" readonly value="carregando..."><button type="button" class="btn btn-sm sp-btn-shopee" data-copiar="sp-link-externo">Copiar link</button></div>
         <details style="margin-top:10px"><summary class="muted small" style="cursor:pointer">Prefere usar o botão Authorize do console da Shopee?</summary>
