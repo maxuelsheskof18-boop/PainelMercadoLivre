@@ -878,7 +878,7 @@ router.get("/api/shopee/chat/:shopId/:conversa", requireLogin, async (req, res) 
 // Produtos e pedidos citados na conversa (cartoes do painel lateral).
 router.get("/api/shopee/chat/:shopId/:conversa/contexto", requireLogin, async (req, res) => {
   try {
-    res.json(await chat.contexto(req.params.shopId, req.params.conversa, req.query.comprador));
+    res.json(await chat.contexto(req.params.shopId, req.params.conversa, req.query.comprador, req.query.nome));
   } catch (err) {
     erro500(res, err);
   }
