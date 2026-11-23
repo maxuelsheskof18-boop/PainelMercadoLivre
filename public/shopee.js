@@ -190,6 +190,15 @@
   }
   @media (max-width: 900px) { .sp-ctx { width: 100%; } }
   .sp-msg-hora { font-size: 10.5px; color: var(--muted); text-align: right; margin-top: 2px; }
+  .sp-seg { flex-wrap: wrap; }
+  .sp-cf-n { font-weight: 800; color: #7c3aed; }
+  .sp-marca { display: inline-block; margin-left: 5px; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; vertical-align: middle; }
+  .sp-marca.tratativa { background: #f5f3ff; color: #6d28d9; border: 1px solid #ddd6fe; }
+  .sp-marca.resolvido { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+  .sp-bt-marca.tratativa.ativo { background: #7c3aed !important; color: #fff !important; border-color: #7c3aed !important; }
+  .sp-bt-marca.resolvido.ativo { background: #16a34a !important; color: #fff !important; border-color: #16a34a !important; }
+  .sp-bt-marca.tratativa { color: #6d28d9; }
+  .sp-bt-marca.resolvido { color: #15803d; }
   .sp-st-msg { margin-left: 6px; font-weight: 600; }
   .sp-st-msg.ok { color: #15803d; }
   .sp-st-msg.erro { color: #b91c1c; }
@@ -1114,6 +1123,67 @@
     "Obrigado pela compra! Qualquer dúvida estamos à disposição.",
   ];
 
+  // Selo da marca na lista e no cabecalho.
+  function seloMarca(c) {
+    const m = c.marca;
+    if (!m) return "";
+    const quem = m.quem ? ` · ${esc(m.quem)}` : "";
+    return m.estado === "tratativa"
+      ? `<span class="sp-marca tratativa" title="Cliente quer devolver — em tratativa${quem ? ` (${esc(m.quem)})` : ""}">↩ Em tratativa${m.novaMsg ? " · 💬 cliente respondeu" : ""}</span>`
+      : `<span class="sp-marca resolvido" title="Marcada como resolvida${quem ? ` por ${esc(m.quem)}` : ""}">✓ Resolvido</span>`;
+  }
+
+  // Marcar / desmarcar (clicar de novo na marca atual tira). Atualiza na hora
+  // e grava no servidor; se falhar, volta ao que estava.
+  async function marcarConversa(c, estado) {
+    const atual = c.marca?.estado || null;
+    const novo = atual === estado ? null : estado;
+    let quem = "";
+    try {
+      quem = localStorage.getItem("ml-painel-operator-name") || "";
+    } catch {}
+    const original = c.marca;
+    const aplicar = (marca) => {
+      for (const alvo of [c, conversaAberta, chat?.conversas.find((x) => x.shopId === c.shopId && x.id === c.id)]) {
+        if (!alvo) continue;
+        if (marca) alvo.marca = marca;
+        else delete alvo.marca;
+      }
+    };
+    aplicar(novo ? { estado: novo, quem, em: Date.now(), novaMsg: false } : null);
+    renderListaConversas();
+    atualizarBotoesMarca();
+    atualizarContas();
+    try {
+      await api(`/api/shopee/chat/${encodeURIComponent(c.shopId)}/${encodeURIComponent(c.id)}/marca`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ estado: novo, quem, ultimaEm: Math.max(c.ultimaEm || 0, chat?.conversas.find((x) => x.shopId === c.shopId && x.id === c.id)?.ultimaEm || 0) || Date.now() }),
+      });
+      avisoRapido(
+        novo === "resolvido"
+          ? `✓ <b>${esc(c.comprador)}</b> marcada como <b>resolvida</b>. Volta sozinha se o cliente escrever de novo.`
+          : novo === "tratativa"
+            ? `↩ <b>${esc(c.comprador)}</b> em <b>tratativa</b> (devolução). Fica até você tirar a marca.`
+            : `Marca de <b>${esc(c.comprador)}</b> removida.`,
+        5000
+      );
+    } catch (err) {
+      aplicar(original || null);
+      renderListaConversas();
+      atualizarBotoesMarca();
+      atualizarContas();
+      alert(`Não foi possível salvar a marca: ${err.message}`);
+    }
+  }
+  function atualizarBotoesMarca() {
+    const e = conversaAberta?.marca?.estado || "";
+    $("sp-marcar-resolvido")?.classList.toggle("ativo", e === "resolvido");
+    $("sp-marcar-tratativa")?.classList.toggle("ativo", e === "tratativa");
+    const alvo = $("sp-marca-topo");
+    if (alvo && conversaAberta) alvo.innerHTML = seloMarca(conversaAberta);
+  }
+
   async function carregarChat({ forcar = false } = {}) {
     try {
       chat = await api(`/api/shopee/chat${forcar ? "?forcar=1" : ""}`);
@@ -1133,7 +1203,7 @@
       <div class="sp-chat-lista">
         <div class="sp-chat-filtros">
           <input type="search" class="sp-busca" id="sp-busca" placeholder="Buscar comprador ou mensagem..." value="${esc(chatBusca)}">
-          <div class="sp-seg"><button type="button" data-cf="todas">Todas</button><button type="button" data-cf="naoLidas">Não lidas</button><button type="button" data-cf="semResposta">Sem resposta</button></div>
+          <div class="sp-seg"><button type="button" data-cf="todas">Todas</button><button type="button" data-cf="naoLidas">Não lidas</button><button type="button" data-cf="semResposta">Sem resposta</button><button type="button" data-cf="tratativa">Tratativa <span class="sp-cf-n" id="sp-cf-tratativa"></span></button><button type="button" data-cf="resolvidas">Resolvidas</button></div>
         </div>
         <div id="sp-chat-erros"></div>
         <div class="sp-conversas" id="sp-conversas"></div>
@@ -1171,11 +1241,23 @@
       return;
     }
     const busca = chatBusca.trim().toLowerCase();
+    // Resolvidas ficam fora de Todas/Nao lidas/Sem resposta (mas aparecem na
+    // busca e no filtro "Resolvidas"); Em tratativa tem filtro proprio e
+    // continua aparecendo nas demais com o selo.
+    const estadoDe = (c) => c.marca?.estado || "";
+    const nTrat = chat.conversas.filter((c) => passaLoja(c.shopId) && estadoDe(c) === "tratativa").length;
+    const elN = $("sp-cf-tratativa");
+    if (elN) elN.textContent = nTrat ? `(${nTrat})` : "";
     const convs = chat.conversas.filter(
       (c) =>
         passaLoja(c.shopId) &&
-        (chatFiltro !== "naoLidas" || c.naoLidas > 0) &&
-        (chatFiltro !== "semResposta" || c.ultimaDoComprador) &&
+        (chatFiltro === "tratativa"
+          ? estadoDe(c) === "tratativa"
+          : chatFiltro === "resolvidas"
+            ? estadoDe(c) === "resolvido"
+            : (busca || estadoDe(c) !== "resolvido") &&
+              (chatFiltro !== "naoLidas" || c.naoLidas > 0) &&
+              (chatFiltro !== "semResposta" || c.ultimaDoComprador)) &&
         (!busca || c.comprador.toLowerCase().includes(busca) || c.ultimaTexto.toLowerCase().includes(busca))
     );
     if (!convs.length) {
@@ -1191,7 +1273,7 @@
           <div style="min-width:0">
             <div class="sp-conv-nome">${esc(c.comprador)}</div>
             <div class="sp-conv-prev">${c.ultimaDoComprador === false ? "Você: " : ""}${esc(c.ultimaTexto)}</div>
-            <div style="margin-top:5px">${chipLoja(c.shopId, c.loja)}</div>
+            <div style="margin-top:5px">${chipLoja(c.shopId, c.loja)}${seloMarca(c)}</div>
           </div>
           <div class="sp-conv-dir">${c.ultimaEm ? relativo(c.ultimaEm) : ""}${c.naoLidas ? `<span class="sp-nao-lidas">${c.naoLidas}</span>` : ""}</div>
         </div>`;
@@ -1397,8 +1479,10 @@
       <div class="sp-thread-topo">
         <button type="button" class="btn btn-ghost btn-sm sp-voltar" id="sp-voltar">←</button>
         <div class="sp-avatar" style="--sp-loja:${corLoja(c.shopId)};width:34px;height:34px;font-size:13px">${esc(c.comprador.charAt(0).toUpperCase())}</div>
-        <div style="min-width:0"><div style="font-weight:700;white-space:nowrap">${esc(c.comprador)}<button type="button" class="sp-mini-copiar" data-sp-copiar-chat="${esc(c.comprador)}" title="Copiar usuário do comprador">⧉</button></div><div style="margin-top:2px">${chipLoja(c.shopId, c.loja)}${perfilDe(c.shopId) ? `<span class="sp-perfil" title="Perfil do Chrome onde esta loja está logada">🌐 ${esc(perfilDe(c.shopId))}</span>` : ""}</div></div>
+        <div style="min-width:0"><div style="font-weight:700;white-space:nowrap">${esc(c.comprador)}<button type="button" class="sp-mini-copiar" data-sp-copiar-chat="${esc(c.comprador)}" title="Copiar usuário do comprador">⧉</button></div><div style="margin-top:2px">${chipLoja(c.shopId, c.loja)}<span id="sp-marca-topo">${seloMarca(c)}</span>${perfilDe(c.shopId) ? `<span class="sp-perfil" title="Perfil do Chrome onde esta loja está logada">🌐 ${esc(perfilDe(c.shopId))}</span>` : ""}</div></div>
         <div class="sp-thread-acoes">
+          <button type="button" class="btn btn-ghost btn-sm sp-bt-marca tratativa ${c.marca?.estado === "tratativa" ? "ativo" : ""}" id="sp-marcar-tratativa" title="O cliente quer devolver: fica em tratativa até alguém tirar a marca">↩ Em tratativa</button>
+          <button type="button" class="btn btn-ghost btn-sm sp-bt-marca resolvido ${c.marca?.estado === "resolvido" ? "ativo" : ""}" id="sp-marcar-resolvido" title="Assunto resolvido: sai da lista; volta sozinha se o cliente escrever">✓ Resolvido</button>
           <button type="button" class="btn btn-ghost btn-sm" id="sp-abrir-shopee" title="Copia o usuário do comprador e abre o chat da Central do Vendedor; cole na busca (use o Chrome da loja ${esc(c.loja)})">Abrir chat na Shopee ↗</button>
           <button type="button" class="btn btn-ghost btn-sm sp-ctx-btn" id="sp-ctx-btn">ℹ Detalhes</button>
         </div>
@@ -1439,6 +1523,8 @@
       })
     );
     $("sp-enviar").addEventListener("click", () => enviar());
+    $("sp-marcar-resolvido").addEventListener("click", () => marcarConversa(conversaAberta || c, "resolvido"));
+    $("sp-marcar-tratativa").addEventListener("click", () => marcarConversa(conversaAberta || c, "tratativa"));
     $("sp-ctx-btn").addEventListener("click", () => t.classList.toggle("ctx-aberto"));
     // A Shopee nao publica link direto para uma conversa: abre o chat do
     // vendedor e deixa o usuario do comprador copiado para colar na busca.
@@ -2761,7 +2847,7 @@
       : resumo
         ? resumo.atrasados + resumo.urgentes
         : 0;
-    const naoLidas = chat ? chat.conversas.filter((c) => c.naoLidas > 0).length : resumo?.chatNaoLidas || 0;
+    const naoLidas = chat ? chat.conversas.filter((c) => c.naoLidas > 0 && c.marca?.estado !== "resolvido").length : resumo?.chatNaoLidas || 0;
     const devAbertas = devs ? devs.devolucoes.filter((d) => d.aberta).length : resumo?.devolucoesAbertas || 0;
     const set = (id, n) => {
       const el = $(`sp-conta-${id}`);
