@@ -2033,6 +2033,44 @@ async function sairDoHistorico() {
    senao a busca falha justamente quando o pedido sumiu da tela e voce
    quer entender por que.
    ===================================================================== */
+async function explicarBusca(numero) {
+  const caixa = $("porque-resposta");
+  const botao = $("btn-porque");
+  caixa.textContent = "Consultando o Mercado Livre...";
+  botao.disabled = true;
+  try {
+    // fetch direto: com o backend antigo a rota nao existe e o 404 em HTML
+    // nao pode virar "sessao expirada"
+    const res = await fetch("/api/flex/porque?pedido=" + encodeURIComponent(numero));
+    const tipo = res.headers.get("content-type") || "";
+    if (!res.ok || !tipo.includes("json")) {
+      caixa.textContent = "O servidor ainda não tem esta função — suba o backend novo (routes/flex.js e flex/coleta.js).";
+      return;
+    }
+    const r = await res.json();
+    if (!r.ok) {
+      caixa.textContent = r.erro || "Não consegui consultar.";
+      return;
+    }
+    const fatos = r.conta
+      ? [
+          "conta " + r.conta,
+          "pedido " + r.pedido,
+          r.pack && r.pack !== r.pedido ? "pacote " + r.pack : "",
+          r.envio_status ? "envio " + r.envio_status + (r.envio_substatus ? " / " + r.envio_substatus : "") : "",
+          r.tipo_logistico || "",
+        ].filter(Boolean).join(" · ")
+      : "";
+    caixa.innerHTML =
+      (fatos ? `<span class="ids">${escapar(fatos)}</span><br>` : "") +
+      `<b>${escapar(r.veredito || "")}</b>`;
+  } catch (e) {
+    caixa.textContent = "Sem conexão com o servidor.";
+  } finally {
+    botao.disabled = false;
+  }
+}
+
 function buscar(termo) {
   const alvo = $("busca-resultados");
   const texto = semAcento(termo).trim();
@@ -2060,7 +2098,17 @@ function buscar(termo) {
   }).slice(0, 10);
 
   if (!achados.length) {
-    alvo.innerHTML = `<p class="mini">Nada encontrado para “${escapar(termo)}”.</p>`;
+    /*  Nao achar no painel nao quer dizer que o pedido nao exista: ele pode
+        estar esperando a NF, nao ser Flex ou ser de uma conta desconectada.
+        O botao pergunta a API e responde qual desses e o caso. */
+    const podeExplicar = digitos.length >= 8;
+    alvo.innerHTML =
+      `<p class="mini">Nada encontrado para “${escapar(termo)}”.</p>` +
+      (podeExplicar
+        ? `<button type="button" id="btn-porque" class="discreto">Por que não aparece?</button>
+           <div id="porque-resposta" class="mini"></div>`
+        : "");
+    if (podeExplicar) $("btn-porque").onclick = () => explicarBusca(digitos);
     return;
   }
 
@@ -2189,6 +2237,7 @@ function desenharStatus() {
       : `${c.pedidos} a enviar (${c.flex} Flex)` +
         (c.novos ? ` · ${c.novos} novo(s)` : "") +
         (c.sairam ? ` · ${c.sairam} despachado(s)` : "") +
+        (c.aguardando ? ` · ${c.aguardando} Flex aguardando NF` : "") +
         (c.truncado ? ` <b>— só os ${c.pedidos} mais recentes de ${c.truncado}</b>` : "")}`
   ).join("<br>");
 }
