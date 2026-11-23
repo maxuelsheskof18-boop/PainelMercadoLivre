@@ -363,6 +363,89 @@ async function montarRegistro(conta, pedido, envio, flexTypes) {
 /* ---------------- pipeline ---------------- */
 let rodando = false;
 
+/* ---------------------------------------------------------------
+   JANELA DE LEITURA
+   Ate onde para tras a coleta cheia procura pedidos. Era "3 dias
+   corridos", e isso nunca serviu para quem nao expede no fim de semana:
+   pedido de quinta, com sexta feriado, ja estava fora na segunda e nem
+   era lido. Agora conta DIAS UTEIS — sabado, domingo e feriado nao
+   contam — e a janela so anda para a frente (nunca encolhe no fim de
+   semana), senao um pedido pendente sairia da leitura no domingo e nao
+   voltaria na segunda.
+   --------------------------------------------------------------- */
+// feriados nacionais + os de Sao Paulo (capital/estado) que param a expedicao.
+// FLEX_FERIADOS=AAAA-MM-DD,AAAA-MM-DD acrescenta outros (ponto facultativo, etc).
+const FERIADOS_PADRAO = [
+  // 2026
+  "2026-01-01", "2026-02-16", "2026-02-17", "2026-04-03", "2026-04-21", "2026-05-01",
+  "2026-06-04", "2026-07-09", "2026-09-07", "2026-10-12", "2026-11-02", "2026-11-20",
+  "2026-12-25",
+  // 2027
+  "2027-01-01", "2027-02-08", "2027-02-09", "2027-03-26", "2027-04-21", "2027-05-27",
+  "2027-07-09", "2027-09-07", "2027-10-12", "2027-11-02", "2027-11-15", "2027-12-25",
+];
+
+function feriadosAtivos() {
+  const extras = String(process.env.FLEX_FERIADOS || "")
+    .split(/[,;\s]+/)
+    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+  return new Set([...FERIADOS_PADRAO, ...extras]);
+}
+
+// "AAAA-MM-DD" no fuso de Sao Paulo (as 22h de SP ja e o dia seguinte em UTC)
+const diaDeSP = (ms) =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(ms));
+
+const somaDias = (iso, n) =>
+  new Date(Date.parse(iso + "T12:00:00Z") + n * 86400000).toISOString().slice(0, 10);
+
+const ehDiaUtil = (iso, feriados) => {
+  const dow = new Date(iso + "T12:00:00Z").getUTCDay();
+  return dow !== 0 && dow !== 6 && !feriados.has(iso);
+};
+
+/*  { inicio (ms), chave, descricao }. A "chave" muda quando a configuracao
+    muda — e e ela que obriga uma coleta cheia, porque a incremental so
+    olha o que mudou e nunca descobriria os pedidos da janela nova. */
+function janelaDeLeitura(agora = Date.now(), diasCorridos) {
+  const fixo = Number(diasCorridos) || Number(process.env.FLEX_DIAS) || 0;
+  const teto = Number(process.env.FLEX_DIAS_MAX) || 14;
+  const dataBr = (ms) =>
+    new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit" })
+      .format(new Date(ms));
+
+  if (fixo > 0) {
+    const inicio = agora - fixo * 86400000;
+    return { inicio, chave: "corridos:" + fixo, descricao: fixo + " dias corridos (desde " + dataBr(inicio) + ")" };
+  }
+
+  const uteis = Number(process.env.FLEX_DIAS_UTEIS) || 5;
+  const feriados = feriadosAtivos();
+
+  // referencia = hoje, ou o ultimo dia util se hoje nao for (fim de semana/feriado)
+  let ref = diaDeSP(agora);
+  while (!ehDiaUtil(ref, feriados)) ref = somaDias(ref, -1);
+
+  let dia = ref;
+  let contados = 0;
+  while (contados < uteis) {
+    dia = somaDias(dia, -1);
+    if (ehDiaUtil(dia, feriados)) contados++;
+  }
+
+  const inicio = Math.max(Date.parse(dia + "T00:00:00-03:00"), agora - teto * 86400000);
+  return {
+    inicio,
+    chave: "uteis:" + uteis + ":" + teto + ":" + [...feriados].filter((d) => d >= dia).length,
+    descricao: uteis + " dias uteis (desde " + dataBr(inicio) + ")",
+  };
+}
+
 /*  Envio que AINDA NAO tem etiqueta mas pode vir a ter: esperando a NF
     (ready_to_ship com substatus diferente de ready_to_print), pending ou
     handling. A etiqueta libera por mudanca no ENVIO — o pedido continua
@@ -390,7 +473,7 @@ function vigiar(mapa, conta, pedido, envioId) {
   });
 }
 
-async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental = false } = {}) {
+async function coletar({ dias, incremental = false } = {}) {
   if (rodando) return await lerEstado();
   rodando = true;
 
@@ -406,7 +489,8 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
       A coleta cheia continua existindo: e a do botao e a do primeiro
       ciclo apos o servico subir.  */
   const anterior = await lerEstado();
-  const limiteJanela = Date.now() - dias * 86400000;
+  const leitura = janelaDeLeitura(Date.now(), dias);
+  const limiteJanela = leitura.inicio;
 
   /*  Incremental so vale se o estado guardado ja tem os cursores por conta
       e a lista de vigiados. Estado de antes desta versao nao tem: cai numa
@@ -414,6 +498,9 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
   const podeIncremental =
     incremental &&
     !!anterior?.cursores &&
+    // janela de outra configuracao (ou de antes desta versao): a incremental
+    // nunca descobriria os pedidos novos dela, entao faz uma cheia
+    anterior?.janela?.chave === leitura.chave &&
     Array.isArray(anterior?.vigiados) &&
     Array.isArray(anterior?.registros);
 
@@ -447,6 +534,7 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
       falhas,
       contas: lidosPorConta,
       cursores: anterior?.cursores || {}, // so o fim da coleta avanca o cursor
+      janela: anterior?.janela,
       vigiados: [...vigiados.values()],
       gerado_em: anterior?.gerado_em || new Date().toISOString(),
     });
@@ -478,7 +566,7 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
             SUPRIMENTOS teve 2008 em 3 dias). Com teto baixo, um pedido
             ainda pendente de ontem ficava fora da leitura. O custo so
             aparece na coleta cheia; o ciclo incremental le poucos. */
-        const limite = Number(process.env.FLEX_MAX_PEDIDOS) || 1200;
+        const limite = Number(process.env.FLEX_MAX_PEDIDOS) || 3000;
 
         // conta sem cursor (nova, ou que nunca foi lida com sucesso): cheia
         const cursor = podeIncremental ? cursores[contaId] : null;
@@ -526,6 +614,14 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
 
           vistos.add(chave);
           vigiados.delete(chave); // e reavaliado logo abaixo
+
+          /*  Entregue nao tem etiqueta para imprimir. Com a janela maior ha
+              muito pedido assim, e cada um custaria uma chamada de envio. */
+          if ((pedido.tags || []).includes("delivered")) {
+            if (porPedido.delete(chave)) sairam++;
+            descartados++;
+            continue;
+          }
           try {
             if (!envios.has(shipId)) envios.set(shipId, await buscarEnvio(token, shipId));
             const envio = envios.get(shipId);
@@ -674,13 +770,15 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
       contas: contasResumo,
       cursores,
       vigiados: [...vigiados.values()],
+      janela: { desde: new Date(leitura.inicio).toISOString(), chave: leitura.chave, descricao: leitura.descricao },
       gerado_em: new Date().toISOString(),
       modo: podeIncremental ? "incremental" : "completa",
       mensagem:
         `${finais.length} a enviar (${doFlex.length} Flex) de ${contasResumo.length} conta(s) | ` +
         `${doFlex.length - semGeo} Flex no mapa | ${semGeo} sem localizacao | ` +
         `${foraDaLista} ja despachados/entregues | ${falhas.length} falhas` +
-        (vigiados.size ? ` | ${vigiados.size} Flex aguardando NF/etiqueta` : ""),
+        (vigiados.size ? ` | ${vigiados.size} Flex aguardando NF/etiqueta` : "") +
+        ` | lendo ${leitura.descricao}`,
     });
   } catch (e) {
     await salvarEstado({
@@ -1018,7 +1116,7 @@ async function explicarPedido(referencia) {
   const estado = await lerEstado();
   const contas = await listAccounts();
   const flexTypes = tiposFlex();
-  const dias = Number(process.env.FLEX_DIAS) || 3;
+  const leitura = janelaDeLeitura();
 
   const guardado = (estado.registros || []).find(
     (r) => r.pedido === ref || r.pack === ref || r.envio_id === ref
@@ -1086,7 +1184,7 @@ async function explicarPedido(referencia) {
   const logistic = String(envio?.logistic_type || envio?.logistic?.type || "").toLowerCase();
   const eFlex = flexTypes.includes(logistic);
   const pronto = envio ? etiquetaPendente(envio) : false;
-  const dentroDaJanela = Date.parse(pedido.date_created || "") >= Date.now() - dias * 86400000;
+  const dentroDaJanela = Date.parse(pedido.date_created || "") >= leitura.inicio;
 
   let veredito;
   if (guardado) {
@@ -1109,8 +1207,10 @@ async function explicarPedido(referencia) {
         : "Vai entrar no painel assim que liberar a etiqueta (na proxima coleta cheia, ou no ciclo se estiver na lista de vigiados).");
   } else if (!dentroDaJanela) {
     veredito =
-      "A etiqueta esta pronta, mas o pedido tem mais de " + dias + " dias (" + pedido.date_created +
-      ") e a coleta so le pedidos recentes. Aumente FLEX_DIAS no servidor.";
+      "A etiqueta esta pronta, mas o pedido e de " +
+      new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit" })
+        .format(new Date(pedido.date_created)) +
+      " e a coleta le " + leitura.descricao + ". Aumente FLEX_DIAS_UTEIS no servidor.";
   } else {
     veredito =
       "A etiqueta esta pronta, o pedido e Flex e esta na janela — deveria estar no painel e nao esta. " +
@@ -1128,6 +1228,7 @@ async function explicarPedido(referencia) {
     pedido_status: pedido.status,
     criado_em: pedido.date_created,
     dentro_da_janela: dentroDaJanela,
+    janela: leitura.descricao,
     envio_status: envio?.status || "",
     envio_substatus: envio?.substatus || "",
     tipo_logistico: logistic,
@@ -1141,6 +1242,7 @@ async function explicarPedido(referencia) {
 }
 
 module.exports = {
+  janelaDeLeitura,
   explicarPedido,
   coletar,
   salvarHistorico,
