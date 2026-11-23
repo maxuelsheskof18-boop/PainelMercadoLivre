@@ -10,7 +10,7 @@
 
 const db = require("../db");
 const { listAccounts, getValidAccessToken } = require("../ml/tokens");
-const { fetchRecentOrders, USER_AGENT } = require("../ml/api");
+const { fetchRecentOrders, fetchOrderById, fetchResource, USER_AGENT } = require("../ml/api");
 const { geocodificar, consultarCep } = require("./geo");
 const { classificarZona, extrairCidade } = require("./zonas");
 
@@ -363,6 +363,33 @@ async function montarRegistro(conta, pedido, envio, flexTypes) {
 /* ---------------- pipeline ---------------- */
 let rodando = false;
 
+/*  Envio que AINDA NAO tem etiqueta mas pode vir a ter: esperando a NF
+    (ready_to_ship com substatus diferente de ready_to_print), pending ou
+    handling. A etiqueta libera por mudanca no ENVIO — o pedido continua
+    com o mesmo date_last_updated, entao a coleta incremental (que so
+    pergunta "que pedidos mudaram?") nunca mais olhava para ele. Esses
+    ficam numa lista de vigiados, e a cada ciclo so o envio deles e relido
+    (1 chamada cada). So Flex: Coleta e agencia nao entram no mapa. */
+function vigiavel(envio, flexTypes) {
+  const logistic = String(envio.logistic_type || envio.logistic?.type || "").toLowerCase();
+  if (!flexTypes.includes(logistic)) return false;
+  const status = String(envio.status || "").toLowerCase();
+  if (status === "pending" || status === "handling") return true;
+  if (status === "ready_to_ship") return !etiquetaPendente(envio);
+  return false; // shipped, delivered, cancelled...: acabou
+}
+
+function vigiar(mapa, conta, pedido, envioId) {
+  const chave = String(pedido.id);
+  mapa.set(chave, {
+    pedido: chave,
+    conta_id: String(conta.id),
+    envio_id: String(envioId),
+    criado_em: pedido.date_created || "",
+    tentativas: mapa.get(chave)?.tentativas || 0,
+  });
+}
+
 async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental = false } = {}) {
   if (rodando) return await lerEstado();
   rodando = true;
@@ -379,23 +406,37 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
       A coleta cheia continua existindo: e a do botao e a do primeiro
       ciclo apos o servico subir.  */
   const anterior = await lerEstado();
-  const porPedido = new Map();
   const limiteJanela = Date.now() - dias * 86400000;
-  let desdeAlteracao = null;
 
-  if (
+  /*  Incremental so vale se o estado guardado ja tem os cursores por conta
+      e a lista de vigiados. Estado de antes desta versao nao tem: cai numa
+      coleta cheia, que tambem semeia as duas listas. */
+  const podeIncremental =
     incremental &&
-    anterior?.gerado_em &&
-    Array.isArray(anterior.registros) &&
-    anterior.registros.length
-  ) {
-    for (const r of anterior.registros) {
-      const criado = Date.parse(r.criado_em || "");
-      if (!criado || criado >= limiteJanela) porPedido.set(r.pedido, r);
-    }
-    // 5 minutos de margem: pedido alterado durante a rodada anterior nao escapa
-    desdeAlteracao = new Date(Date.parse(anterior.gerado_em) - 5 * 60000).toISOString();
+    !!anterior?.cursores &&
+    Array.isArray(anterior?.vigiados) &&
+    Array.isArray(anterior?.registros);
+
+  // parte sempre do que ja esta guardado: se uma conta falhar na leitura,
+  // os pedidos dela continuam no mapa em vez de sumirem
+  const porPedido = new Map();
+  for (const r of anterior?.registros || []) {
+    const criado = Date.parse(r.criado_em || "");
+    if (!criado || criado >= limiteJanela) porPedido.set(r.pedido, r);
   }
+
+  const vigiados = new Map();
+  for (const v of anterior?.vigiados || []) {
+    const criado = Date.parse(v.criado_em || "");
+    if (!criado || criado >= limiteJanela) vigiados.set(v.pedido, v);
+  }
+
+  /*  "Li esta conta ate quando". Um cursor so para a coleta inteira fazia
+      uma conta que falhou num ciclo perder, para sempre, os pedidos que
+      chegaram antes dele: o ciclo seguinte pedia so "o que mudou desde
+      agora". Agora cada conta so avanca o seu cursor quando e lida com
+      sucesso. */
+  const cursores = { ...(anterior?.cursores || {}) };
 
   const registros = () => [...porPedido.values()];
   const progresso = (mensagem, estado = "coletando") =>
@@ -405,6 +446,8 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
       registros: registros(),
       falhas,
       contas: lidosPorConta,
+      cursores: anterior?.cursores || {}, // so o fim da coleta avanca o cursor
+      vigiados: [...vigiados.values()],
       gerado_em: anterior?.gerado_em || new Date().toISOString(),
     });
 
@@ -419,8 +462,16 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
       return await lerEstado();
     }
 
+    // conta que foi desconectada leva os pedidos dela junto
+    const idsContas = new Set(contas.map((c) => String(c.id)));
+    for (const [k, r] of porPedido) {
+      if (r.conta_id && !idsContas.has(String(r.conta_id))) porPedido.delete(k);
+    }
+    for (const [k, v] of vigiados) if (!idsContas.has(v.conta_id)) vigiados.delete(k);
+
     for (const conta of contas) {
       await progresso(`Lendo pedidos de ${conta.nickname}...`);
+      const contaId = String(conta.id);
       try {
         const token = await getValidAccessToken(conta.id);
         /*  Conta grande tem milhares de pedidos na janela (a VESCO
@@ -428,9 +479,15 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
             ainda pendente de ontem ficava fora da leitura. O custo so
             aparece na coleta cheia; o ciclo incremental le poucos. */
         const limite = Number(process.env.FLEX_MAX_PEDIDOS) || 1200;
-        const janela = desdeAlteracao
-          ? { dateLastUpdatedFrom: desdeAlteracao }
-          : { dateCreatedFrom: new Date(limiteJanela).toISOString() };
+
+        // conta sem cursor (nova, ou que nunca foi lida com sucesso): cheia
+        const cursor = podeIncremental ? cursores[contaId] : null;
+        const completa = !cursor;
+        // anotado ANTES de buscar: o que mudar durante a leitura entra no proximo ciclo
+        const inicioDaLeitura = new Date().toISOString();
+        const janela = completa
+          ? { dateCreatedFrom: new Date(limiteJanela).toISOString() }
+          : { dateLastUpdatedFrom: new Date(Date.parse(cursor) - 5 * 60000).toISOString() };
 
         const pedidos = [];
         let offset = 0;
@@ -446,21 +503,33 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
         }
 
         const envios = new Map(); // pedidos do mesmo pacote dividem o envio
+        const vistos = new Set();
         let novos = 0;
         let descartados = 0;
         let sairam = 0;
 
         for (let i = 0; i < pedidos.length; i++) {
           const pedido = pedidos[i];
-          if (pedido.status !== "paid") continue;
+          const chave = String(pedido.id);
+
+          // pago que virou cancelado/devolvido: sai do mapa (antes ficava fantasma)
+          if (pedido.status !== "paid") {
+            if (porPedido.delete(chave)) sairam++;
+            vigiados.delete(chave);
+            continue;
+          }
           const shipId = pedido.shipping?.id;
           if (!shipId) continue;
           if (i % 5 === 0) {
             await progresso(`${conta.nickname}: pedido ${i + 1} de ${pedidos.length}...`);
           }
+
+          vistos.add(chave);
+          vigiados.delete(chave); // e reavaliado logo abaixo
           try {
             if (!envios.has(shipId)) envios.set(shipId, await buscarEnvio(token, shipId));
-            const reg = await montarRegistro(conta, pedido, envios.get(shipId), flexTypes);
+            const envio = envios.get(shipId);
+            const reg = await montarRegistro(conta, pedido, envio, flexTypes);
             if (reg.etiqueta_pendente) {
               porPedido.set(reg.pedido, reg);
               novos++;
@@ -470,15 +539,67 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
               // mapa, porque a coleta incremental so acrescenta.
               if (porPedido.delete(reg.pedido)) sairam++;
               descartados++;
+              // ainda sem etiqueta mas pode liberar (NF pendente): fica de olho
+              if (vigiavel(envio, flexTypes)) vigiar(vigiados, conta, pedido, shipId);
             }
           } catch (e) {
             falhas.push({
               conta: conta.nickname,
-              pedido: String(pedido.id),
+              pedido: chave,
               erro: String(e?.message || e),
             });
+            // nao perde o pedido: o proximo ciclo tenta de novo
+            vigiar(vigiados, conta, pedido, shipId);
           }
         }
+
+        if (completa) {
+          // leitura cheia: o que nao apareceu saiu da janela (ou do teto) e nao vale mais
+          for (const [k, r] of porPedido) {
+            if (String(r.conta_id) === contaId && !vistos.has(k)) porPedido.delete(k);
+          }
+          for (const [k, v] of vigiados) {
+            if (v.conta_id === contaId && !vistos.has(k)) vigiados.delete(k);
+          }
+        } else {
+          /*  Vigiados que o ML NAO devolveu como alterados: olha so o envio.
+              Se a etiqueta liberou, busca o pedido e entra no mapa. */
+          const teto = Number(process.env.FLEX_MAX_VIGIADOS) || 300;
+          const meus = [...vigiados.values()].filter(
+            (v) => v.conta_id === contaId && !vistos.has(v.pedido)
+          );
+          for (const v of meus.slice(0, teto)) {
+            try {
+              if (!envios.has(v.envio_id)) envios.set(v.envio_id, await buscarEnvio(token, v.envio_id));
+              const envio = envios.get(v.envio_id);
+              if (etiquetaPendente(envio)) {
+                const pedido = await fetchOrderById(token, v.pedido);
+                const reg = await montarRegistro(conta, pedido, envio, flexTypes);
+                if (reg.etiqueta_pendente) {
+                  porPedido.set(reg.pedido, reg);
+                  novos++;
+                }
+                vigiados.delete(v.pedido);
+              } else if (!vigiavel(envio, flexTypes)) {
+                // despachado, entregue ou cancelado antes de liberar a etiqueta
+                if (porPedido.delete(v.pedido)) sairam++;
+                vigiados.delete(v.pedido);
+              }
+            } catch (e) {
+              v.tentativas = (v.tentativas || 0) + 1;
+              if (e.status === 404 || v.tentativas >= 20) vigiados.delete(v.pedido);
+              else {
+                falhas.push({
+                  conta: conta.nickname,
+                  pedido: v.pedido,
+                  erro: String(e?.message || e),
+                });
+              }
+            }
+          }
+        }
+
+        cursores[contaId] = inicioDaLeitura; // so aqui: conta lida com sucesso
 
         lidosPorConta.push({
           nickname: conta.nickname,
@@ -487,9 +608,10 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
           sairam,
           // Conta movimentada tem mais pedidos na janela do que o limite:
           // pegamos os mais recentes (a busca vem ordenada por data desc).
-          truncado: !desdeAlteracao && total > pedidos.length ? total : 0,
+          truncado: completa && total > pedidos.length ? total : 0,
         });
       } catch (e) {
+        // o cursor desta conta NAO avanca: o proximo ciclo cobre o buraco
         lidosPorConta.push({ nickname: conta.nickname, erro: String(e?.message || e) });
       }
     }
@@ -537,6 +659,7 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
         descartados: lido.descartados || 0,
         sairam: lido.sairam || 0,
         truncado: lido.truncado || 0,
+        aguardando: [...vigiados.values()].filter((v) => v.conta_id === String(c.id)).length,
         erro: lido.erro,
       };
     });
@@ -549,12 +672,15 @@ async function coletar({ dias = Number(process.env.FLEX_DIAS) || 3, incremental 
       registros: finais,
       falhas,
       contas: contasResumo,
+      cursores,
+      vigiados: [...vigiados.values()],
       gerado_em: new Date().toISOString(),
-      modo: desdeAlteracao ? "incremental" : "completa",
+      modo: podeIncremental ? "incremental" : "completa",
       mensagem:
         `${finais.length} a enviar (${doFlex.length} Flex) de ${contasResumo.length} conta(s) | ` +
         `${doFlex.length - semGeo} Flex no mapa | ${semGeo} sem localizacao | ` +
-        `${foraDaLista} ja despachados/entregues | ${falhas.length} falhas`,
+        `${foraDaLista} ja despachados/entregues | ${falhas.length} falhas` +
+        (vigiados.size ? ` | ${vigiados.size} Flex aguardando NF/etiqueta` : ""),
     });
   } catch (e) {
     await salvarEstado({
@@ -881,7 +1007,141 @@ async function sondarTelefone(conta, { pedidoId, dias = 7 } = {}) {
   };
 }
 
+/*  Pergunta a propria API, conta por conta, em que pe esta um pedido e
+    compara com o que o painel guardou. O numero que a tela de vendas do
+    Mercado Livre mostra pode ser do pedido, do PACOTE ou do envio — aceita
+    os tres. Responde com um veredito em portugues. */
+async function explicarPedido(referencia) {
+  const ref = so(referencia);
+  if (!ref) return { ok: false, erro: "Informe o numero do pedido, do pacote ou do envio." };
+
+  const estado = await lerEstado();
+  const contas = await listAccounts();
+  const flexTypes = tiposFlex();
+  const dias = Number(process.env.FLEX_DIAS) || 3;
+
+  const guardado = (estado.registros || []).find(
+    (r) => r.pedido === ref || r.pack === ref || r.envio_id === ref
+  );
+  const vigiado = (estado.vigiados || []).find((v) => v.pedido === ref || v.envio_id === ref);
+
+  let achado = null;
+  const consultadas = [];
+  for (const conta of contas) {
+    let token;
+    try {
+      token = await getValidAccessToken(conta.id);
+    } catch (e) {
+      consultadas.push({ conta: conta.nickname, erro: "sem token: " + String(e?.message || e) });
+      continue;
+    }
+
+    let pedido = null;
+    let envio = null;
+    // 1) numero do pedido
+    try { pedido = await fetchOrderById(token, ref); } catch { /* outra conta ou outro tipo de numero */ }
+    // 2) numero do envio — o envio sabe a qual pedido pertence
+    if (!pedido) {
+      try {
+        envio = await buscarEnvio(token, ref);
+        if (envio?.order_id) pedido = await fetchOrderById(token, envio.order_id);
+      } catch { /* nao e envio desta conta */ }
+    }
+    // 3) numero do pacote (o que a tela de vendas costuma mostrar)
+    if (!pedido) {
+      try {
+        const pacote = await fetchResource(token, `/packs/${ref}`);
+        const primeiro = pacote?.orders?.[0]?.id;
+        if (primeiro) pedido = await fetchOrderById(token, primeiro);
+      } catch { /* nao e pacote desta conta */ }
+    }
+
+    if (pedido) {
+      const envioId = pedido.shipping?.id;
+      if (envioId && !envio) {
+        try { envio = await buscarEnvio(token, envioId); } catch (e) {
+          consultadas.push({ conta: conta.nickname, erro: "envio: " + String(e?.message || e) });
+        }
+      }
+      achado = { conta, pedido, envio };
+      break;
+    }
+    consultadas.push({ conta: conta.nickname, achou: false });
+  }
+
+  if (!achado) {
+    return {
+      ok: true,
+      referencia: ref,
+      no_painel: !!guardado,
+      veredito:
+        "Nao achei esse numero em nenhuma das " + contas.length + " conta(s) conectada(s) (" +
+        contas.map((c) => c.nickname).join(", ") + "). Ou a conta dona do pedido nao esta " +
+        "conectada no painel, ou o numero esta errado.",
+      consultadas,
+    };
+  }
+
+  const { conta, pedido, envio } = achado;
+  const logistic = String(envio?.logistic_type || envio?.logistic?.type || "").toLowerCase();
+  const eFlex = flexTypes.includes(logistic);
+  const pronto = envio ? etiquetaPendente(envio) : false;
+  const dentroDaJanela = Date.parse(pedido.date_created || "") >= Date.now() - dias * 86400000;
+
+  let veredito;
+  if (guardado) {
+    veredito = "Ja esta no painel (conta " + guardado.conta + ", zona " + (guardado.zona || "?") + ")." +
+      (guardado.flex ? "" : " Mas nao e Flex, entao so aparece com o filtro 'Somente Flex' desligado.");
+  } else if (pedido.status !== "paid") {
+    veredito = "O pedido nao esta pago (status '" + pedido.status + "'): o painel so lista pedidos pagos.";
+  } else if (!pedido.shipping?.id) {
+    veredito = "O pedido nao tem envio associado.";
+  } else if (!envio) {
+    veredito = "Nao consegui ler o envio na API — veja o campo 'consultadas'.";
+  } else if (!eFlex) {
+    veredito = "Nao e Flex: o tipo logistico e '" + (logistic || "?") + "'.";
+  } else if (!pronto) {
+    veredito =
+      "O envio esta em '" + envio.status + (envio.substatus ? " / " + envio.substatus : "") +
+      "' — ainda sem etiqueta para imprimir (costuma ser NF pendente). " +
+      (vigiado
+        ? "O painel esta de olho nele e lista assim que a etiqueta liberar."
+        : "Vai entrar no painel assim que liberar a etiqueta (na proxima coleta cheia, ou no ciclo se estiver na lista de vigiados).");
+  } else if (!dentroDaJanela) {
+    veredito =
+      "A etiqueta esta pronta, mas o pedido tem mais de " + dias + " dias (" + pedido.date_created +
+      ") e a coleta so le pedidos recentes. Aumente FLEX_DIAS no servidor.";
+  } else {
+    veredito =
+      "A etiqueta esta pronta, o pedido e Flex e esta na janela — deveria estar no painel e nao esta. " +
+      "Clique em 'recarregar tudo'; se a conta aparecer com aviso de 'so os N mais recentes', o limite " +
+      "FLEX_MAX_PEDIDOS cortou este pedido.";
+  }
+
+  return {
+    ok: true,
+    referencia: ref,
+    conta: conta.nickname,
+    pedido: String(pedido.id),
+    pack: pedido.pack_id ? String(pedido.pack_id) : "",
+    envio_id: String(pedido.shipping?.id || ""),
+    pedido_status: pedido.status,
+    criado_em: pedido.date_created,
+    dentro_da_janela: dentroDaJanela,
+    envio_status: envio?.status || "",
+    envio_substatus: envio?.substatus || "",
+    tipo_logistico: logistic,
+    e_flex: eFlex,
+    etiqueta_pronta: pronto,
+    no_painel: !!guardado,
+    vigiado: !!vigiado,
+    veredito,
+    consultadas,
+  };
+}
+
 module.exports = {
+  explicarPedido,
   coletar,
   salvarHistorico,
   listarHistorico,
