@@ -428,7 +428,6 @@ router.get("/api/shopee/prazos", requireLogin, async (req, res) => {
 // viu tudo de uma vez) e descartada. E o ritmo da EQUIPE inteira.
 function medirRitmo(linhas) {
   const porCanal = {};
-  const porDiaAcc = {}; // "canal|dia" -> { ms, intervalos, pacotes }
   const grupos = new Map();
   for (const l of linhas) {
     const k = `${l.canal}|${l.dia}`;
@@ -444,10 +443,6 @@ function medirRitmo(linhas) {
     const fechar = (fim) => {
       const sessao = ts.slice(ini, fim + 1);
       if (new Set(sessao).size >= 3) {
-        const d = (porDiaAcc[k] = porDiaAcc[k] || { ms: 0, intervalos: 0, pacotes: 0 });
-        d.ms += sessao[sessao.length - 1] - sessao[0];
-        d.intervalos += sessao.length - 1;
-        d.pacotes += sessao.length;
         acc.ms += sessao[sessao.length - 1] - sessao[0];
         acc.intervalos += sessao.length - 1;
         acc.pacotes += sessao.length;
@@ -467,46 +462,7 @@ function medirRitmo(linhas) {
     if (a.intervalos < 20 || !a.ms) continue; // pouco dado
     out[canal] = { minPorPacote: Math.round((a.ms / a.intervalos / 60e3) * 100) / 100, pacotes: a.pacotes, dias: a.dias.size };
   }
-  const porDia = Object.entries(porDiaAcc)
-    .filter(([, d]) => d.intervalos >= 10 && d.ms)
-    .map(([k, d]) => {
-      const [canal, dia] = k.split("|");
-      return { chave: `canal:${canal}`, dia, minPorPacote: d.ms / d.intervalos / 60e3, pacotes: d.pacotes };
-    });
-  return { media: out, porDia };
-}
-
-// RECORDE (pedido do usuario, 19/11): o dia em que a equipe foi mais rapida
-// vira a meta, "se conseguiu aquele dia consegue outro". Fica guardado para
-// sempre (nao so 15 dias). Um dia novo so vira recorde se for mais rapido E
-// com volume parecido (pelo menos 70% dos pacotes do recorde) — dia de pouco
-// pacote nao vale. Abaixo de 0,2 min/pacote (12 s) e descartado (erro).
-async function atualizarRecordes(candidatos) {
-  await db.query(
-    `CREATE TABLE IF NOT EXISTS ritmo_recordes (
-       chave TEXT PRIMARY KEY,
-       min_por_pacote NUMERIC NOT NULL,
-       pacotes INT NOT NULL,
-       dia DATE NOT NULL
-     )`
-  );
-  const { rows } = await db.query("SELECT chave, min_por_pacote, pacotes, to_char(dia, 'YYYY-MM-DD') AS dia FROM ritmo_recordes");
-  const rec = Object.fromEntries(rows.map((r) => [r.chave, { min: Number(r.min_por_pacote), pacotes: r.pacotes, dia: r.dia }]));
-  const hoje = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
-  for (const c of candidatos) {
-    if (c.dia >= hoje || c.pacotes < 20 || !(c.minPorPacote >= 0.2)) continue; // so dias completos
-    const atual = rec[c.chave];
-    if (atual && !(c.minPorPacote < atual.min && c.pacotes >= 0.7 * atual.pacotes)) continue;
-    rec[c.chave] = { min: c.minPorPacote, pacotes: c.pacotes, dia: c.dia };
-    await db.query(
-      `INSERT INTO ritmo_recordes (chave, min_por_pacote, pacotes, dia) VALUES ($1,$2,$3,$4)
-       ON CONFLICT (chave) DO UPDATE SET min_por_pacote = EXCLUDED.min_por_pacote, pacotes = EXCLUDED.pacotes, dia = EXCLUDED.dia`,
-      [c.chave, Math.round(c.minPorPacote * 100) / 100, c.pacotes, c.dia]
-    );
-  }
-  return Object.fromEntries(
-    Object.entries(rec).map(([k, r]) => [k, { minPorPacote: Math.round(r.min * 100) / 100, pacotes: r.pacotes, dia: r.dia }])
-  );
+  return out;
 }
 
 // Ritmo de EMBALAGEM por equipe nos ultimos 15 dias (ideia do usuario):
@@ -523,7 +479,7 @@ function equipeDaForma(forma) {
   if (/tik\s*tok|amazon|mercado\s*envios/i.test(f)) return "mathias";
   return null;
 }
-async function ritmoEquipes15(candidatos = []) {
+async function ritmoEquipes15() {
   const { rows: tem } = await db.query("SELECT to_regclass('tiny_embalados_dia') AS t");
   if (!tem[0]?.t) return {};
   const { rows } = await db.query(
@@ -560,7 +516,6 @@ async function ritmoEquipes15(candidatos = []) {
     let fim = fins[k] || FIM_PADRAO;
     if (min(fim) <= min(INICIO_TRABALHO) + 30) fim = FIM_PADRAO; // fim estranho
     const minutos = min(fim) - min(INICIO_TRABALHO);
-    candidatos.push({ chave: `equipe:${eq}`, dia, minPorPacote: minutos / qtd, pacotes: qtd });
     if (!acc[eq]) acc[eq] = { minutos: 0, pacotes: 0, dias: 0 };
     acc[eq].minutos += minutos;
     acc[eq].pacotes += qtd;
@@ -711,14 +666,7 @@ router.get("/api/pacotes-dia/ritmo", requireLogin, async (req, res) => {
       );
       linhas.push(...rows.filter((r) => r.canal));
     }
-    const medido = medirRitmo(linhas);
-    const candidatos = [...medido.porDia];
-    const equipes = await ritmoEquipes15(candidatos);
-    const recordes = await atualizarRecordes(candidatos).catch((err) => {
-      console.error("[ritmo-recordes]", err.message);
-      return {};
-    });
-    const dados = { canais: medido.media, equipes, recordes, calculadoEm: Date.now() };
+    const dados = { canais: medirRitmo(linhas), equipes: await ritmoEquipes15(), calculadoEm: Date.now() };
     cacheRitmo = { em: Date.now(), dados };
     res.json(dados);
   } catch (err) {
