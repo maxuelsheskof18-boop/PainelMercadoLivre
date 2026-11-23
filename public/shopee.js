@@ -250,6 +250,10 @@
   .shopee-pane .pz-copiar.ok { color: var(--success); }
   .shopee-pane .pz-detalhe .sp-barra { gap: 8px; }
 
+  .pz-limites { display: flex; gap: 6px 14px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--muted); margin: 2px 0 10px; }
+  .pz-limites input { padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 12px; }
+  .sp-lojas-ocultas { margin: 2px 0 12px; }
+  .sp-lojas-ocultas > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--muted); padding: 4px 0; }
   /* ---- Pacotes do dia (ML + Shopee) ---- */
   .pd-faixa { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 18px; align-items: center; border: 1px solid var(--border); border-radius: 16px; padding: 14px 18px; background: linear-gradient(100deg, #fffdf0 0%, #fff 45%, #fff6f2 100%); }
   .prazos-pane > .pd-faixa { margin: 14px 20px 0; }
@@ -744,7 +748,9 @@
   // ate o prazo da Shopee (ship_by_date) e barras por transportadora.
   let prazos = null;
   let spVisao = lerPref("prazosVisao", "hoje");
-  let spLojaSel = null; // cartao escolhido na visao "Para hoje"
+  let spLojaSel = "todas"; // filtro por loja (cartoes ocultos em "Ver por loja")
+  let spCatSel = "todas"; // cartao escolhido na visao "Para hoje": spx | xpress | outras | todas
+  let spLojasAberto = false; // "Ver por loja" aberto?
   let spModo = lerPref("prazosModo2", "produtos");
   const spAbertos = new Set(); // produtos abertos no detalhe (sobrevive ao re-render)
 
@@ -765,6 +771,38 @@
     return min < 0 ? `há ${durMin(-min)}` : `faltam ${durMin(min)}`;
   };
   const diasAtras = (ms) => Math.round((Date.parse(diaSP(Date.now())) - Date.parse(diaSP(ms))) / 864e5);
+
+  // ---- Limite para ficar PRONTO por transportadora (pedido de 23/11) ----
+  // SPX Entrega Rapida tem que estar pronto ate 12:00 e a Shopee Xpress ate
+  // 16:30 (editavel na tela). "Pronto" = embalado no Tiny; sem o Tiny ligado,
+  // etiqueta gerada. O prazo da Shopee (23:59) deixou de ser o relogio.
+  const CATS_PRAZO = [
+    { id: "spx", nome: "SPX Entrega Rápida" },
+    { id: "xpress", nome: "Shopee Xpress" },
+    { id: "outras", nome: "Outras transportadoras" },
+  ];
+  const LIMITES_PRONTO = { spx: "12:00", xpress: "16:30" };
+  function limitePronto(id) {
+    const v = lerPref(`limpronto_${id}`, LIMITES_PRONTO[id] || "");
+    return /^\d{2}:\d{2}$/.test(v) ? v : LIMITES_PRONTO[id] || null;
+  }
+  function limiteProntoMs(id) {
+    const h = limitePronto(id);
+    if (!h) return null;
+    const ms = Date.parse(`${diaSP(Date.now())}T${h}:00-03:00`);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  const prontoSP = (p) => (prazos?.tiny?.configurado ? !!p.embaladoEm : p.etapa === "aguardando");
+  function proximoLimitePronto(g) {
+    let melhor = null;
+    for (const c of CATS_PRAZO) {
+      const ms = limiteProntoMs(c.id);
+      if (!ms || ms < Date.now()) continue;
+      if (!g.hoje.some((p) => categoriaShopee(p.transportadora) === c.id && !prontoSP(p))) continue;
+      if (!melhor || ms < melhor.ms) melhor = { nome: c.nome, ms };
+    }
+    return melhor;
+  }
 
   function gruposPrazos() {
     const hoje = diaSP(Date.now());
@@ -805,11 +843,16 @@
     const organizar = g.hoje.filter((p) => p.etapa === "organizar").length;
     const risco = g.hoje.filter((p) => p.situacao === "risco").length;
     const proxPrazo = g.hoje.map((p) => p.prazo).filter(Boolean).sort((a, b) => a - b)[0];
+    const proxLimite = proximoLimitePronto(g);
     const atrasHoje = g.atrasados.filter((p) => p.prazo && diasAtras(p.prazo) === 0).length;
     const cartoes = [
       {
         visao: "hoje", cls: "imprimir", n: g.hoje.length, rotulo: "Para enviar hoje",
-        sub: proxPrazo ? `prazo ${hora(proxPrazo)} · ${falta(proxPrazo)}` : "nada com prazo hoje",
+        sub: proxLimite
+          ? `${proxLimite.nome} pronto até ${hora(proxLimite.ms)} · ${falta(proxLimite.ms)}`
+          : proxPrazo
+            ? `prazo ${hora(proxPrazo)} · ${falta(proxPrazo)}`
+            : "nada com prazo hoje",
       },
       { visao: "hoje", cls: "risco", n: organizar, rotulo: "A organizar", sub: "falta gerar a etiqueta" },
       { visao: "hoje", cls: "estourou", n: risco, rotulo: "Em risco", sub: `menos de ${prazos.margemRiscoHoras}h para o prazo` },
@@ -848,6 +891,8 @@
     vazio: "Sem pedidos hoje",
   };
 
+  const ROTULO_NIVEL_CAT = { estourou: "Passou do limite", risco: "Em risco", no_prazo: "No prazo", concluido: "Tudo pronto", vazio: "Sem pedidos hoje" };
+
   function visaoHoje(g) {
     const lojas = (estado?.contas || [])
       .filter((c) => passaLoja(c.shopId))
@@ -865,27 +910,98 @@
                 : "vazio";
         return { id: c.shopId, nome: c.nome || `Loja ${c.shopId}`, itens, atrasHoje, nivel };
       });
-    if (!lojas.some((l) => l.itens.length)) {
+    if (!g.hoje.length) {
       return `<p class="prazos-vazio grande">${prazos.atualizadoEm ? "Nenhum pedido Shopee para enviar hoje. ✓" : "Buscando os pedidos na Shopee..."}</p>`;
     }
-    const peso = { atrasado: 0, risco: 1, no_prazo: 2, concluido: 3, vazio: 4 };
-    if (spLojaSel !== "todas" && !lojas.some((l) => l.id === spLojaSel && l.itens.length)) {
-      spLojaSel = [...lojas].filter((l) => l.itens.length).sort((a, b) => peso[a.nivel] - peso[b.nivel] || b.itens.length - a.itens.length)[0].id;
-    }
-    const sel =
-      spLojaSel === "todas"
-        ? { nome: "Todas as lojas", itens: g.hoje }
-        : lojas.find((l) => l.id === spLojaSel);
+    const cats = CATS_PRAZO.map((c) => ({
+      ...c,
+      itens: g.hoje.filter((p) => categoriaShopee(p.transportadora) === c.id),
+      atrasHoje: g.atrasados.filter((p) => categoriaShopee(p.transportadora) === c.id && p.prazo && diasAtras(p.prazo) === 0).length,
+    })).filter((c) => c.id !== "outras" || c.itens.length);
+    if (spCatSel !== "todas" && !cats.some((c) => c.id === spCatSel && c.itens.length)) spCatSel = "todas";
+    if (spLojaSel !== "todas" && !lojas.some((l) => l.id === spLojaSel)) spLojaSel = "todas";
+    let itens = g.hoje;
+    if (spCatSel !== "todas") itens = itens.filter((p) => categoriaShopee(p.transportadora) === spCatSel);
+    if (spLojaSel !== "todas") itens = itens.filter((p) => p.shopId === spLojaSel);
+    const nomeCat = spCatSel === "todas" ? "" : cats.find((c) => c.id === spCatSel)?.nome || "";
+    const nomeLoja = spLojaSel === "todas" ? "" : lojas.find((l) => l.id === spLojaSel)?.nome || "";
+    const filtrado = spCatSel !== "todas" || spLojaSel !== "todas";
     return `
-      <div class="pz-cards">${lojas.map(cartaoLoja).join("")}</div>
+      <div class="pz-cards">${cats.map(cartaoCategoria).join("")}</div>
+      <div class="pz-limites">Limite para ficar pronto:
+        <label>SPX Entrega Rápida <input type="time" value="${limitePronto("spx")}" data-sp-limite="spx"></label>
+        <label>Shopee Xpress <input type="time" value="${limitePronto("xpress")}" data-sp-limite="xpress"></label>
+        <span>· pronto = ${prazos?.tiny?.configurado ? "embalado no Tiny" : "etiqueta gerada (ligue o Tiny para contar embalado)"}</span>
+      </div>
+      <details class="sp-lojas-ocultas" data-sp-lojas-det ${spLojasAberto ? "open" : ""}>
+        <summary>Ver por loja</summary>
+        <div class="pz-cards">${lojas.map(cartaoLoja).join("")}</div>
+      </details>
       ${detalhePrazos({
-        nome: sel.nome,
-        itens: sel.itens,
+        nome: [nomeCat, nomeLoja].filter(Boolean).join(" · ") || "Todos os pacotes de hoje",
+        itens,
         sub: "para enviar hoje",
-        extra: lojas.filter((l) => l.itens.length).length > 1
-          ? `<button type="button" class="btn btn-ghost btn-sm" data-sp-loja="${spLojaSel === "todas" ? lojas[0].id : "todas"}">${spLojaSel === "todas" ? "Ver por loja" : "Ver todas as lojas juntas"}</button>`
-          : "",
+        extra: filtrado ? `<button type="button" class="btn btn-ghost btn-sm" data-sp-cat="todas" data-sp-loja="todas">Ver tudo</button>` : "",
       })}`;
+  }
+
+  // Cartao por TRANSPORTADORA (igual ao por modalidade do Mercado Livre): anel =
+  // quanto ja esta pronto, relogio = tempo ate o limite, barras = por loja.
+  function cartaoCategoria(c) {
+    const tinyOn = !!prazos?.tiny?.configurado;
+    const total = c.itens.length;
+    const prontos = c.itens.filter(prontoSP).length;
+    const resta = total - prontos;
+    const pct = total ? Math.round((prontos / total) * 100) : 0;
+    const lim = limiteProntoMs(c.id);
+    const min = lim ? Math.round((lim - Date.now()) / 60000) : null;
+    const nivel = !total
+      ? "vazio"
+      : !resta
+        ? "concluido"
+        : lim && min < 0
+          ? "estourou"
+          : (lim && min < 60) || (!lim && c.itens.some((p) => p.situacao === "risco"))
+            ? "risco"
+            : "no_prazo";
+    let relogio;
+    if (!total) relogio = `<div class="pz-relogio"><b>✓</b><span>nada para hoje</span></div>`;
+    else if (!resta) relogio = `<div class="pz-relogio"><b>✓</b><span>tudo pronto${lim ? ` (limite ${hora(lim)})` : ""}</span></div>`;
+    else if (!lim) relogio = `<div class="pz-relogio"><b>—</b><span>sem horário limite definido</span></div>`;
+    else if (min < 0) relogio = `<div class="pz-relogio passou"><b>+${durMin(-min)}</b><span>passou do limite das ${hora(lim)}</span></div>`;
+    else relogio = `<div class="pz-relogio"><b>${durMin(min)}</b><span>para ficar pronto até ${hora(lim)}</span></div>`;
+
+    const porLoja = new Map();
+    for (const p of c.itens) if (!prontoSP(p)) porLoja.set(p.shopId, { nome: p.loja, n: (porLoja.get(p.shopId)?.n || 0) + 1 });
+    const lojasBarras = [...porLoja.entries()].sort((a, b) => b[1].n - a[1].n);
+    const maxL = Math.max(1, ...lojasBarras.map(([, v]) => v.n));
+    const organizar = c.itens.filter((p) => p.etapa === "organizar").length;
+    return `
+      <button type="button" class="pz-card nivel-${nivel}${c.id === spCatSel ? " sel" : ""}" data-sp-cat="${c.id}" ${total ? "" : "disabled"}>
+        <div class="pz-card-topo">
+          <span class="pz-card-nome">${esc(c.nome)}</span>
+          <span class="pz-status nivel-${nivel}">${ROTULO_NIVEL_CAT[nivel]}</span>
+        </div>
+        <div class="pz-card-meio">
+          <div class="pz-anel" style="--p:${pct}" role="img" aria-label="${pct}% pronto">
+            <div><b>${resta}</b><span>${tinyOn ? "a embalar" : "sem etiqueta"}</span></div>
+          </div>
+          ${relogio}
+        </div>
+        <div class="pz-progresso-txt">${prontos} de ${total} ${tinyOn ? "embalados" : "com etiqueta gerada"} · ${pct}%${
+          organizar ? `<br><span class="sp-organizar-txt">${organizar} ainda a organizar (gerar etiqueta)</span>` : ""
+        }${c.atrasHoje ? `<br><span class="sp-atraso-txt">+ ${c.atrasHoje} atrasado${c.atrasHoje > 1 ? "s" : ""} de hoje</span>` : ""}</div>
+        <div class="pz-contas">${
+          lojasBarras.length
+            ? lojasBarras
+                .map(
+                  ([id, v]) => `<div class="pz-conta"><span class="pz-conta-nome"><i class="sp-ponto-loja" style="background:${corLoja(id)}"></i>${esc(v.nome)}</span>
+                    <span class="pz-conta-barra"><i style="width:${(v.n / maxL) * 100}%"></i></span><b>${v.n}</b></div>`
+                )
+                .join("")
+            : `<div class="pz-conta-vazio">${total ? "Tudo pronto ✓" : "Nenhum pedido para hoje"}</div>`
+        }</div>
+      </button>`;
   }
 
   function cartaoLoja(l) {
@@ -1078,20 +1194,36 @@
       } catch {}
       return;
     }
-    const alvo = ev.target.closest("[data-sp-visao],[data-sp-loja],[data-sp-modo]");
+    const alvo = ev.target.closest("[data-sp-visao],[data-sp-loja],[data-sp-modo],[data-sp-cat]");
     if (!alvo) return;
     const d = alvo.dataset;
+    if (d.spCat) spCatSel = d.spCat === spCatSel ? "todas" : d.spCat;
     if (d.spVisao) {
       spVisao = d.spVisao;
       salvarPref("prazosVisao", spVisao);
     }
-    if (d.spLoja) spLojaSel = d.spLoja;
+    if (d.spLoja) spLojaSel = d.spLoja === spLojaSel ? "todas" : d.spLoja;
     if (d.spModo) {
       spModo = d.spModo;
       salvarPref("prazosModo2", spModo);
     }
     renderPrazos();
   });
+  // Limites de "pronto" por transportadora (editaveis) e "Ver por loja" aberto.
+  document.addEventListener("change", (ev) => {
+    const i = ev.target.closest?.("[data-sp-limite]");
+    if (!i || !/^\d{2}:\d{2}$/.test(i.value)) return;
+    salvarPref(`limpronto_${i.dataset.spLimite}`, i.value);
+    atualizarFaixas();
+    if (aba === "prazos") renderPrazos();
+  });
+  corpo.addEventListener(
+    "toggle",
+    (ev) => {
+      if (ev.target.matches?.("[data-sp-lojas-det]")) spLojasAberto = ev.target.open;
+    },
+    true
+  );
   // Lembra quais produtos estavam abertos (o re-render a cada 30s fecharia).
   corpo.addEventListener(
     "toggle",
@@ -2015,7 +2147,8 @@
           const nome = canalShopee(p.transportadora);
           r.partes[nome] = (r.partes[nome] || 0) + 1;
           if (p.embaladoEm) marcarPronto(nome);
-          somarLimite(p.prazo);
+          // Limite para ficar PRONTO (SPX 12:00 / Xpress 16:30); outras: prazo da Shopee.
+          if (!prontoSP(p)) somarLimite(limiteProntoMs(categoriaShopee(p.transportadora)) || p.prazo);
         }
         for (const s of prazos.saidosHoje || []) {
           if (!passaLoja(s.shopId)) continue;
