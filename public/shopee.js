@@ -2887,15 +2887,15 @@
         ${estado.contas.length > 0 && estado.contas.length < 3 ? `<p class="muted small" style="margin:10px 0 0">Para conectar outra loja: clique em Conectar de novo e, na tela da Shopee, saia da loja atual antes de entrar na próxima.</p>` : ""}
       </section>
       ${estado.configurado ? `
-      <section class="sp-externo">
-        <h3 class="shopee-titulo">Conectar loja de outra empresa (outro CNPJ)</h3>
-        <p class="muted small" style="margin:0 0 10px;line-height:1.55">Mande este link para o responsável pela loja. Ele abre, entra com a <b>conta de vendedor da loja</b> (Central do Vendedor — não a da Open Platform) e confirma. A loja aparece aqui sozinha.</p>
+      <details class="sp-externo">
+        <summary class="shopee-titulo" style="margin:0;cursor:pointer">Conectar loja de outra empresa (outro CNPJ)</summary>
+        <p class="muted small" style="margin:10px 0;line-height:1.55">Mande este link para o responsável pela loja. Ele abre, entra com a <b>conta de vendedor da loja</b> (Central do Vendedor — não a da Open Platform) e confirma. A loja aparece aqui sozinha.</p>
         <div class="sp-externo-linha"><input id="sp-link-externo" class="sp-busca" readonly value="carregando..."><button type="button" class="btn btn-sm sp-btn-shopee" data-copiar="sp-link-externo">Copiar link</button></div>
         <details style="margin-top:10px"><summary class="muted small" style="cursor:pointer">Prefere usar o botão Authorize do console da Shopee?</summary>
           <p class="muted small" style="margin:8px 0;line-height:1.55">No console: App List › Painel Vesco › <b>Authorize</b>. No campo Redirect URL, cole o endereço abaixo e mande o link que o console gerar.</p>
           <div class="sp-externo-linha"><input id="sp-redirect-externo" class="sp-busca" readonly value=""><button type="button" class="btn btn-ghost btn-sm" data-copiar="sp-redirect-externo">Copiar</button></div>
         </details>
-      </section>` : ""}
+      </details>` : ""}
       <section id="shopee-sonda" class="shopee-sonda hidden">
         <div class="shopee-sonda-topo">
           <h3 class="shopee-titulo" style="margin:0">Resultado da sonda</h3>
