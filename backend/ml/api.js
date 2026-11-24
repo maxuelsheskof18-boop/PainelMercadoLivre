@@ -21,8 +21,28 @@ const USER_AGENT = "ml-painel/1.0 (+https://painelmercadolivre.onrender.com)";
 // o painel segue pro proximo em vez de nunca mais terminar.
 const REQUEST_TIMEOUT_MS = 20_000;
 
+// Corta-circuito: o ML bloqueia alguns endpoints para servidores (403
+// PolicyAgent em /items, /items?ids= e billing_info). Em vez de insistir a cada
+// sincronizacao, apos o primeiro 403 o painel PARA de chamar esse grupo por 6 h
+// (nao contorna o bloqueio, so respeita). Reinicia sozinho depois do prazo.
+const BLOQUEIO_MS = 6 * 3600 * 1000;
+const bloqueadoAte = new Map();
+function grupoBloqueavel(path) {
+  const p = String(path).replace(/^https?:\/\/api\.mercadoli[bv]re\.com/, "");
+  if (/^\/items(\/|\?|$)/.test(p)) return "items";
+  if (/^\/orders\/[^/]+\/billing_info/.test(p)) return "billing";
+  return null;
+}
+
 async function mlFetch(path, accessToken, options = {}) {
   const base = path.startsWith("http") ? path : `${API_BASE}${path}`;
+  const grupo = grupoBloqueavel(path);
+  if (grupo && (bloqueadoAte.get(grupo) || 0) > Date.now()) {
+    const e = new Error(`Mercado Livre API 403 (bloqueio de politica; painel em pausa) em ${path}`);
+    e.status = 403;
+    e.body = { pausado: true };
+    throw e;
+  }
 
   // A API de mensagens pos-venda e uma das mais antigas do Mercado Livre e,
   // segundo a documentacao oficial, espera o token como query string
@@ -62,6 +82,10 @@ async function mlFetch(path, accessToken, options = {}) {
     const err = new Error(`Mercado Livre API ${res.status} em ${path}`);
     err.status = res.status;
     err.body = data;
+    if (res.status === 403 && grupo && /PolicyAgent|policy/i.test(text)) {
+      bloqueadoAte.set(grupo, Date.now() + BLOQUEIO_MS);
+      console.warn(`[ml] 403 de politica em ${grupo}: pausando essas chamadas por 6 h`);
+    }
     throw err;
   }
   return data;
@@ -137,6 +161,21 @@ async function fetchPackMessages(accessToken, packId, sellerId) {
     `/messages/packs/${packId}/sellers/${sellerId}?tag=post_sale&mark_as_read=false`,
     accessToken
   );
+}
+
+// Uma mensagem pelo id. O "resource" das notificacoes de webhook do topico
+// "messages" e um hash de 32 caracteres hex (visto em webhook_events reais),
+// do mesmo formato dos ids de mensagem devolvidos por fetchPackMessages — ou
+// seja, e o id da mensagem, nao um caminho "/packs/...". A resposta traz
+// (segundo a documentacao) "message_resources" com o pack e o seller; quem
+// chama deve tratar o formato de forma tolerante (ver resolvePackFromMessage
+// em routes/webhooks.js).
+async function fetchMessageById(accessToken, messageId) {
+  try {
+    return await mlFetch(`/messages/${messageId}?tag=post_sale`, accessToken);
+  } catch (err) {
+    return mlFetch(`/messages/${messageId}`, accessToken);
+  }
 }
 
 // Marca as mensagens de um pack como LIDAS — chamado quando o vendedor abre
@@ -460,6 +499,7 @@ module.exports = {
   USER_AGENT,
   fetchUnreadMessagePacks,
   fetchPackMessages,
+  fetchMessageById,
   markPackRead,
   fetchPackInfo,
   fetchRecentOrders,

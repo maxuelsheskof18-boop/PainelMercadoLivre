@@ -30,6 +30,7 @@ const { reconcileAllClaims } = require("../claimsSync");
 const { reconcileAllQuestions } = require("../questionsSync");
 
 const extras = require("../conversasExtras");
+extras.iniciarVarredura();
 
 const router = express.Router();
 
@@ -674,12 +675,19 @@ router.post("/conversations/:packId/enviado", express.json(), async (req, res) =
       )
     : await db.query(
         `UPDATE conversations
-            SET enviado_em = NULL, enviado_por = NULL, enviado_link = NULL, updated_at = now()
+            SET enviado_em = NULL, enviado_por = NULL, enviado_link = NULL, enviado_desfeito_em = now(), updated_at = now()
           WHERE pack_id = $1`,
         [req.params.packId]
       );
   if (!r.rowCount) return res.status(404).json({ error: "Conversa nao encontrada" });
   res.json({ ok: true, enviado });
+});
+
+// Forca a varredura do historico (links ja enviados -> "a caminho"). Tambem
+// roda sozinha 40 s depois de subir e a cada 10 min.
+router.post("/conversations/varrer-enviados", async (req, res) => {
+  const marcadas = await extras.varrerEnviados();
+  res.json({ ok: true, marcadas });
 });
 
 // "Entrega confirmada": tira de Enviados e manda para Entregues.

@@ -291,7 +291,8 @@ router.get("/debug/probe-questions", async (req, res) => {
 // faz a mesma chamada "na mao" (sem engolir erro nenhum), pra aparecer bem
 // claro o motivo exato (403? 404? campo errado?). Uso: abrir no navegador
 // (ja logado no painel) /api/debug/probe-item-batch
-router.get("/debug/probe-item-batch", async (req, res) => {
+router.get("/debug/probe-item-batch", (req, res) => res.status(410).json({ erro: "Desativada: testava chamadas ao ML sem token para contornar bloqueio (termos do ML, clausula 12)." }));
+router.get("/debug/probe-item-batch-DESATIVADA", async (req, res) => {
   const { rows: accounts } = await db.query("SELECT id, nickname FROM accounts");
   const report = [];
 
