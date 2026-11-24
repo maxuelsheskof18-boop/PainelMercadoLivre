@@ -29,6 +29,8 @@ const {
 const { reconcileAllClaims } = require("../claimsSync");
 const { reconcileAllQuestions } = require("../questionsSync");
 
+const extras = require("../conversasExtras");
+
 const router = express.Router();
 
 // Este router e montado em "/api" (veja server.js), entao os caminhos aqui
@@ -36,6 +38,14 @@ const router = express.Router();
 // que ele so intercepta pedidos que ja comecam com /api/..., sem afetar
 // paginas publicas como /login.html.
 router.use(requireLogin);
+
+// Colunas de "Em tratativa" e "Enviado" (ver conversasExtras.js).
+router.use((req, res, next) => {
+  extras
+    .garantirColunas()
+    .catch((err) => console.error("[conversasExtras] colunas:", err.message))
+    .finally(() => next());
+});
 
 // Limite de caracteres por mensagem imposto pelo proprio Mercado Livre (a
 // API de mensagens pos-venda recusa qualquer texto acima disso) — trava
@@ -61,9 +71,11 @@ const uploadMessageFile = multer({
 router.get("/pending-count", async (req, res) => {
   const { rows } = await db.query(
     `SELECT
-       COUNT(*) FILTER (WHERE status = 'pending' AND is_delivered IS NOT TRUE)::int AS pending,
+       COUNT(*) FILTER (WHERE status = 'pending' AND is_delivered IS NOT TRUE AND entrega_confirmada_em IS NULL AND enviado_em IS NULL)::int AS pending,
        COUNT(*) FILTER (WHERE status = 'no_contact')::int AS no_contact,
-       COUNT(*) FILTER (WHERE status = 'pending' AND is_delivered = true)::int AS delivered
+       COUNT(*) FILTER (WHERE status = 'pending' AND ${extras.entregue()})::int AS delivered,
+       COUNT(*) FILTER (WHERE status = 'pending' AND ${extras.emTransito()})::int AS shipped,
+       COUNT(*) FILTER (WHERE em_tratativa = true AND status = 'pending')::int AS tratativa
      FROM conversations`
   );
   const { rows: claimRows } = await db.query(
@@ -92,13 +104,15 @@ router.get("/pending-count", async (req, res) => {
     pending: rows[0].pending,
     noContact: rows[0].no_contact,
     delivered: rows[0].delivered,
+    shipped: rows[0].shipped,
+    tratativa: rows[0].tratativa,
     claims: claimRows[0].pending,
     questions: questionsPending,
   });
 });
 
 router.get("/conversations", async (req, res) => {
-  const status = ["pending", "answered", "no_contact", "delivered"].includes(req.query.status)
+  const status = ["pending", "answered", "no_contact", "delivered", "shipped", "tratativa"].includes(req.query.status)
     ? req.query.status
     : "pending";
 
@@ -114,15 +128,28 @@ router.get("/conversations", async (req, res) => {
     // mais sobre "combinar a entrega", entao fica fora de
     // Pendentes/Respondidas, numa aba propria. Pode estar pendente ou ja
     // respondida dentro dessa aba (por isso os dois status entram aqui).
-    conditions.push("c.is_delivered = true");
+    // (entregue = tag "delivered" do ML OU entrega confirmada por aqui)
+    conditions.push(extras.entregue("c"));
     conditions.push("c.status IN ('pending', 'answered')");
+  } else if (status === "shipped") {
+    // "Enviados" (combinar entrega): link ja mandado, entrega ainda nao
+    // confirmada. Pendente ou respondida: se o comprador escrever, ela
+    // continua aqui, so que como pendente (contador vermelho).
+    conditions.push(extras.emTransito("c"));
+    conditions.push("c.status IN ('pending', 'answered')");
+  } else if (status === "tratativa") {
+    // Todas as marcadas "Em tratativa", em qualquer situacao.
+    conditions.push("c.em_tratativa = true");
   } else {
     params.push(status);
     conditions.push(`c.status = $${params.length}`);
     if (status === "pending" || status === "answered") {
       // Pedidos ja entregues com mensagem saem daqui e vao exclusivamente
-      // pra aba "Entregues" acima, pra nao aparecer duplicado nas duas.
+      // pra aba "Entregues" acima; os ja ENVIADOS (aguardando confirmar a
+      // entrega) vao pra "Enviados" — pra nao aparecer duplicado.
       conditions.push("c.is_delivered IS NOT TRUE");
+      conditions.push("c.entrega_confirmada_em IS NULL");
+      conditions.push("c.enviado_em IS NULL");
     }
   }
 
@@ -533,7 +560,25 @@ router.post("/conversations/:packId/reply", express.json(), (req, res) => {
         [text, nowIso, conv.pack_id]
       );
 
-      res.json({ ok: true });
+      // Combinar entrega + LINK na mensagem = pacote enviado: a conversa vai
+      // para "Enviados" ate a entrega ser confirmada (pedido de 24/11).
+      let enviadoLink = null;
+      if (conv.is_combinar_entrega === true) {
+        enviadoLink = extras.linkDeEnvio(text);
+        if (enviadoLink) {
+          await db
+            .query(
+              `UPDATE conversations
+                  SET enviado_em = now(), enviado_por = $1, enviado_link = $2,
+                      entrega_confirmada_em = NULL, entrega_confirmada_por = NULL
+                WHERE pack_id = $3`,
+              [operator, enviadoLink, conv.pack_id]
+            )
+            .catch((err) => console.error("[reply] marcar enviado:", err.message));
+        }
+      }
+
+      res.json({ ok: true, enviado: !!enviadoLink, link: enviadoLink });
     } catch (err) {
       console.error("[reply]", err.status, err.body || err.message);
       // err.body normalmente vem da API do Mercado Livre como um objeto tipo
@@ -598,6 +643,60 @@ router.post("/conversations/:packId/reply", express.json(), (req, res) => {
 // em sync.js). Fica guardado em resolved_by_operator(_at), que sobrevive as
 // proximas sincronizacoes (ver upsertConversationFromPack em sync.js) — a
 // nao ser que chegue mensagem nova depois da marcacao, o que reabre sozinho.
+// "Em tratativa" (ex.: cliente quer devolver) — marca/desmarca.
+router.post("/conversations/:packId/tratativa", express.json(), async (req, res) => {
+  const ativa = req.body?.ativa !== false;
+  const operator = sanitizeOperatorName(req.body?.operatorName);
+  const r = await db.query(
+    `UPDATE conversations
+        SET em_tratativa = $1, tratativa_por = CASE WHEN $1 THEN $2 ELSE NULL END,
+            tratativa_em = CASE WHEN $1 THEN now() ELSE NULL END, updated_at = now()
+      WHERE pack_id = $3`,
+    [ativa, operator, req.params.packId]
+  );
+  if (!r.rowCount) return res.status(404).json({ error: "Conversa nao encontrada" });
+  res.json({ ok: true, ativa });
+});
+
+// "Enviado": marcar a mao (quando o link foi mandado fora do painel) ou
+// desfazer (marcou sem querer / o envio foi cancelado).
+router.post("/conversations/:packId/enviado", express.json(), async (req, res) => {
+  const enviado = req.body?.enviado !== false;
+  const operator = sanitizeOperatorName(req.body?.operatorName);
+  const link = String(req.body?.link || "").trim().slice(0, 500) || null;
+  const r = enviado
+    ? await db.query(
+        `UPDATE conversations
+            SET enviado_em = now(), enviado_por = $1, enviado_link = COALESCE($2, enviado_link),
+                entrega_confirmada_em = NULL, entrega_confirmada_por = NULL, updated_at = now()
+          WHERE pack_id = $3`,
+        [operator, link, req.params.packId]
+      )
+    : await db.query(
+        `UPDATE conversations
+            SET enviado_em = NULL, enviado_por = NULL, enviado_link = NULL, updated_at = now()
+          WHERE pack_id = $1`,
+        [req.params.packId]
+      );
+  if (!r.rowCount) return res.status(404).json({ error: "Conversa nao encontrada" });
+  res.json({ ok: true, enviado });
+});
+
+// "Entrega confirmada": tira de Enviados e manda para Entregues.
+router.post("/conversations/:packId/entrega-confirmada", express.json(), async (req, res) => {
+  const confirmada = req.body?.confirmada !== false;
+  const operator = sanitizeOperatorName(req.body?.operatorName);
+  const r = await db.query(
+    `UPDATE conversations
+        SET entrega_confirmada_em = CASE WHEN $1 THEN now() ELSE NULL END,
+            entrega_confirmada_por = CASE WHEN $1 THEN $2 ELSE NULL END, updated_at = now()
+      WHERE pack_id = $3`,
+    [confirmada, operator, req.params.packId]
+  );
+  if (!r.rowCount) return res.status(404).json({ error: "Conversa nao encontrada" });
+  res.json({ ok: true, confirmada });
+});
+
 router.post("/conversations/:packId/mark-resolved", express.json(), async (req, res) => {
   const packId = req.params.packId;
   const operator = String(req.body?.operatorName || "").trim().slice(0, 60) || null;
