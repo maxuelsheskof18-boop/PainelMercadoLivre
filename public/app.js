@@ -576,7 +576,7 @@ function statusLabel(status) {
   if (status === "no_contact") return "sem contato ainda";
   if (status === "answered") return "respondida";
   if (status === "delivered") return "de pedido já entregue";
-  if (status === "shipped") return "enviada aguardando confirmar a entrega";
+  if (status === "shipped") return "a caminho (aguardando confirmar a entrega)";
   if (status === "tratativa") return "em tratativa";
   return "pendente";
 }
@@ -785,7 +785,7 @@ async function loadConversations({ silent = false } = {}) {
           <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · #${conv.order_id}` : ""}${fmtMoney(conv.order_total) ? ` · ${fmtMoney(conv.order_total)}` : ""}${fmtQuantity(conv.order_quantity) ? ` · ${fmtQuantity(conv.order_quantity)}` : ""}</span>
           ${conv.is_delivered ? '<span class="tag tag-delivered">Pedido já entregue</span>' : conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
           ${conv.shipping_type ? `<span class="tag tag-shipping">${conv.shipping_type}</span>` : ""}
-          ${conv.entrega_confirmada_em ? '<span class="tag tag-delivered" title="Entrega confirmada por aqui">✓ Entrega confirmada</span>' : conv.enviado_em && !conv.is_delivered ? `<span class="tag tag-enviado" title="Link enviado em ${fmtDate(conv.enviado_em)} — aguardando confirmar a entrega">📦 Enviado</span>` : ""}
+          ${conv.entrega_confirmada_em ? '<span class="tag tag-delivered" title="Entrega confirmada por aqui">✓ Entrega confirmada</span>' : conv.enviado_em && !conv.is_delivered ? `<span class="tag tag-enviado" title="Link enviado em ${fmtDate(conv.enviado_em)} — aguardando confirmar a entrega">📦 A caminho${diasDesde(conv.enviado_em) >= 1 ? ` · ${diasDesde(conv.enviado_em)}d` : ""}</span>` : ""}
           ${conv.em_tratativa ? `<span class="tag tag-tratativa" title="Em tratativa${conv.tratativa_por ? ` (${escHtml(conv.tratativa_por)})` : ""}">↩ Em tratativa</span>` : ""}
           ${listPaymentBadge(conv.order_payment_status)}
           ${conv.has_open_claim ? '<span class="tag tag-claim" title="Este pedido tem uma reclamação aberta na aba Reclamações">⚠ Reclamação aberta</span>' : ""}
@@ -1570,6 +1570,7 @@ function closeMobileThread() {
 // (que pode ter enriquecido produto/comprador/tipo de entrega na hora).
 // Faixa "Em tratativa / Enviado / Entrega confirmada" da conversa aberta
 // (so em Mensagens). Estado fica em data-* para os botoes saberem o que fazer.
+const diasDesde = (iso) => (iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 864e5) : 0);
 const escHtml = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 function renderConvAcoes(conv) {
   convAcoes.classList.remove("hidden");
@@ -1589,7 +1590,7 @@ function renderConvAcoes(conv) {
   if (tratativa) bits.push(`↩ Em tratativa${conv.tratativa_por ? ` por ${escHtml(conv.tratativa_por)}` : ""} desde ${fmtDate(conv.tratativa_em)}.`);
   if (enviado) {
     bits.push(
-      `📦 Enviado em ${fmtDate(conv.enviado_em)}${conv.enviado_por ? ` por ${escHtml(conv.enviado_por)}` : ""} — aguardando confirmar a entrega.` +
+      `📦 A caminho — link enviado em ${fmtDate(conv.enviado_em)}${conv.enviado_por ? ` por ${escHtml(conv.enviado_por)}` : ""}; aguardando confirmar a entrega.` +
         (conv.enviado_link ? ` <a href="${escHtml(conv.enviado_link)}" target="_blank" rel="noopener">link ↗</a>` : "")
     );
   } else if (confirmada) {
@@ -1602,7 +1603,7 @@ function renderConvAcoes(conv) {
   // Enviado / entrega: so para combinar entrega (os outros tem rastreio do ML).
   const combinar = conv.is_combinar_entrega === true;
   convEnviadoBtn.classList.toggle("hidden", !combinar || confirmada || entregueML);
-  convEnviadoBtn.textContent = enviado ? "↺ Desfazer enviado" : "📦 Marcar como enviado";
+  convEnviadoBtn.textContent = enviado ? "↺ Desfazer a caminho" : "📦 Marcar a caminho";
   convEntregueBtn.classList.toggle("hidden", !(combinar && enviado) && !confirmada);
   convEntregueBtn.textContent = confirmada ? "↺ Desfazer entrega confirmada" : "✓ Entrega confirmada";
   convEntregueBtn.classList.toggle("destaque", enviado && !confirmada);
@@ -1633,7 +1634,7 @@ async function acaoConversa(sufixo, corpo, rotuloErro) {
 }
 
 convTratativaBtn.addEventListener("click", () => acaoConversa("tratativa", { ativa: !convAcoes.dataset.tratativa }, "Falha ao marcar a tratativa."));
-convEnviadoBtn.addEventListener("click", () => acaoConversa("enviado", { enviado: !convAcoes.dataset.enviado }, "Falha ao marcar como enviado."));
+convEnviadoBtn.addEventListener("click", () => acaoConversa("enviado", { enviado: !convAcoes.dataset.enviado }, "Falha ao marcar como a caminho."));
 convEntregueBtn.addEventListener("click", () => {
   const jaConfirmada = convEntregueBtn.textContent.startsWith("↺");
   if (!jaConfirmada && !confirm("Confirmar que o pacote foi entregue? A conversa sai de Enviados e vai para Entregues.")) return;
