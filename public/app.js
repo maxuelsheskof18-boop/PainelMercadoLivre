@@ -32,6 +32,13 @@ const moduleNavToggleLabel = moduleNavToggle ? moduleNavToggle.querySelector(".m
 const tabCountPending = document.getElementById("tab-count-pending");
 const tabCountNoContact = document.getElementById("tab-count-nocontact");
 const tabCountDelivered = document.getElementById("tab-count-delivered");
+const tabCountShipped = document.getElementById("tab-count-shipped");
+const tabCountTratativa = document.getElementById("tab-count-tratativa");
+const convAcoes = document.getElementById("conv-acoes");
+const convAcoesInfo = document.getElementById("conv-acoes-info");
+const convTratativaBtn = document.getElementById("conv-tratativa-btn");
+const convEnviadoBtn = document.getElementById("conv-enviado-btn");
+const convEntregueBtn = document.getElementById("conv-entregue-btn");
 const tabCountClaimsPending = document.getElementById("tab-count-claims-pending");
 const tabCountQuestionsPending = document.getElementById("tab-count-questions-pending");
 const threadEmpty = document.getElementById("thread-empty");
@@ -488,6 +495,21 @@ async function loadPendingCount() {
     tabCountDelivered.classList.add("hidden");
   }
 
+  // Enviados / Tratativa: so contam o que esta PENDENTE (comprador escreveu e
+  // ninguem respondeu) — igual as outras abas.
+  if (data.shipped > 0) {
+    tabCountShipped.textContent = data.shipped;
+    tabCountShipped.classList.remove("hidden");
+  } else {
+    tabCountShipped.classList.add("hidden");
+  }
+  if (data.tratativa > 0) {
+    tabCountTratativa.textContent = data.tratativa;
+    tabCountTratativa.classList.remove("hidden");
+  } else {
+    tabCountTratativa.classList.add("hidden");
+  }
+
   if (data.claims > 0) {
     tabCountClaimsPending.textContent = data.claims;
     tabCountClaimsPending.classList.remove("hidden");
@@ -505,7 +527,7 @@ async function loadPendingCount() {
   // Os badges dos itens do menu lateral (modulos) somam tudo que precisa de
   // acao dentro de cada um, pra dar pra ver de relance qual dos painéis tem
   // coisa pendente sem precisar entrar em nenhum deles.
-  const messagesPending = data.pending + data.delivered;
+  const messagesPending = data.pending + data.delivered + (data.shipped || 0);
   if (messagesPending > 0) {
     moduleBadgeMessages.textContent = messagesPending;
     moduleBadgeMessages.classList.remove("hidden");
@@ -554,6 +576,8 @@ function statusLabel(status) {
   if (status === "no_contact") return "sem contato ainda";
   if (status === "answered") return "respondida";
   if (status === "delivered") return "de pedido já entregue";
+  if (status === "shipped") return "enviada aguardando confirmar a entrega";
+  if (status === "tratativa") return "em tratativa";
   return "pendente";
 }
 
@@ -761,6 +785,8 @@ async function loadConversations({ silent = false } = {}) {
           <span class="ci-date">${fmtDate(conv.last_message_date)}${conv.order_id ? ` · #${conv.order_id}` : ""}${fmtMoney(conv.order_total) ? ` · ${fmtMoney(conv.order_total)}` : ""}${fmtQuantity(conv.order_quantity) ? ` · ${fmtQuantity(conv.order_quantity)}` : ""}</span>
           ${conv.is_delivered ? '<span class="tag tag-delivered">Pedido já entregue</span>' : conv.is_combinar_entrega ? '<span class="tag tag-delivery">Combinar entrega</span>' : ""}
           ${conv.shipping_type ? `<span class="tag tag-shipping">${conv.shipping_type}</span>` : ""}
+          ${conv.entrega_confirmada_em ? '<span class="tag tag-delivered" title="Entrega confirmada por aqui">✓ Entrega confirmada</span>' : conv.enviado_em && !conv.is_delivered ? `<span class="tag tag-enviado" title="Link enviado em ${fmtDate(conv.enviado_em)} — aguardando confirmar a entrega">📦 Enviado</span>` : ""}
+          ${conv.em_tratativa ? `<span class="tag tag-tratativa" title="Em tratativa${conv.tratativa_por ? ` (${escHtml(conv.tratativa_por)})` : ""}">↩ Em tratativa</span>` : ""}
           ${listPaymentBadge(conv.order_payment_status)}
           ${conv.has_open_claim ? '<span class="tag tag-claim" title="Este pedido tem uma reclamação aberta na aba Reclamações">⚠ Reclamação aberta</span>' : ""}
         </div>
@@ -864,6 +890,7 @@ async function loadClaims({ silent = false } = {}) {
 }
 
 function renderClaimThreadInfo(claim) {
+  convAcoes.classList.add("hidden");
   const label = claim.buyer_full_name || "Comprador #" + (claim.buyer_id || "?");
   threadBuyer.textContent = label;
   threadAvatar.innerHTML = "";
@@ -1110,6 +1137,7 @@ async function loadQuestions({ silent = false } = {}) {
 }
 
 function renderQuestionThreadInfo(question) {
+  convAcoes.classList.add("hidden");
   const label = question.buyer_nickname || "Comprador #" + (question.buyer_id || "?");
   threadBuyer.textContent = label;
   threadAvatar.innerHTML = "";
@@ -1540,6 +1568,78 @@ function closeMobileThread() {
 // objeto de conversa. Chamada duas vezes: uma na hora (com o dado que ja
 // tinhamos na lista) e outra depois que a resposta do servidor chega
 // (que pode ter enriquecido produto/comprador/tipo de entrega na hora).
+// Faixa "Em tratativa / Enviado / Entrega confirmada" da conversa aberta
+// (so em Mensagens). Estado fica em data-* para os botoes saberem o que fazer.
+const escHtml = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+function renderConvAcoes(conv) {
+  convAcoes.classList.remove("hidden");
+  convAcoes.dataset.packId = conv.pack_id;
+  const tratativa = !!conv.em_tratativa;
+  const confirmada = !!conv.entrega_confirmada_em;
+  const entregueML = !!conv.is_delivered;
+  const enviado = !!conv.enviado_em && !confirmada && !entregueML;
+  convAcoes.dataset.tratativa = tratativa ? "1" : "";
+  convAcoes.dataset.enviado = enviado ? "1" : "";
+  convAcoes.classList.toggle("enviado", enviado);
+
+  convTratativaBtn.classList.toggle("ativo", tratativa);
+  convTratativaBtn.textContent = tratativa ? "↩ Em tratativa (tirar)" : "↩ Em tratativa";
+
+  const bits = [];
+  if (tratativa) bits.push(`↩ Em tratativa${conv.tratativa_por ? ` por ${escHtml(conv.tratativa_por)}` : ""} desde ${fmtDate(conv.tratativa_em)}.`);
+  if (enviado) {
+    bits.push(
+      `📦 Enviado em ${fmtDate(conv.enviado_em)}${conv.enviado_por ? ` por ${escHtml(conv.enviado_por)}` : ""} — aguardando confirmar a entrega.` +
+        (conv.enviado_link ? ` <a href="${escHtml(conv.enviado_link)}" target="_blank" rel="noopener">link ↗</a>` : "")
+    );
+  } else if (confirmada) {
+    bits.push(`✓ Entrega confirmada${conv.entrega_confirmada_por ? ` por ${escHtml(conv.entrega_confirmada_por)}` : ""} em ${fmtDate(conv.entrega_confirmada_em)}.`);
+  } else if (entregueML) {
+    bits.push("✓ O Mercado Livre marcou o pedido como entregue.");
+  }
+  convAcoesInfo.innerHTML = bits.join("<br>");
+
+  // Enviado / entrega: so para combinar entrega (os outros tem rastreio do ML).
+  const combinar = conv.is_combinar_entrega === true;
+  convEnviadoBtn.classList.toggle("hidden", !combinar || confirmada || entregueML);
+  convEnviadoBtn.textContent = enviado ? "↺ Desfazer enviado" : "📦 Marcar como enviado";
+  convEntregueBtn.classList.toggle("hidden", !(combinar && enviado) && !confirmada);
+  convEntregueBtn.textContent = confirmada ? "↺ Desfazer entrega confirmada" : "✓ Entrega confirmada";
+  convEntregueBtn.classList.toggle("destaque", enviado && !confirmada);
+}
+
+async function acaoConversa(sufixo, corpo, rotuloErro) {
+  const packId = convAcoes.dataset.packId;
+  if (!packId) return;
+  const botoes = [convTratativaBtn, convEnviadoBtn, convEntregueBtn];
+  botoes.forEach((b) => (b.disabled = true));
+  try {
+    const res = await fetch(`/api/conversations/${encodeURIComponent(packId)}/${sufixo}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...corpo, operatorName: getOperatorName() }),
+    });
+    if (handleSessionExpired(res)) return;
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || rotuloErro);
+      return;
+    }
+    if (packId === state.selectedPackId) await loadThreadMessages(packId);
+    await Promise.all([loadConversations(), loadPendingCount()]);
+  } finally {
+    botoes.forEach((b) => (b.disabled = false));
+  }
+}
+
+convTratativaBtn.addEventListener("click", () => acaoConversa("tratativa", { ativa: !convAcoes.dataset.tratativa }, "Falha ao marcar a tratativa."));
+convEnviadoBtn.addEventListener("click", () => acaoConversa("enviado", { enviado: !convAcoes.dataset.enviado }, "Falha ao marcar como enviado."));
+convEntregueBtn.addEventListener("click", () => {
+  const jaConfirmada = convEntregueBtn.textContent.startsWith("↺");
+  if (!jaConfirmada && !confirm("Confirmar que o pacote foi entregue? A conversa sai de Enviados e vai para Entregues.")) return;
+  acaoConversa("entrega-confirmada", { confirmada: jaConfirmada ? false : true }, "Falha ao confirmar a entrega.");
+});
+
 function renderThreadInfo(conv) {
   const label = buyerLabel(conv);
   threadBuyer.textContent = label;
@@ -1599,6 +1699,8 @@ function renderThreadInfo(conv) {
   } else {
     claimResolveBanner.classList.add("hidden");
   }
+
+  renderConvAcoes(conv);
 
   // Anexar arquivo tambem e permitido numa mensagem normal (pedido do
   // usuario) — o botao e compartilhado com a tela de reclamacoes, so limpa

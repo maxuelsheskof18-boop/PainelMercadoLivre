@@ -691,6 +691,21 @@ body {
   flex-wrap: wrap;
 }
 .claim-resolve-info { flex: 1; min-width: 0; }
+
+/* Mensagens agora tem 6 abas: quebra em duas linhas em vez de esconder as ultimas */
+#tabs-messages { flex-wrap: wrap; overflow-x: visible; }
+#tabs-messages .tab { padding: 10px 9px 8px; }
+
+/* Em tratativa / Enviado / Entrega confirmada (Mensagens) */
+.tag-tratativa { background: #f5f3ff; color: #6d28d9; border: 1px solid #ddd6fe; }
+.tag-enviado { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.conv-acoes { margin: 10px 20px 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: #fff; display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; font-size: 12.5px; }
+.conv-acoes.enviado { background: #eff6ff; border-color: #bfdbfe; color: #1e3a8a; }
+.conv-acoes-info { flex: 1; min-width: 160px; line-height: 1.45; }
+.conv-acoes .btn { flex-shrink: 0; }
+.conv-acoes .btn.ativo { background: #7c3aed; color: #fff; border-color: #7c3aed; }
+.conv-acoes .btn.destaque { background: #16a34a; color: #fff; border-color: #16a34a; }
+.conv-acoes-info a { color: inherit; word-break: break-all; }
 .claim-resolve-banner .btn { flex-shrink: 0; }
 
 /* ---------- Thread ---------- */
