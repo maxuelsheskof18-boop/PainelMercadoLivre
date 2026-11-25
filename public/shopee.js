@@ -2244,10 +2244,8 @@
         for (const p of prazos.pedidos) {
           if (!passaLoja(p.shopId)) continue;
           const dia = p.prazo ? diaSP(p.prazo) : null;
-          if (p.situacao === "atrasado" && dia !== hoje) {
-            r.antigos++;
-            continue;
-          }
+          // Atrasado de dia anterior tambem e trabalho de HOJE (entra na remessa):
+          // conta junto, igual a lista de remessas abaixo.
           if (dia !== hoje && p.prazo && p.situacao !== "atrasado") continue;
           r.falta++;
           // SPX = Shopee Xpress (transportadora); o resto e "Shopee".

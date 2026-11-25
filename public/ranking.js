@@ -236,7 +236,12 @@
       );
     }
     const erros = (cob.contas || []).filter((c) => c.erro);
-    return `${partes.join(" · ")}${
+    const ml = cob.ml?.pausado
+      ? `<div class="rk-aviso" style="margin-bottom:6px">🛡 <b>Mercado Livre fora do ranking</b> — ${
+          cob.ml.ate ? `pausa de segurança até ${new Date(cob.ml.ate).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} (${esc(cob.ml.motivo)})` : "a coleta de vendas do ML está desligada (variável RANKING_ML=off no Render). Por enquanto o ranking mostra só a Shopee."
+        }</div>`
+      : "";
+    return `${ml}${partes.join(" · ")}${
       erros.length ? ` · <span style="color:#b91c1c" title="${esc(erros.map((c) => `${c.conta}: ${c.erro}`).join(" | "))}">⚠ ${erros.length} conta(s) com erro na coleta</span>` : ""
     }`;
   }
