@@ -2246,7 +2246,7 @@
           const dia = p.prazo ? diaSP(p.prazo) : null;
           // Atrasado de dia anterior tambem e trabalho de HOJE (entra na remessa):
           // conta junto, igual a lista de remessas abaixo.
-          if (dia !== hoje && p.prazo && p.situacao !== "atrasado") continue;
+          if (dia !== hoje && p.prazo && p.situacao !== "atrasado" && categoriaShopee(p.transportadora) === "outras") continue; // SPX/Xpress: tudo pendente sai hoje (igual as remessas)
           r.falta++;
           // SPX = Shopee Xpress (transportadora); o resto e "Shopee".
           const nome = canalShopee(p.transportadora);
