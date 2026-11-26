@@ -5,6 +5,7 @@
 
 const db = require("../db");
 const { MAX_DIAS } = require("./coletor");
+const mlSeguranca = require("./ml");
 
 const TZ = "America/Sao_Paulo";
 const DIA = 864e5;
@@ -279,6 +280,7 @@ async function cobertura() {
   const hoje = hojeSP();
   const alvoDias = Math.max(1, MAX_DIAS - 19);
   return {
+    ml: mlSeguranca.estadoPausa(),
     contas: est.map((e) => ({
       canal: e.canal,
       conta: e.conta,

@@ -349,6 +349,21 @@ const STATUS_PEDIDO = {
   INVOICE_PENDING: "Nota fiscal pendente",
 };
 
+// Endereco de entrega como a Shopee devolve. NUNCA inventa nem completa: o que
+// vier mascarado (com "*") ou vazio nao e mostrado; sem nada usavel, protegido=true.
+function enderecoDoPedido(r) {
+  if (!r || typeof r !== "object") return { protegido: true };
+  const ok = (v) => {
+    const t = String(v ?? "").trim();
+    return t && !t.includes("*") ? t : "";
+  };
+  const completo = ok(r.full_address);
+  const partes = [ok(r.district), ok(r.town), ok(r.city), ok(r.state)].filter(Boolean);
+  const cep = ok(r.zipcode);
+  if (!completo && !partes.length && !cep) return { protegido: true };
+  return { protegido: false, completo: completo || null, partes, cep: cep || null };
+}
+
 async function pedidos(shopId, sns) {
   const out = [];
   for (const sn of sns) {
@@ -361,7 +376,7 @@ async function pedidos(shopId, sns) {
       query: {
         order_sn_list: sn,
         response_optional_fields:
-          "item_list,package_list,shipping_carrier,pay_time,pickup_done_time,total_amount,payment_method,note,edt,cancel_reason,buyer_cancel_reason",
+          "item_list,package_list,shipping_carrier,pay_time,pickup_done_time,total_amount,payment_method,note,edt,cancel_reason,buyer_cancel_reason,recipient_address",
       },
     });
     const o = (r.response?.order_list || [])[0];
@@ -374,6 +389,7 @@ async function pedidos(shopId, sns) {
       } catch {}
     }
     const dado = {
+      endereco: enderecoDoPedido(o.recipient_address),
       orderSn: o.order_sn,
       status: o.order_status,
       statusTexto: STATUS_PEDIDO[o.order_status] || o.order_status,

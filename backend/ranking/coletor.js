@@ -18,7 +18,7 @@
 
 const db = require("../db");
 const shopee = require("../shopee/api");
-const { mlConta, espera } = require("./ml");
+const { mlConta, espera, pausado: mlPausado } = require("./ml");
 
 const TZ = "America/Sao_Paulo";
 const DIA = 864e5;
@@ -239,7 +239,14 @@ async function recoletar(canal, contaId, nome, de, ate) {
 }
 
 // ---------- uma tarefa por conta ----------
+// Cuidado com a conta do ML: o historico anda devagar (uma janela de 7 dias por
+// conta a cada 3 min) e tudo para quando o ML pede pausa (ver ml.js).
+const BACKFILL_ML_MS = Number(process.env.RANKING_ML_BACKFILL_MS ?? 180_000);
+const ultimoBackfillML = new Map();
+const falhaDePausa = (err) => err?.pausa || err?.status === 429 || err?.status === 403;
+
 async function passoConta(canal, conta) {
+  if (canal === "ml" && mlPausado()) return; // pausa de seguranca (429/403/teto/RANKING_ML=off)
   const contaId = canal === "ml" ? String(conta.id) : String(conta.shop_id);
   const nome = canal === "ml" ? conta.nickname || `Conta ${contaId}` : conta.nome || `Loja ${contaId}`;
   const hoje = diaSP(Date.now());
@@ -276,6 +283,10 @@ async function passoConta(canal, conta) {
     return;
   }
   if (st.concluido || (st.pausa_ms && Number(st.pausa_ms) > agora)) return;
+  if (canal === "ml") {
+    if (agora - (ultimoBackfillML.get(contaId) || 0) < BACKFILL_ML_MS) return;
+    ultimoBackfillML.set(contaId, agora);
+  }
   await backfill(canal, contaId, nome, st, hoje);
 }
 
@@ -296,8 +307,14 @@ async function backfill(canal, contaId, nome, st, hoje) {
       [canal, contaId, de, vazios, acabou, primeiro]
     );
   } catch (err) {
-    const seguidos = Number(st.erros_seguidos) + 1;
     console.error(`[ranking] ${canal} ${nome} historico ${de}..${fim}:`, err.message);
+    if (falhaDePausa(err)) {
+      // O ML pediu calma (ou o teto por hora estourou): nao e falha da janela,
+      // so tenta de novo depois da pausa.
+      await db.query("UPDATE ranking_estado SET erro = $3, atualizado_em = now() WHERE canal = $1 AND conta_id = $2", [canal, contaId, String(err.message).slice(0, 300)]);
+      return;
+    }
+    const seguidos = Number(st.erros_seguidos) + 1;
     if (seguidos >= 5) {
       // Dados muito antigos podem nao estar mais disponiveis na API: encerra o
       // historico. Perto de hoje e instabilidade: pausa 30 min e tenta de novo.
