@@ -159,6 +159,22 @@
     contaSel.value = atual;
   }
 
+  // Erro da conta em portugues claro (antes aparecia a URL crua da API).
+  function textoErro(e) {
+    const dados = e.dadosDe ? ` Mostrando os dados das ${fmtHora(e.dadosDe)}.` : " Sem dados desta conta por enquanto.";
+    const tenta = " Tenta de novo sozinho em até 3 min.";
+    if (e.status === 429 || /\b429\b/.test(e.erro || "")) {
+      return `o Mercado Livre limitou as consultas (muitas requisições).${dados}${tenta}`;
+    }
+    if (e.status >= 500 || /\b5\d\d\b/.test(e.erro || "")) {
+      return `o Mercado Livre está instável agora.${dados}${tenta}`;
+    }
+    if (e.status === 401 || e.status === 403 || /token|reconect/i.test(e.erro || "")) {
+      return `acesso recusado — talvez seja preciso reconectar a conta em "Contas".${dados}`;
+    }
+    return `falha ao consultar (${e.erro}).${dados}${tenta}`;
+  }
+
   // ---------- Render ----------
   // Visao "A imprimir" (pedido do usuario 06/10: "mais sofisticado", sem a
   // parede de linhas repetidas): linha do tempo do dia + um cartao por
@@ -185,7 +201,7 @@
     const envios = enviosFiltrados();
 
     const erros = (dados.erros || [])
-      .map((e) => `<span class="prazos-erro">⚠ ${esc(e.conta || "")}: ${esc(e.erro)}</span>`)
+      .map((e) => `<span class="prazos-erro">⚠ ${esc(e.conta || "")}: ${esc(textoErro(e))}</span>`)
       .join(" ");
     statusEl.innerHTML =
       (dados.atualizadoEm

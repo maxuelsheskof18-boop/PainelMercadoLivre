@@ -1600,6 +1600,7 @@
         ${linha("Entrega prevista", o.entregaPrevista ? new Date(o.entregaPrevista).toLocaleDateString("pt-BR", { timeZone: TZ }) : "")}
         ${linha("Transportadora", esc(o.transportadora))}
         ${linha("Rastreio", o.rastreio ? `${esc(o.rastreio)}<button type="button" class="sp-mini-copiar" data-sp-copiar-chat="${esc(o.rastreio)}" title="Copiar rastreio">⧉</button>` : "")}
+        ${linha("Endereço", o.endereco ? (o.endereco.protegido ? '<span class="muted">protegido pela Shopee (não liberado para o painel)</span>' : esc(o.endereco.completo || o.endereco.partes.join(", ")) + (o.endereco.cep ? " · CEP " + esc(o.endereco.cep) : "")) : "")}
         ${linha("Pagamento", esc(o.pagamento || ""))}
         ${linha("Cancelamento", esc(o.cancelamento || ""))}
       </dl>
